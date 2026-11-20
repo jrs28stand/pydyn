@@ -90,9 +90,18 @@ control flow around parameter assignments (`if`, `for`, `switch`, ...) behaves a
   `eval`/`exec`; file access is limited to reading `.m` and `.mat` files next to the `.mod` file.
 
 On 212 files from Dynare's own test suite that contain MATLAB code and that Dynare runs under
-Octave: 156 load with a calibration identical to Dynare's, 41 are refused with a clear error, 15
+Octave: 157 load with a calibration identical to Dynare's, 40 are refused with a clear error, 15
 are outside this package for unrelated reasons, none load with a different calibration
-(`tools/sweep_matlab.py`). References are from Octave; MATLAB-only behaviour rests on documentation.
+(`tools/sweep_matlab.py`; the 157 are re-checked by `tests/test_matlab.py`). An independent
+adversarial review (617 mixed Dynare/MATLAB cases run in both systems) found eleven ways to get a
+different calibration without an error; each is fixed or refused and has a regression test.
+References are from Octave; MATLAB-only behaviour rests on documentation.
+
+Two consequences for models without any MATLAB code: `model.params` after loading includes the
+parameters that a `steady_state_model` block or steady-state file sets when the file has a `steady`
+or `stoch_simul` command (as `M_.params` does in Dynare), and `initval`/`endval` expressions that
+refer to other variables are evaluated as Dynare does (values set so far, zero if unset, the
+computed steady state after `steady`).
 
 ## Dynare's shipped examples
 

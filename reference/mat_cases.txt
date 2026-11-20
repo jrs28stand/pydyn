@@ -141,3 +141,24 @@ a = [1 2 3]; r = [a(logical([1 0 1])), a([true true true]), numel(a(logical([0 0
 a = [1 2; 3 4]; r = [a(:)' a(:, :)(2) size(a(1, :)) size(a(:, 1)) size(a([1 2])) size(a([1; 2]))];
 %%
 v = (1:4)'; r = [size(v(2:3)) size(v([2 3])) size(v(:)) size(v')];
+
+%%
+x = [1 10 0.3 0.7 5.5 -7 7 0 3 -1 1e15 2.5 -2.5 1 -1 0.2 100]; y = [0.1 0.1 0.1 0.1 2 3 -3 3 3 3 0.1 0.5 0.5 7 7 0.6 0.01]; r = [mod(x, y); rem(x, y)];
+%%
+r = [mod(5, 0), rem(5, 0), mod(NaN, 2), mod(2, NaN), mod(Inf, 2), mod(-0.5, 1), mod(1, -0.1), rem(-1, 0.1), mod(0.9, 0.3), mod(1.1, 0.1)];
+%%
+k = 5; for k = 1:0, end, a = [isempty(k) numel(k) size(k)]; j = 7; for j = [], end, r = [a isempty(j) size(j)];
+%%
+r = [round(0.49999999999999994), round(-0.49999999999999994), round(2.5), round(-2.5), round(1e15 + 0.5), round(-3.5), round(0.5)];
+%%
+r = [str2double({'0.5', '0.7'}), str2double('1,000'), str2double('1e3'), isnan(str2double('abc')), str2double(' 2.5 ')];
+%%
+r = double([num2str(2^53) '|' num2str(1e15) '|' num2str(123456789012) '|' sprintf('%s', 65) '|' sprintf('%s|%d', 'ab', 3)]);
+%%
+try, x = 0/0; r = 5; catch, r = 6; end, try, y = Inf - Inf + 0*Inf; r = [r 5]; catch, r = [r 6]; end, r = [r isnan(x) isnan(y) 1/0 -1/0 10^400];
+%%
+M.a = [1 2 3]; N = M; N.a(1) = 100; c = {M}; M.a(2) = 50; f = @() M.a(2); M.a(2) = 60; r = [M.a N.a c{1}.a f()];
+%%
+x = 1; clear x; w = 2; r = [exist('x', 'var') exist('w', 'var') w];
+%%
+r = [max(NaN, 1), min(1, NaN), max([NaN 2 1]), min([NaN 2 1]), isnan(max(NaN, NaN)), max(-0, 0)];

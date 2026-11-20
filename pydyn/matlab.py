@@ -23,7 +23,8 @@ to the ``.mod`` file; ``eval`` of a string the interpreter itself can compute; `
 and ``csolve`` mapped to scipy; the Dynare interface (``M_.params``, ``M_.Sigma_e``, ``M_.*_names``,
 ``set_param_value``, ``get_param_by_name``, ``set_shock_stderr_value``, ``options_.x = ...``).
 
-Refused: complex numbers (an operation with a complex or indeterminate result is an error),
+Refused: complex numbers (an operation whose MATLAB result is complex is refused; 0/0, Inf-Inf and
+the like are NaN as in MATLAB),
 N-d arrays, struct arrays, char matrices, string objects in concatenations, classes, ``dseries``,
 random numbers, ``evalin``/``assignin``, every file-system and shell function except ``load`` of a
 ``.mat`` file located next to the ``.mod`` file, and all Dynare internals other than those above.
@@ -87,11 +88,20 @@ class TranslationError(Exception):
     """``translate_steady_state`` cannot express the file as plain Python."""
 
 
-#: exceptions that correspond to a MATLAB run-time error
-MATLAB_ERRORS = (MatlabError, FloatingPointError, ZeroDivisionError, OverflowError)
+#: exceptions that correspond to a MATLAB run-time error (what a MATLAB try/catch would catch)
+MATLAB_ERRORS = (MatlabError,)
 
 _F = np.float64
-_ERRSTATE = dict(invalid="raise", divide="ignore", over="ignore", under="ignore")
+#: the interpreter follows IEEE arithmetic as MATLAB does (0/0 is NaN, 1/0 is Inf); operations whose
+#: MATLAB result is complex are detected explicitly and refused (``Unsupported``, kind "complex")
+_ERRSTATE = dict(invalid="ignore", divide="ignore", over="ignore", under="ignore")
+#: translated code runs on numpy scalars with invalid operations raising: any such event (0/0,
+#: sqrt(-1), ...) sends that call to the interpreter, which decides between NaN and "complex"
+_ERRSTATE_COMPILED = dict(invalid="raise", divide="ignore", over="ignore", under="ignore")
+
+
+def _cplx():
+    raise Unsupported("the result is a complex number in MATLAB; complex numbers are not supported", "complex")
 
 
 # ====================================================================== values
@@ -109,6 +119,25 @@ class Cell:
 
 class Struct(dict):
     """A scalar struct."""
+
+    def clone(self):
+        c = type(self)(self)
+        c.__dict__.update(self.__dict__)
+        return c
+
+
+class Snapshot(Struct):
+    """A value copy of ``M_`` or ``options_`` (MATLAB copies structs on assignment).  Only the fields
+    pydyn knows are present; asking for another one is refused rather than answered wrongly."""
+    kind = "M_"
+
+    def has_field(self, name):
+        if name in self:
+            return True
+        raise Unsupported(f"pydyn does not know whether {self.kind} has a field '{name}'", "results")
+
+    def field_names(self):
+        raise Unsupported(f"the complete list of fields of {self.kind} is not known to pydyn", "results")
 
 
 class Handle:
@@ -276,9 +305,14 @@ def ldivide(a, b):
 
 
 def _pow(x, y):
-    # numpy raises (invalid) for a negative base with a fractional exponent: MATLAB would return
-    # a complex number, which is outside the supported subset
-    return np.power(x, y)
+    # a negative base with a non-integer exponent gives a complex number in MATLAB (NaN in numpy)
+    r = np.power(x, y)
+    if type(r) is np.float64:
+        if r != r and x == x and y == y:
+            _cplx()
+    elif np.any(np.isnan(r) & ~np.isnan(x) & ~np.isnan(y)):
+        _cplx()
+    return r
 
 
 def power(a, b):
@@ -696,7 +730,7 @@ COMMAND_WORDS = {"close", "clear", "clc", "hold", "format", "warning", "more", "
                  "addpath", "rmpath", "diary", "echo", "pause", "disp", "dbstop", "profile", "delete",
                  "cd", "clearvars", "pkg", "graphics_toolkit", "drawnow", "grid", "box", "axis", "clf",
                  "dynare", "type", "which", "mex", "import", "syms", "tic", "toc", "legend", "colormap",
-                 "shading", "rng", "beep", "commandwindow", "dbclear", "keyboard", "print"}
+                 "shading", "rng", "beep", "commandwindow", "dbclear", "keyboard", "print", "run"}
 _CMD_RE = re.compile(r"^\s*([A-Za-z_]\w*)[ \t]+(?![=(;,]|[-+*/^<>~&|.:]?=|[-+*/^<>&|:](?:\s|$)|\.[*/^\\'])(\S[^;,%]*)(.*)$")
 _NUM_RE = re.compile(r"(?:\d+(?:\.(?![*/^\\'])\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?")
 _ID_RE = re.compile(r"[A-Za-z]\w*")      # MATLAB identifiers start with a letter
@@ -1293,9 +1327,10 @@ class Parser:
             return self._recover(line0, opener_line, str(exc))
 
     def _recover(self, line0, opener_line, why):
-        """Skip a statement that could not be parsed."""
+        """Skip ONE statement that could not be parsed: up to the next ';' or ',' outside brackets, or
+        the end of the line.  The rest of the line is parsed normally."""
         depth, j = 0, self.i
-        # prefer the end of the logical line; brackets left open extend it over following lines
+        first = self.toks[j]
         end = None
         while True:
             t = self.toks[j]
@@ -1305,7 +1340,7 @@ class Parser:
                 depth += 1
             elif t.k == "op" and t.v in (")", "]", "}"):
                 depth -= 1
-            elif t.k == "nl" and depth <= 0:
+            elif (t.k == "nl" or (t.k == "op" and t.v in (";", ","))) and depth <= 0:
                 end = j
                 break
             elif t.k == "kw" and depth <= 0 and t.v in ("end", "else", "elseif", "case", "otherwise", "catch") \
@@ -1315,17 +1350,24 @@ class Parser:
             elif t.k == "nl" and t.line - line0 > 400:
                 break
             j += 1
-        if end is None:                     # unbalanced: give up at the first physical line end
+        if end is None or "unterminated" in why:   # unbalanced brackets or quotes: the whole line is suspect
             j = self.i
             while self.toks[j].k not in ("nl", "eof", "dyn"):
                 j += 1
             end = j
-        last_line = self.toks[end].line if self.toks[end].k != "eof" else self.toks[end - 1].line
-        text = self.src(line0, last_line)
+            first = next((t for t in self.toks[:self.i + 1][::-1] if t.line != line0), None)
+            first = Tok("op", "", True, line0, 0)
+        te = self.toks[end]
+        last_line = te.line if te.k != "eof" else self.toks[end - 1].line
+        if last_line == line0 and isinstance(self.lines[line0], str):
+            stop = te.col if (te.k == "op" and te.v in (";", ",")) else (te.col if te.k == "kw" and end >= self.i and te.line == line0 and te.v in _BLOCK_END and end != self.i and False else None)
+            text = self.lines[line0][first.col:stop].strip() if te.k != "kw" else self.lines[line0][first.col:].strip()
+        else:
+            text = self.src(line0, last_line)
         kws = [t.v for t in self.toks[self.i:end + 1] if t.k == "kw" and t.v not in ("end",)]
-        self.i = end + 1 if self.toks[end].k == "nl" else end + (0 if self.toks[end].k in ("eof", "dyn") else 1)
-        if any(k in ("if", "for", "while", "switch", "try", "function", "parfor", "classdef") for k in kws):
-            raise ParseError(f"cannot parse a line that opens a block: {text[:100]!r} ({why})")
+        self.i = end + 1 if te.k in ("nl",) or (te.k == "op" and te.v in (";", ",")) else end + (0 if te.k in ("eof", "dyn") else 1)
+        if any(k in ("if", "for", "while", "switch", "try", "function", "parfor", "classdef", "global", "persistent") for k in kws):
+            raise ParseError(f"cannot parse a statement that opens a block or declares globals: {text[:100]!r} ({why})")
         s = Unparsed(text, why)
         s.line = line0
         return s
@@ -1444,6 +1486,25 @@ class Parser:
 
     def simple(self):
         t = self.t
+        if t.k == "id" and t.v in COMMAND_WORDS:
+            nx = self.peek()
+            if nx.line == t.line and nx.ws and (nx.k in ("id", "num", "str", "kw") or (nx.k == "op" and nx.v == "-" and not self.peek(2).ws)):
+                # command syntax in the middle of a line: "x = 1; hold on; y = 2"
+                j, words = self.i + 1, []
+                while self.toks[j].k not in ("nl", "eof", "dyn") and not (self.toks[j].k == "op" and self.toks[j].v in (";", ",")):
+                    tj = self.toks[j]
+                    if tj.k not in ("id", "num", "str", "kw") and not (tj.k == "op" and tj.v in ("-", ".", "*")):
+                        words = None
+                        break
+                    piece = ("%g" % tj.v) if tj.k == "num" else str(tj.v)
+                    if words and not tj.ws:
+                        words[-1] += piece
+                    else:
+                        words.append(piece)
+                    j += 1
+                if words:
+                    self.i = j
+                    return Command(t.v, " ".join(words), None)
         if t.k == "op" and t.v == "[":
             # multiple assignment?  find the matching bracket
             depth, j = 0, self.i
@@ -1579,19 +1640,32 @@ def _nargs(a, lo, hi=None, name="function"):
         raise MatlabError(f"{name}: wrong number of arguments ({len(a)})")
 
 
+_COMPLEX_DOMAIN = {"sqrt", "log", "log2", "log10", "log1p", "acos", "asin", "acosh", "atanh", "gammaln"}
+
+
 def _elem(fn, name):
+    domain = name in _COMPLEX_DOMAIN
+
     def f(I, a, nout):
         _nargs(a, 1, 1, name)
         x = a[0]
         if type(x) is np.float64:
-            return fn(x)
-        return ret(fn(farr(x)))
+            r = fn(x)
+            if domain and r != r and x == x:
+                _cplx()
+            return r
+        x = farr(x)
+        r = fn(x)
+        if domain and np.any(np.isnan(r) & ~np.isnan(x)):
+            _cplx()
+        return ret(r)
     BUILTINS[name] = f
     return f
 
 
 def _mround(x):
-    return np.sign(x) * np.floor(np.abs(x) + 0.5)
+    t = np.trunc(x)                       # half away from zero, without the round-off of floor(|x| + 0.5)
+    return t + np.sign(x) * (np.abs(x - t) >= 0.5)
 
 
 def _gamma(x):
@@ -1680,14 +1754,36 @@ def _complex(I, a, nout):
     raise Unsupported("complex numbers")
 
 
+def matlab_mod(x, y, rem=False):
+    """mod(x, y) / rem(x, y) with MATLAB's and Octave's treatment of round-off: when y is not an
+    integer and x/y is within eps of an integer the result is exactly 0 (mod(1, 0.1) is 0)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    if np.any(np.isinf(y)):
+        raise Unsupported("mod/rem with an infinite divisor (MATLAB and Octave disagree)")
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        ys = np.where(y == 0, 1.0, y)
+        q = x / ys
+        n = np.trunc(q) if rem else np.floor(q)
+        r = x - ys * n
+        nq = np.round(q)
+        near = (np.round(ys) != ys) & (np.abs((q - nq) / np.where(nq == 0, 1.0, nq)) < np.finfo(float).eps) & (nq != 0)
+        r = np.where(near, 0.0, r)
+        if rem:
+            r = np.where(x != ys, np.copysign(np.abs(r), x), 0.0 * x)      # sign of x
+            r = np.where(y == 0, np.nan + 0 * x, r)
+        else:
+            r = np.where(x != ys, np.where(r == 0, 0.0, np.copysign(np.abs(r), ys)), 0.0)   # sign of y
+            r = np.where(y == 0, x + 0 * y, r)
+        r = np.where(np.isnan(x) | np.isnan(y) | np.isinf(x), np.nan, r)
+    return r
+
+
 @bi("mod")
 def _mod(I, a, nout):
     _nargs(a, 2, 2, "mod")
     x, y = farr(a[0]), farr(a[1])
     _bcast(x, y)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        r = np.where(y == 0, x + 0 * y, np.mod(x, np.where(y == 0, 1, y)))
-    return ret(r)
+    return ret(matlab_mod(x, y))
 
 
 @bi("rem")
@@ -1695,9 +1791,26 @@ def _rem(I, a, nout):
     _nargs(a, 2, 2, "rem")
     x, y = farr(a[0]), farr(a[1])
     _bcast(x, y)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        r = np.where(y == 0, np.nan, np.fmod(x, np.where(y == 0, 1, y)))
-    return ret(r)
+    return ret(matlab_mod(x, y, rem=True))
+
+
+BUILTINS["lgamma"] = BUILTINS["gammaln"]
+BUILTINS["ln"] = BUILTINS["log"]                 # Dynare's alias, valid in Dynare statements
+BUILTINS["cbrt"] = lambda I, a, nout: ret(np.cbrt(farr(a[0])))
+BUILTINS["beta"] = lambda I, a, nout: ret(special.beta(farr(a[0]), farr(a[1])))
+BUILTINS["betaln"] = lambda I, a, nout: ret(special.betaln(farr(a[0]), farr(a[1])))
+
+
+@bi("run")
+def _run(I, a, nout):
+    """run('script.m'): a script next to the .mod file, executed in the caller's workspace."""
+    name = _str(a[0], "run") if len(a) == 1 else ""
+    name = name[:-2] if name.endswith(".m") else name
+    u = I.unit(name) if re.fullmatch(r"[A-Za-z]\w*", name) and name in I.dir_files() else None
+    if u is None or isinstance(u, ParseError) or not u.is_script:
+        raise Unsupported(f"run: {a[0] if a else ''!r} is not a script next to the model file", "eval")
+    I.run_script(u, I.scope_stack[-1])
+    return []
 
 
 @bi("nthroot")
@@ -2174,9 +2287,13 @@ BUILTINS["filesep"] = lambda I, a, nout: "/"
 
 
 def _str2double(s):
+    if isinstance(s, Cell):
+        return ret(np.array([float(_str2double(x)) for x in s.items]).reshape(s.shape, order="F")) if s.items else np.zeros((0, 0))
     if not isinstance(s, str):
         return _F(np.nan)
     t = s.strip().replace("d", "e").replace("D", "e")
+    if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+(\.\d*)?([eE][+-]?\d+)?", t):
+        t = t.replace(",", "")            # thousands separators are accepted
     if re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?|[+-]?(inf|Inf|nan|NaN)", t):
         return _F(float(t))
     return _F(np.nan)
@@ -2202,7 +2319,7 @@ def _num2str(x, fmt=None):
     if math.isinf(x):
         return "Inf" if x > 0 else "-Inf"
     if x == int(x):
-        return "%d" % x if abs(x) < 1e15 else _cfmt("%g", x)
+        return "%d" % x                   # integers are printed in full, whatever their size
     dgt = int(math.floor(math.log10(abs(x)))) + 5
     dgt = min(max(dgt, 5), 16)
     return _cfmt(f"%{dgt + 7 + (x < 0)}.{dgt}g", x).strip()
@@ -2275,8 +2392,8 @@ def _sprintf(fmt, args):
                 else:
                     out.append(v)
             elif m.group(4) == "s":
-                x = float(v)
-                out.append((spec[:-1] + "s") % (("%d" % x) if x == int(x) and abs(x) < 1e15 else _shortg(x)))
+                x = float(v)              # %s with a number: the character with that code if it is one
+                out.append((spec[:-1] + "s") % (chr(int(x)) if x == int(x) and 0 <= x < 0x110000 else _shortg(x)))
             else:
                 out.append(_cfmt(spec, float(v)))
         else:
@@ -2441,7 +2558,7 @@ def _isfield(I, a, nout):
 def _rmfield(I, a, nout):
     if not isinstance(a[0], Struct):
         raise Unsupported("rmfield on this value")
-    s = Struct(a[0])
+    s = a[0].clone()
     for name in (a[1].items if isinstance(a[1], Cell) else [a[1]]):
         if name not in s:
             raise MatlabError(f"rmfield: no field named {name!r}")
@@ -2460,7 +2577,7 @@ def _setfield(I, a, nout):
     _nargs(a, 3, 3, "setfield")
     if not isinstance(a[0], Struct):
         raise Unsupported("setfield on this value")
-    s = Struct(a[0])
+    s = a[0].clone()
     s[_str(a[1], "setfield")] = a[2]
     return s
 
@@ -2479,6 +2596,11 @@ def _deal(I, a, nout):
       "set_dynare_seed", "rng", "tic", "format", "clc", "diary", "echo", "commandwindow", "dbstop", "profile",
       "close", "hold", "drawnow", "pause", "fclose", "print_info")
 def _noop(I, argnodes, sc, nout):
+    # nothing is displayed, but the arguments are evaluated: they may call functions with side
+    # effects (disp(f(x))) or fail, exactly as in MATLAB
+    for a in argnodes:
+        if type(a) not in (Str, Num, ColonAll):
+            I.ev_multi(a, sc, 1)
     if nout > 0:
         raise Unsupported("output of a display or timing function", "display")
     return []
@@ -2558,6 +2680,8 @@ def _exist(I, a, nout):
         return _F(1)
     if kind == "var" and not I.open_world:
         return _F(0)
+    if kind in (None, "file") and name in I.dir_files() and name not in BUILTINS and name not in LAZY:
+        return _F(2)
     raise Unsupported("exist() for files or functions depends on the MATLAB path", "environment")
 
 
@@ -2630,7 +2754,11 @@ def _fzero(I, a, nout):
             v = f(_F(x))
             v = scalar(v, "fzero: function value")
         except FloatingPointError:
-            return np.nan                        # complex or indeterminate value
+            return np.nan                        # translated code: complex or indeterminate value
+        except Unsupported as exc:
+            if exc.kind != "complex":
+                raise
+            return np.nan                        # MATLAB's fzero stops on complex values as it does on NaN
         return float(v)
 
     def fail(flag):
@@ -2695,6 +2823,10 @@ def _vector_fun(I, fh, shape, extra=()):
         try:
             out = farr(f(x, *extra)).ravel(order="F")
         except FloatingPointError:
+            raise _SolverNaN from None
+        except Unsupported as exc:
+            if exc.kind != "complex":
+                raise
             raise _SolverNaN from None
         if not np.all(np.isfinite(out)):
             raise _SolverNaN
@@ -2819,7 +2951,7 @@ def _eval(I, a, nout):
     return I.run_parsed(body, sc, nout)
 
 
-@bi("evalin", "assignin", "evalc", "run", "source", "dynare", "inputname", "builtin", "cellfun", "arrayfun",
+@bi("evalin", "assignin", "evalc", "source", "dynare", "inputname", "builtin", "cellfun", "arrayfun",
     "structfun", "str2num")
 def _dynamic(I, a, nout):
     raise Unsupported("this function manipulates workspaces or runs code that cannot be analysed", "eval")
@@ -2862,8 +2994,38 @@ MUTATORS = {"evalin", "assignin", "run", "source", "dynare", "set_shock_skew_val
             # Dynare estimation routines that write their estimates into M_.params through the global
             "sur", "surgibbs", "dyn_ols", "olseqs", "pooled_ols", "pooled_fgls", "olsgibbs", "dynare_estimation_init",
             "set_prior", "osr1", "simulated_moments_estimation", "prior_posterior_statistics"}
+#: Result of a scan of Dynare 7.2's matlab/ tree (see tools/sweep_matlab.py, command "mutators"):
+#: every function that declares ``global M_`` or returns M_ and assigns M_.params, M_.Sigma_e, M_.H,
+#: M_.Correlation_matrix or M_.Skew_e, or replaces M_, plus the functions that call one of those
+#: writing through the global.  Dotted names are covered by MUTATOR_PACKAGES.
+MUTATORS |= {"discretionary_policy", "draw_init_state_from_smoother", "dsge_conditional_likelihood_1", "dsge_likelihood",
+             "dyn_ols", "dynare_estimation", "dynare_estimation_1", "dynare_estimation_init", "evaluate_smoother",
+             "global_initialization", "non_linear_dsge_likelihood", "olsgibbs", "pooled_fgls", "pooled_ols", "prior",
+             "set_all_parameters", "set_local_param_value", "set_measurement_errors", "set_param_value",
+             "set_param_value_locally", "set_parameters", "set_parameters_locally", "set_prior", "set_shock_skew_value",
+             "set_shock_stderr_value", "set_shock_stderr_value_locally", "shock_decomposition",
+             "solve_model_for_online_filter", "sur", "surgibbs", "write_latex_prior_table"}
+# (steady and stoch_simul, also found by the scan, only write back what the steady state sets: SOLVE_FUNCS)
 #: packages whose functions write into M_ (pac.estimate.nls, var_expectation.update, ...)
-MUTATOR_PACKAGES = {"pac", "var_expectation", "mom", "estimate", "olsgibbs", "occbin", "identification", "gsa"}
+MUTATOR_DOTTED = {"backward_model.initialize", "cli.evaluate.smoother", "estimate.nls", "gsa.set_shocks_param",
+                  "mom.run", "occbin.IVF_posterior", "occbin.kalman_update_algo_1", "occbin.kalman_update_algo_3",
+                  "occbin.kalman_update_engine", "occbin.match_function", "occbin.setup", "osr.run",
+                  "pac.estimate.iterative_ols", "pac.estimate.nls", "pac.mce.parameters", "pac.update.expectation",
+                  "pac.update.parameters", "pac.update.equation", "var_expectation.update",
+                  "var_expectation.update_parameters",
+                  "gsa.run", "gsa.map_calibration", "gsa.stability_mapping"}      # M_.params from resol()
+MUTATOR_PACKAGES = {d.split(".")[0] for d in MUTATOR_DOTTED}
+
+
+def _dotted(n):
+    """'pac.estimate.nls' for the syntax tree of that name, else None."""
+    parts = []
+    while type(n) is Field and n.name is not None:
+        parts.append(n.name)
+        n = n.base
+    if type(n) is not Id:
+        return None
+    return ".".join([n.name] + parts[::-1])
 #: Dynare functions whose M_/M_.params output only reflects what the steady-state file changed
 SOLVE_FUNCS = {"resol", "evaluate_steady_state", "dynare_resolve", "stoch_simul", "steady_", "resid", "check",
                "evaluate_steady_state_file", "dyn_first_order_solver", "stochastic_solvers", "compute_decision_rules"}
@@ -2989,8 +3151,9 @@ class Interpreter:
     def setvar(self, sc, name, value):
         if name in sc.global_names:
             if name in _HOST_GLOBALS and self.host is not None:
-                if value is not self.globals.get(name):
-                    raise Unsupported(f"replacing {name} as a whole")
+                g = self.globals.get(name)
+                if value is not g:
+                    g.restore(value)             # M_ = M_saved: accepted for a copy made earlier
                 return
             self.globals[name] = value
         else:
@@ -3013,7 +3176,8 @@ class Interpreter:
         v = sc.vars.get(n.name, _MISSING)
         if v is _MISSING:
             if n.name in sc.global_names and n.name in self.globals:
-                return self.globals[n.name]
+                g = self.globals[n.name]
+                return g.snapshot() if hasattr(g, "snapshot") else g      # M_ used as a value is a copy
             if n.name == "nargin" and sc.nargin is not None:
                 return _F(sc.nargin)
             if n.name == "nargout" and sc.nargout is not None:
@@ -3098,7 +3262,7 @@ class Interpreter:
         for nm in names:
             v = self.getvar(sc, nm)
             if v is not _MISSING:
-                env[nm] = v
+                env[nm] = v.snapshot() if hasattr(v, "snapshot") else v      # captured by value
         return Handle(self, params=n.params, body=n.body, env=env, files=sc.funcs)
 
     def _fhandle(self, n, sc):
@@ -3148,6 +3312,8 @@ class Interpreter:
             if not r:
                 raise MatlabError("function handle returns no value")
             return r[0]
+        if hasattr(v, "snapshot"):
+            v = v.snapshot()
         args = self.index_args(v, n.args, sc)
         return index_brace(v, args) if n.brace else index(v, args)
 
@@ -3156,6 +3322,8 @@ class Interpreter:
             return v.get_field(name)
         if isinstance(v, Struct):
             if name not in v:
+                if isinstance(v, Snapshot):
+                    v.has_field(name)
                 raise MatlabError(f"reference to non-existent field '{name}'")
             return v[name]
         if isinstance(v, Tainted):
@@ -3164,9 +3332,16 @@ class Interpreter:
 
     def _field(self, n, sc):
         b = n.base
-        if type(b) is Id and self.getvar(sc, b.name) is _MISSING:
-            raise Unsupported(f"unknown variable, package or object '{b.name}'", "results" if b.name in _HOST_GLOBALS else "function")
-        v = self.ev(b, sc)
+        if type(b) is Id:
+            v = self.getvar(sc, b.name)
+            if v is _MISSING:
+                if self.host is not None and b.name in self.host.model._ip and not self.open_world:
+                    raise MatlabError(f"'{b.name}' undefined")
+                raise Unsupported(f"unknown variable, package or object '{b.name}'", "results" if b.name in _HOST_GLOBALS else "function")
+            if type(v) is Tainted:
+                raise Unsupported(f"'{b.name}' is unknown: {v.why}", "tainted")
+        else:
+            v = self.ev(b, sc)
         name = n.name if n.name is not None else self.ev(n.dyn, sc)
         if not isinstance(name, str):
             raise MatlabError("dynamic field name must be a char array")
@@ -3225,6 +3400,9 @@ class Interpreter:
             return r if type(r) is list else [r]
         if name in LAZY:
             return LAZY[name](self, [], sc, nargout) or []
+        if self.host is not None and name in self.host.model._ip and not self.open_world:
+            # a parameter exists as a MATLAB variable only once it has been given a value
+            raise MatlabError(f"'{name}' undefined (the parameter has no value yet)")
         raise Unsupported(f"unknown function or variable '{name}'", "function")
 
     def call_user(self, f, funcs, args, nargout):
@@ -3344,7 +3522,10 @@ class Interpreter:
                     return self.exec_block(body, sc)
             return self.exec_block(s.orelse, sc)
         if t is For:
-            for v in self.for_values(s, sc):
+            values = self.for_values(s, sc)
+            if not values:
+                self.setvar(sc, s.var, self.empty_loop_value)      # MATLAB: the variable becomes empty
+            for v in values:
                 self.tick()
                 self.setvar(sc, s.var, v)
                 try:
@@ -3389,6 +3570,7 @@ class Interpreter:
 
     def for_values(self, s, sc):
         v = self.ev(s.e, sc)
+        self.empty_loop_value = np.zeros((1, 0)) if not (isinstance(v, np.ndarray) and v.shape == (0, 0)) else np.zeros((0, 0))
         if isinstance(v, Cell):
             return [Cell([x], (1, 1)) for x in v.items] if v.shape[0] <= 1 else _unsup("for over a cell matrix")
         if isinstance(v, str):
@@ -3478,6 +3660,12 @@ class Interpreter:
             return None
         if name == "load":
             return self.load_file(args, sc)
+        if name == "run":
+            self.scope_stack.append(sc)
+            try:
+                return BUILTINS["run"](self, [" ".join(args).strip("'\"")], 0)
+            finally:
+                self.scope_stack.pop()
         if name == "disp" or name in LAZY and LAZY[name] is _noop:
             return None
         if name in LAZY:
@@ -3525,7 +3713,7 @@ class Interpreter:
                 cur = Struct()
             if not isinstance(cur, Struct):
                 raise MatlabError(f"field assignment to a {_class(cur)} value")
-            s = Struct(cur)
+            s = cur.clone()
             s[name] = value if last else self._assign_chain(s.get(name), chain, i + 1, value, sc)
             return s
         args = self.index_args(cur, acc.args, sc)
@@ -3597,6 +3785,30 @@ class _HostM:
     def field_names(self):
         return ["params", "Sigma_e", "fname", "dname"] + list(self._SCALARS) + list(self._NAMES)
 
+    def snapshot(self):
+        snap = Snapshot()
+        for f in self.field_names():
+            snap[f] = self.get_field(f)
+        return snap
+
+    def restore(self, value):
+        if not isinstance(value, Snapshot) or value.kind != "M_":
+            raise Unsupported("replacing M_ by something that is not a copy of M_")
+        cur = self.snapshot_static()
+        for f, v in value.items():
+            if f in ("params", "Sigma_e"):
+                continue
+            if f not in cur or not (v is cur[f] or (is_num(v) and is_num(cur[f]) and np.array_equal(arr(v), arr(cur[f])))
+                                    or (isinstance(v, str) and v == cur[f])):
+                raise Unsupported(f"M_ is replaced by a struct whose field '{f}' was changed")
+        if set(cur) - set(value) - {"params", "Sigma_e"}:
+            raise Unsupported("M_ is replaced by a struct with fewer fields")
+        self.set_field("params", value["params"])
+        self.set_field("Sigma_e", value["Sigma_e"])
+
+    def snapshot_static(self):
+        return {f: self.peek_field(f, raw=True) for f in self.field_names() if f not in ("params", "Sigma_e")}
+
     def has_field(self, name):
         if name in self.field_names():
             return True
@@ -3611,7 +3823,9 @@ class _HostM:
             if h.tainted and not raw:
                 bad = [m.param_names[i] for i in sorted(h.tainted)][:5]
                 raise Unsupported(f"M_.params: the value of {bad} is unknown ({h.taint_why})", "tainted")
-            return h.params.reshape(-1, 1).copy() if h.params.size != 1 else _F(h.params[0])
+            if h.params.size == 1:
+                return _F(h.params[0])
+            return h.params.reshape(1, -1).copy() if h.params_row else h.params.reshape(-1, 1).copy()
         if name == "Sigma_e":
             if h.sigma_tainted and not raw:
                 raise Unsupported(f"M_.Sigma_e is unknown ({h.taint_why})", "tainted")
@@ -3629,10 +3843,16 @@ class _HostM:
 
     def set_field(self, name, value):
         h = self.h
+        if h.readonly:
+            raise Unsupported("a steady-state file or helper function writes to the global M_")
         if name == "params":
             v = farr(value)
-            if v.shape != (h.params.size, 1) and not (v.size == 1 and h.params.size == 1):
-                raise MatlabError(f"M_.params must remain a {h.params.size}x1 vector (assigned {v.shape[0]}x{v.shape[1]})")
+            if v.shape == (1, h.params.size) and h.params.size > 1:
+                h.params_row = True          # MATLAB keeps the row; Dynare reads it element by element
+            elif v.shape == (h.params.size, 1) or (v.size == 1 and h.params.size == 1):
+                h.params_row = False
+            else:
+                raise MatlabError(f"M_.params must remain a vector of {h.params.size} elements (assigned {v.shape[0]}x{v.shape[1]})")
             h.params[:] = v.ravel()
             h.tainted.clear()
             h.nwrites += 1
@@ -3649,11 +3869,13 @@ class _HostM:
 
     def assign_sub(self, name, args, value):
         h = self.h
+        if h.readonly:
+            raise Unsupported("a steady-state file or helper function writes to the global M_")
         if name == "params":
             n = h.params.size
-            col = h.params.reshape(-1, 1)
+            col = h.params.reshape(1, -1) if h.params_row else h.params.reshape(-1, 1)
             new = arr(assign_index(col, args, value))
-            if new.shape != (n, 1):
+            if new.shape != col.shape:
                 raise MatlabError("M_.params must not change size")
             if len(args) == 1:
                 k = _lin_index(args[0], n)
@@ -3677,34 +3899,78 @@ class _HostM:
 class _HostOptions:
     """``options_``: values assigned by the .mod file are stored, nothing is acted upon."""
 
+    #: Dynare 7.2 defaults (matlab/default_option_values.m) that do not depend on the command line;
+    #: they are valid until a Dynare command runs, since commands write their options into options_
+    DEFAULTS = {"order": 2.0, "irf": 40.0, "periods": 0.0, "drop": 100.0, "replic": 50.0, "ar": 5.0, "solve_algo": 4.0,
+                "solve_tolf": float(np.finfo(float).eps) ** (1 / 3), "solve_tolx": float(np.finfo(float).eps) ** (2 / 3),
+                "hp_filter": 0.0, "pruning": False, "loglinear": False, "linear": False, "nocorr": False,
+                "nomoments": False, "k_order_solver": False}
+
     def __init__(self, store):
-        self.store = store
+        self.store = store              # model.matlab_options: what the .mod file assigned
+        self.unknown = set()            # fields a Dynare command has overwritten since
+        self.defaults_valid = True
 
     def field_names(self):
         return list(self.store)
 
+    def snapshot(self):
+        snap = Snapshot({k: v for k, v in self.store.items() if k not in self.unknown})
+        snap.kind = "options_"
+        return snap
+
+    def restore(self, value):
+        if not isinstance(value, Snapshot) or value.kind != "options_":
+            raise Unsupported("replacing options_ by something that is not a copy of options_")
+        self.store.clear()
+        self.store.update(value)
+        self.unknown.clear()
+
     def has_field(self, name):
-        if name in self.store:
+        if name in self.store or (self.defaults_valid and name in self.DEFAULTS):
             return True
         raise Unsupported(f"pydyn does not know Dynare's default for options_.{name}", "results")
 
+    def forget(self, options):
+        """A Dynare command was given these options: the fields of options_ it sets are no longer known."""
+        for key in options:
+            self.unknown.add(str(key).split(".")[0])
+
     def get_field(self, name):
+        if name in self.unknown:
+            raise Unsupported(f"options_.{name} was changed by a Dynare command; its value is not known to pydyn", "results")
         if name in self.store:
             return self.store[name]
+        if self.defaults_valid and name in self.DEFAULTS:
+            v = self.DEFAULTS[name]
+            return np.bool_(v) if isinstance(v, bool) else _F(v)
         raise Unsupported(f"options_.{name} has not been set in the .mod file (Dynare's defaults are not known to pydyn)", "results")
 
     def peek_field(self, name, raw=False):
+        if name in self.unknown:
+            raise Unsupported(f"options_.{name} was changed by a Dynare command; its value is not known to pydyn", "results")
         return self.store.get(name)
 
     def set_field(self, name, value):
         self.store[name] = value
+        self.unknown.discard(name)
 
 
 class _HostOO:
+    def snapshot(self):
+        raise Unsupported("oo_ (results) is not available while the model is loaded", "results")
+
+    def restore(self, value):
+        raise Unsupported("assignment to oo_", "results")
+
     def has_field(self, name):
         raise Unsupported("oo_ (results) is not available while the model is loaded", "results")
 
+    session = None
+
     def get_field(self, name):
+        if self.session is not None and name in ("steady_state", "exo_steady_state"):
+            return self.session.oo_vector(name)
         raise Unsupported(f"oo_.{name}: results are not available while the model is loaded", "results")
 
     def peek_field(self, name, raw=False):
@@ -3722,6 +3988,8 @@ class Host:
         self.params = model.params if live else np.array(model.params if params is None else params, float)
         self.sigma = model.Sigma_e if live else np.array(model.Sigma_e, float)
         self.sigma_tainted = False
+        self.params_row = False
+        self.readonly = False           # True for the M_ a steady-state file or helper sees through "global"
         self.tainted = set()            # indices of parameters whose value in Dynare is unknown to pydyn
         self.taint_why = ""
         self.nwrites = 0
@@ -3737,6 +4005,8 @@ class Host:
 
     def set_param(self, name, value):
         i = self._pidx(name, "set_param_value")
+        if self.readonly:
+            raise Unsupported("a steady-state file or helper function calls set_param_value")
         self.params[i] = scalar(value, "parameter value")
         self.tainted.discard(i)
         self.nwrites += 1
@@ -3751,6 +4021,8 @@ class Host:
         i = self.model._ix.get(name)
         if i is None:
             raise MatlabError(f"Shock name {name} doesn't exist")
+        if self.readonly:
+            raise Unsupported("a steady-state file or helper function calls set_shock_stderr_value")
         self.sigma[i, i] = scalar(value) ** 2
         self.nwrites += 1
 
@@ -3770,6 +4042,7 @@ class _Info:
     def __init__(self):
         self.writes, self.calib, self.dyn, self.all, self.paths = set(), None, [], False, False
         self.has_return = self.has_break = False
+        self.solves = False
         self.count = 0
 
 
@@ -3782,8 +4055,8 @@ class Workspace(dict):
 
     def __setitem__(self, k, v):
         super().__setitem__(k, v)
-        if type(v) in (np.float64, np.bool_) and k not in self._m._ip:
-            self._m.workspace[k] = float(v)
+        if type(v) in (np.float64, np.bool_):
+            self._m.workspace[k] = _F(v)         # numpy scalars: 1/x with x = 0 is Inf, as in MATLAB
         else:
             self._m.workspace.pop(k, None)
 
@@ -3822,6 +4095,9 @@ COMPUTE_KINDS = {"steady", "check", "stoch_simul", "estimation", "osr", "forecas
                  "ms_sbvar_variance_decomposition", "sbvar", "prior_posterior_function", "generate_irfs",
                  "perfect_foresight_with_expectation_errors_setup", "perfect_foresight_with_expectation_errors_solver",
                  "heterogeneity_solve", "heterogeneity_simulate", "heterogeneity_compute_steady_state"}
+#: Dynare statements that leave options_ as it is
+_OPTION_FREE_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks", "native", "verbatim",
+                      "estimated_params", "estimated_params_init", "estimated_params_bounds", "varobs"}
 #: Dynare statements whose expressions pydyn evaluates (they may refer to MATLAB variables)
 _EVALUATED_KINDS = {"param_init", "initval", "endval", "shocks", "load_params_and_steady_state"}
 _ESTIMATING = {"estimation", "method_of_moments", "osr", "dynare_sensitivity", "sensitivity", "ms_sbvar_estimation"}
@@ -3878,6 +4154,13 @@ class ModSession:
         self.current = None
         self.in_try = 0
         self._ss_params = None
+        self.any_taint = False
+        self._ss_warned = False
+        self.oo_numeric = False
+        self.host.oo.session = self
+        self.oo_written = set()         # variables given a value by initval/endval since the last steady
+        self.pending = None             # (params, oo) of a 'steady' whose result has not been needed yet
+        self.oo_failed = None           # why the steady state of an earlier 'steady' is unknown
 
     # ---- reporting
     def error(self, msg):
@@ -3904,8 +4187,8 @@ class ModSession:
                  "display": "display", "block": "blocks with an unknown condition", "feature": "unsupported features"}
         parts = ", ".join(f"{n} {label.get(k, k)}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
         first = "; ".join(f"{t!r} ({w})" for t, _, w, _ in self.skipped[:3])
-        warnings.warn(f"MATLAB code in the .mod file: {sum(kinds.values())} statement(s) not executed ({parts}). None of them "
-                      f"writes to M_ or to the parameters. First: {first}. Full list: model.matlab_skipped")
+        warnings.warn(f"MATLAB code in the .mod file: {sum(kinds.values())} statement(s) not executed ({parts}). In them pydyn "
+                      f"found no write to M_ or to a parameter; variables they assign are treated as unknown. First: {first}. Full list: model.matlab_skipped")
 
     # ---- static analysis
     def _scan_expr(self, e, info, seen):
@@ -3920,9 +4203,10 @@ class ModSession:
                 name = n.base.name
             elif type(n) is Id:
                 name = n.name
-            elif type(n) is Field and type(n.base) is Id and n.base.name in MUTATOR_PACKAGES \
-                    and not self.I.has_var(self.sc, n.base.name):
-                info.calib = info.calib or f"it calls a function of the Dynare package '{n.base.name}'"
+            elif type(n) is Field:
+                path = _dotted(n)
+                if path in MUTATOR_DOTTED and not self.I.has_var(self.sc, path.split(".")[0]):
+                    info.calib = info.calib or f"it calls the Dynare function {path}, which writes to M_"
             if name is None or self.I.has_var(self.sc, name):
                 continue
             if name == "eval" and type(n) is Index and len(n.args) == 1 and type(n.args[0]) is Str:
@@ -3936,6 +4220,8 @@ class ModSession:
                 continue
             if name == "load":
                 info.all = True
+            if name in SOLVE_FUNCS:
+                info.solves = True
             if name in ("clear", "clearvars"):
                 info.calib = info.calib or "it clears variables in a way pydyn cannot follow"
             if name in MUTATORS:
@@ -3994,19 +4280,18 @@ class ModSession:
                 if s.name in ("dynare", "run") or (s.name in ("clear", "clearvars") and s.args.strip()):
                     info.calib = info.calib or f"it runs '{' '.join(s.text.split())[:60]}'"
             elif t is Unparsed:
+                # one statement that could not be parsed: everything it might write is assumed written
                 txt = re.sub(r"'[^']*'", "''", s.text)
+                ids = set(re.findall(r"(?<![\w.])([A-Za-z]\w*)", txt))
                 assign = re.search(r"(?<![=<>~!])=(?!=)", txt)
-                if (assign and re.search(r"\bM_\b", txt[:assign.start()])) or re.search(r"\boo_\.(exo_|exo_det_)?steady_state\b[^=]*=(?!=)", txt) \
-                        or any(re.search(rf"\b{m}\b", txt) for m in MUTATORS):
+                plain = assign is not None and not re.search(r"\+\+|--|[-+*/^|&\\]=", txt) and "unterminated" not in s.why
+                target = txt[:assign.start()] if plain else txt
+                if re.search(r"\b(M_|oo_|global|persistent)\b", target) or ids & MUTATORS or any(d in txt for d in MUTATOR_DOTTED):
                     info.calib = info.calib or "it cannot be parsed and may write to the model"
-                if assign:
-                    lhs = txt[:assign.start()]
-                    info.writes.update(n for n in re.findall(r"(?<![\w.])([A-Za-z_]\w*)", re.sub(r"\([^()]*\)|\{[^{}]*\}", "", lhs))
-                                       if n not in _HOST_GLOBALS)
-                    if re.search(r"\boo_\b", lhs):
-                        info.paths = True
-                elif re.fullmatch(r"\s*[A-Za-z_]\w*\s*;?\s*", txt):
-                    info.all = True
+                written = set(re.findall(r"(?<![\w.])([A-Za-z]\w*)", target)) - set(_HOST_GLOBALS)
+                info.writes.update(written)
+                if not plain and (not assign) and re.fullmatch(r"\s*[A-Za-z]\w*\s*", txt):
+                    info.all = True              # a bare name: possibly a script
             elif t is If:
                 for c, b in s.clauses:
                     self._scan_expr(c, info, seen)
@@ -4051,6 +4336,7 @@ class ModSession:
         info.paths |= sub.paths
         info.count += sub.count
         info.has_return |= sub.has_return
+        info.solves |= sub.solves
         if not loop:
             info.has_break |= sub.has_break
 
@@ -4062,6 +4348,10 @@ class ModSession:
     # ---- taints
     def taint(self, info, why):
         ws = self.sc.vars
+        self.any_taint = True
+        if info.solves and self.ss_params():
+            self.host.tainted |= self.ss_params()
+            self.host.taint_why = "a Dynare solution function was called in code that was not executed"
         if info.all:
             self.I.open_world = True
             for k in list(ws):
@@ -4120,12 +4410,15 @@ class ModSession:
     # ---- execution
     def run(self, statements):
         self.statements = statements
-        lines = [st["string"] if st["statementName"] in ("native", "verbatim") else ("dyn", k)
-                 for k, st in enumerate(statements)]
-        try:
-            body, funcs = parse(lines)
-        except ParseError as exc:
-            raise self.error(f"MATLAB code in the .mod file cannot be parsed: {exc}") from None
+        if any(st["statementName"] in ("native", "verbatim") for st in statements):
+            lines = [st["string"] if st["statementName"] in ("native", "verbatim") else ("dyn", k)
+                     for k, st in enumerate(statements)]
+            try:
+                body, funcs = parse(lines)
+            except ParseError as exc:
+                raise self.error(f"MATLAB code in the .mod file cannot be parsed: {exc}") from None
+        else:                           # no MATLAB at all: nothing to parse
+            body, funcs = [Dyn(k, None) for k in range(len(statements))], {}
         self.sc.funcs = funcs
         with np.errstate(**_ERRSTATE):
             for i, s in enumerate(body):
@@ -4146,6 +4439,8 @@ class ModSession:
                     raise self.error(f"MATLAB code in the .mod file cannot be interpreted at {self._where()}: {u}") from None
                 except MATLAB_ERRORS as exc:
                     raise self.error(f"MATLAB error in the .mod file at {self._where()}: {exc}") from None
+                except ArithmeticError as exc:
+                    raise self.error(f"MATLAB code in the .mod file cannot be interpreted at {self._where()}: {exc}") from None
         self.model.matlab_skipped = [(t, k, w) for t, k, w, _ in self.skipped]
         self.warn()
 
@@ -4167,6 +4462,9 @@ class ModSession:
         for d in info.dyn:
             kind = self.statements[d.k]["statementName"]
             self.after_compute(kind, f"'{kind}' inside a block that was not executed")
+            self.host.options.forget(self.statements[d.k].get("options", {}))
+            if kind == "steady":
+                self.pending, self.oo_failed = None, "a 'steady' statement is inside a block that was not executed"
         self.record(s.text, "block", u, info.count)
         if info.has_return or (info.has_break and type(s) not in (For, While)):
             raise _Escape(u)
@@ -4193,7 +4491,9 @@ class ModSession:
                     info = self.analyze([s])
                     info.calib = None
                     self.taint(info, f"output of {s.rhs.base.name}")
-                    self.after_compute("steady", f"{s.rhs.base.name} was called")
+                    self.on_solve(False)                    # what the call writes back into M_.params
+                    if info.paths:
+                        self.pending, self.oo_failed = None, f"oo_ was assigned from {s.rhs.base.name}"
                     return self.record(s.text, "function", f"{s.rhs.base.name} is not run while loading")
                 return I.exec_simple(s, sc)
             except Unsupported as u:
@@ -4228,6 +4528,8 @@ class ModSession:
                 values = I.for_values(s, sc)
             except Unsupported as u:
                 return self.undecidable(s, u)
+            if not values:
+                sc.vars[s.var] = I.empty_loop_value
             for v in values:
                 I.tick()
                 sc.vars[s.var] = v
@@ -4321,18 +4623,153 @@ class ModSession:
             self.est_params |= {n for n in re.findall(r"[A-Za-z_]\w*", _json_text(st)) if n in m._ip}
         elif kind == "estimated_params_remove":
             pass
-        if kind not in DECL_KINDS:
+        if kind not in _OPTION_FREE_KINDS:
+            self.host.options.defaults_valid = False       # Dynare commands change options_
+            self.host.options.forget(st.get("options", {}))
+        if kind == "steady":
+            self.on_solve(True)
+            self.shadow_results(kind)
+        elif kind == "stoch_simul":
+            self.on_solve(False)
+            self.shadow_results(kind)
+        elif kind in ("check", "resid"):
+            pass                                            # these do not write M_.params back
+        elif kind not in DECL_KINDS:
             self.after_compute(kind, f"it may have been changed by '{kind}'")
 
-    def eval_value(self, text):
-        """Value of an expression in a Dynare statement that plain Python evaluation could not handle
-        (it indexes a MATLAB matrix or calls a MATLAB function)."""
+    # ---- what 'steady' and 'stoch_simul' leave in M_ and oo_
+    def _steady_at(self, params, oo):
+        """Steady state for the calibration and starting values Dynare had at a 'steady' statement."""
+        from .steady import steady_state
+        m = self.model
+        saved = m.initval
+        m.initval = dict(oo)
         try:
-            body, funcs = parse(str(text))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return steady_state(m, params=np.array(params, float),
+                                    exo=np.array([oo.get(v, 0.0) for v in m.exo_names], float))
+        finally:
+            m.initval = saved
+
+    def on_solve(self, is_steady):
+        """Dynare's steady and stoch_simul store in M_.params the parameters the steady state sets;
+        steady also stores the steady state in oo_.steady_state.  Parameters are updated now (an
+        analytical steady state is cheap); the steady state itself is only computed if a later
+        statement refers to it."""
+        m, h = self.model, self.host
+        idx = self.ss_params()
+        if is_steady and self.pending is not None and not set(m.endo_names) <= self.oo_written:
+            self.resolve()              # the new computation starts from the previous steady state
+        if idx:
+            try:
+                ys, p = self._steady_at(m.params, m._oo)
+            except Exception as exc:  # noqa: BLE001 - any failure leaves these parameters unknown
+                why = f"{type(exc).__name__}: {str(exc)[:150]}"
+                h.tainted |= idx
+                h.taint_why = f"the steady state could not be computed while loading ({why})"
+                if is_steady:
+                    self.pending, self.oo_failed = None, h.taint_why
+                    self.oo_written = set()
+                names = [m.param_names[i] for i in sorted(idx)]
+                if not self._ss_warned:
+                    self._ss_warned = True
+                    warnings.warn(f"the steady state could not be computed while loading ({why}): the parameters it sets "
+                                  f"({names[:8]}{'...' if len(names) > 8 else ''}) keep the values of the .mod file, "
+                                  "where Dynare's M_.params holds the computed ones")
+                return
+            for i in idx:
+                m.params[i] = p[i]
+            h.tainted -= idx
+            h.nwrites += 1
+            if is_steady:
+                for name, v in zip(m.endo_names, ys):
+                    m._oo[name] = float(v)
+                self.pending, self.oo_failed, self.oo_written, self.oo_numeric = None, None, set(), False
+        elif is_steady:
+            self.pending = (m.params.copy(), dict(m._oo))
+            self.oo_failed, self.oo_written, self.oo_numeric = None, set(), False
+
+    def resolve(self):
+        """Compute the steady state of the pending 'steady' statement."""
+        m = self.model
+        params, oo = self.pending
+        self.pending = None
+        if m.steady_state_fn is None and m.steady_state_model is None and m.steady_state_file is None:
+            self.oo_numeric = True      # values are only as accurate as the nonlinear solver
+        try:
+            ys, _ = self._steady_at(params, oo)
+        except Exception as exc:  # noqa: BLE001
+            self.oo_failed = f"{type(exc).__name__}: {str(exc)[:150]}"
+            return
+        for name, v in zip(m.endo_names, ys):
+            if name not in self.oo_written:
+                m._oo[name] = float(v)
+
+    def oo_vector(self, name):
+        """oo_.steady_state / oo_.exo_steady_state for MATLAB code, when pydyn knows them exactly:
+        the initval/endval values, or a steady state given by a steady_state_model block or file.
+        A steady state found numerically is only known up to the solver's tolerance: refused."""
+        m = self.model
+        if name == "exo_steady_state":
+            return ret(np.array([m._oo.get(v, 0.0) for v in m.exo_names], float).reshape(-1, 1))
+        if self.pending is not None and not set(m.endo_names) <= self.oo_written:
+            analytical = m.steady_state_fn is not None or m.steady_state_model is not None or m.steady_state_file is not None
+            if not analytical:
+                raise Unsupported("oo_.steady_state after 'steady': a numerically computed steady state is not "
+                                  "reproduced to the last digit", "results")
+            self.resolve()
+        if self.oo_failed or self.oo_numeric:
+            raise Unsupported(f"oo_.steady_state is not known exactly ({self.oo_failed or 'computed numerically'})", "results")
+        return ret(np.array([m._oo.get(v, 0.0) for v in m.endo_names], float).reshape(-1, 1))
+
+    def oo_value(self, name):
+        """oo_.steady_state(name) as a Dynare statement would read it now."""
+        if name not in self.oo_written:
+            if self.pending is not None:
+                self.resolve()
+            if self.oo_failed:
+                raise self.error(f"an initval/endval block refers to '{name}' after 'steady': in Dynare that is the "
+                                 f"computed steady state, which pydyn could not compute ({self.oo_failed})")
+        return _F(self.model._oo.get(name, 0.0))
+
+    def shadow_results(self, kind):
+        """Dynare commands create workspace variables named after the model's variables."""
+        ws, m = self.sc.vars, self.model
+        for k in list(ws):
+            if k in m._ie or k in m._ix or ("_" in k and k.rsplit("_", 1)[0] in m._ie):
+                if type(ws[k]) is not Tainted and k not in m._ip:
+                    ws[k] = Tainted(f"Dynare's '{kind}' may overwrite this workspace variable")
+                    self.any_taint = True
+
+    def eval_value(self, text, local=None):
+        """Value of an expression in a Dynare statement, computed by the MATLAB interpreter (it
+        indexes a MATLAB matrix, calls a MATLAB function, or its plain evaluation was not finite).
+        Parameter names mean M_.params, as in the driver file Dynare writes."""
+        m, h = self.model, self.host
+        try:
+            text = str(text)
+            cached = _EVAL_CACHE.get(text)
+            body, funcs = cached if cached is not None else parse(text)
             if funcs or len(body) != 1 or type(body[0]) is not ExprStmt:
                 raise ParseError("not an expression")
+            if cached is None and len(_EVAL_CACHE) < 5000:
+                _EVAL_CACHE[text] = (body, funcs)
+            sc = Scope(dict(self.sc.vars), funcs=self.sc.funcs)
+            sc.global_names = set(_HOST_GLOBALS)
+            for name in {n.name for n in walk(body[0].e) if type(n) is Id}:
+                if name in m._ip:
+                    if m._ip[name] in h.tainted:
+                        raise Unsupported(f"the value of parameter {name} is unknown ({h.taint_why})", "tainted")
+                    sc.vars[name] = _F(m.params[m._ip[name]])
+            for k, v in (local or {}).items():
+                sc.vars[k] = _F(v)
             with np.errstate(**_ERRSTATE):
-                return float(scalar(self.I.ev(body[0].e, self.sc), "parameter value"))
+                self.I.scope_stack.append(sc)
+                try:
+                    return float(scalar(self.I.ev(body[0].e, sc), "value"))
+                finally:
+                    self.I.scope_stack.pop()
         except (ParseError, Unsupported) as exc:
             raise self.error(f"cannot evaluate {str(text)[:80]!r}: {exc}") from None
         except MATLAB_ERRORS as exc:
@@ -4429,8 +4866,8 @@ class MatlabFunction:
         if self.mode is None:
             self._prepare()
         n = _NARGOUT[-1] or 1
-        with np.errstate(**_ERRSTATE):
-            if self.mode == "compiled":
+        if self.mode == "compiled":
+            with np.errstate(**_ERRSTATE_COMPILED):
                 try:
                     out = self._fn(*[_F(a) for a in args])
                     out = out if isinstance(out, tuple) else (out,)
@@ -4438,13 +4875,39 @@ class MatlabFunction:
                         raise MatlabError(f"{self.name}: output argument {len(out) + 1} is not assigned")
                     out = [_to_python(v) for v in out[:n]]
                     return out[0] if _NARGOUT[-1] is None else tuple(out)
+                except ArithmeticError:
+                    pass                # 0/0, overflow, sqrt(-1), ...: the interpreter decides (this call only)
                 except _FALLBACK as exc:
                     self.mode, self.why_interpreted = "interpreted", f"{type(exc).__name__}: {exc}"
-            I = self._interp
+        with np.errstate(**_ERRSTATE):
+            host = None
+            if _CONTEXT:                # called while a steady state is computed: "global M_" is readable
+                host = Host(_CONTEXT[-1][0], params=_CONTEXT[-1][1])
+                host.readonly = True
+            I = Interpreter(self.path.parent, host) if host is not None else self._interp
             I.steps = 0
-            out = I.call_user(self._unit.main, self._unit.funcs, [_to_matlab(a) for a in args], n)
+            try:
+                out = I.call_user(self._unit.main, self._unit.funcs, [_to_matlab(a) for a in args], n)
+            except ArithmeticError as exc:
+                raise Unsupported(f"{self.name}: arithmetic error in the interpreter: {exc}") from None
             out = [_to_python(v) for v in out]
             return out[0] if _NARGOUT[-1] is None else tuple(out)
+
+
+_CONTEXT = []      # (model, params) while a steady state is being computed
+
+
+class steady_context:
+    """Context manager used by pydyn.steady: MATLAB helpers called inside see these parameters as M_.params."""
+
+    def __init__(self, model, params):
+        self.item = (model, params)
+
+    def __enter__(self):
+        _CONTEXT.append(self.item)
+
+    def __exit__(self, *exc):
+        _CONTEXT.pop()
 
 
 #: exceptions of translated code that mean "the translation's assumptions do not hold": the
@@ -4470,9 +4933,8 @@ class SteadyStateFile:
             raise Unsupported(f"{self.path.name} cannot be parsed: {exc}", "syntax") from None
         self._unit = Unit(self.path, body, funcs)
         main = self._unit.main
-        if main is None or len(main.outs) not in (2, 3) or len(main.ins) < 2:
-            raise Unsupported(f"{self.path.name} is not a steady-state function "
-                              "([ys, params, check] = f(ys, exo, M_, options_) or [ys, check] = f(ys, exo))", "function")
+        if main is None:
+            raise Unsupported(f"{self.path.name} is not a function file", "function")
         try:
             self.source = _Translator(self._unit, self.path.name).steady_state_module()
             self._fn = _compile(self.source, self.path)["steady_state"]
@@ -4484,37 +4946,38 @@ class SteadyStateFile:
         from .steady import SteadyStateError
         if self.mode is None:
             self._prepare()
-        with np.errstate(**_ERRSTATE):
-            if self.mode == "compiled":
+        if self.mode == "compiled":
+            with np.errstate(**_ERRSTATE_COMPILED):
                 try:
                     return self._fn(model, params, exo)
+                except ArithmeticError:
+                    pass                # 0/0, overflow, sqrt(-1), ...: the interpreter decides (this call only)
                 except _FALLBACK as exc:
                     self.mode, self.why_interpreted = "interpreted", f"{type(exc).__name__}: {exc}"
                 except SteadyStateError:
                     raise
                 except MATLAB_ERRORS as exc:
                     raise SteadyStateError(f"{self.path.name}: MATLAB error: {exc}") from None
+        with np.errstate(**_ERRSTATE):
             try:
                 return self._interpret(model, params, exo)
             except MATLAB_ERRORS as exc:
                 raise SteadyStateError(f"{self.path.name}: MATLAB error: {exc}") from None
+            except ArithmeticError as exc:
+                raise Unsupported(f"arithmetic error in the interpreter: {exc}") from None
 
     def _interpret(self, model, params, exo):
         from .steady import SteadyStateError
         main = self._unit.main
         host = Host(model, params=params)
+        host.readonly = True
         I = Interpreter(self.path.parent, host)
-        M_ = Struct(params=host.M.get_field("params"), Sigma_e=host.M.get_field("Sigma_e"))
-        for f in list(_HostM._SCALARS) + list(_HostM._NAMES) + ["fname", "dname"]:
-            M_[f] = host.M.get_field(f)
+        M_ = host.M.snapshot()
         ys0 = np.array([model.initval.get(v, 0.0) for v in model.endo_names], float).reshape(-1, 1)
-        args = [ret(ys0), ret(np.asarray(exo, float).reshape(-1, 1)), M_, host.options][:len(main.ins)]
-        out = I.call_user(main, self._unit.funcs, args, len(main.outs))
-        if len(main.outs) == 3:
-            ys, new, check = out
-        else:
-            ys, check = out
-            new = host.M.get_field("params")
+        # Dynare 7 calls [ys, params, info] = f(ys, exo, M_, options_): a file declaring fewer inputs or
+        # outputs fails there with MATLAB's "called with too many inputs/outputs", and so it does here
+        args = [ret(ys0), ret(np.asarray(exo, float).reshape(-1, 1)), M_, host.options.snapshot()]
+        ys, new, check = I.call_user(main, self._unit.funcs, args, 3)
         if truth(check):
             raise SteadyStateError(f"{self.path.name} signalled failure (check = {float(scalar(check)):g})")
         new = farr(new).ravel(order="F")
@@ -4527,7 +4990,7 @@ class SteadyStateFile:
 class _RT:
     """Run-time helpers of translated code (``rt.<name>``)."""
     MatlabError = MatlabError
-    MATLAB_ERRORS = MATLAB_ERRORS
+    MATLAB_ERRORS = MATLAB_ERRORS       # (MatlabError,): arithmetic events are left to the caller
     exp, log, sqrt, abs = np.exp, np.log, np.sqrt, np.abs
 
     def __getattr__(self, name):
@@ -4557,6 +5020,9 @@ class _RT:
     @staticmethod
     def irange(a, b, step=1.0):
         r = colon(a, step, b)
+        if r.size == 0:
+            # MATLAB leaves the loop variable empty: not expressible with scalars, the interpreter takes over
+            raise FloatingPointError("for loop over an empty range")
         return [_F(v) for v in r.ravel()]
 
     @staticmethod
@@ -4753,7 +5219,7 @@ class _Translator:
         inner = dict(env)
         for p in n.params:
             inner[p] = "num"
-        body = self.num(self.ex(n.body, inner))
+        body = self.f64(self.num(self.ex(n.body, inner)))
         return (f"lambda {', '.join(_pyname(p) for p in n.params)}: {body[0]}", "fn", _LAM)
 
     def field(self, n, env):
@@ -4767,7 +5233,12 @@ class _Translator:
         self.fail("field access other than M_.params and the M_ counters")
 
     def args_num(self, args, env):
-        return ", ".join(self.num(self.ex(a, env))[0] for a in args)
+        return ", ".join(self.f64(self.num(self.ex(a, env)))[0] for a in args)
+
+    @staticmethod
+    def f64(x):
+        """Literals stay numpy scalars when stored or passed on (1/0 must be Inf, not ZeroDivisionError)."""
+        return (f"np.float64({x[0]})", x[1], _ATOM) if len(x) > 3 else x
 
     def solver_args(self, name, args, env):
         if len(args) < 2 or len(args) > 3:
@@ -5008,6 +5479,8 @@ class _Translator:
                     self.fail(f"'{x.name}' is reassigned after being captured by the function handle '{nm}'")
             if r[1] == "bool":
                 r = (f"np.float64({r[0]})", "num", _ATOM)
+            elif r[1] == "num":
+                r = self.f64(r)
             self.setvar(x.name, r[1], env)
             return [f"{ind}{_pyname(x.name)} = {r[0]}"]
         if type(x) is Index and not x.brace and type(x.base) is Id and env.get(x.base.name) == "vec":
@@ -5017,7 +5490,7 @@ class _Translator:
             if len(args) != 1:
                 self.fail("vector assignment other than v(k) = x")
             v = _pyname(x.base.name)
-            return [f"{ind}{v}[{self.pos(args[0], env, v)}] = {self.num(self.ex(rhs, env))[0]}"]
+            return [f"{ind}{v}[{self.pos(args[0], env, v)}] = {self.f64(self.num(self.ex(rhs, env)))[0]}"]
         self.fail(f"assignment {' '.join(s.text.split())[:50]!r}")
 
     # ---- functions

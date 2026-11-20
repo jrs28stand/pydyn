@@ -79,6 +79,18 @@ class Model:
             # ... and unquoted negative bounds in estimated_params_bounds: "lower_bound": (-1)
             text = re.sub(r'("period2":\s*)\}(\d+)', r"\1\2", text)
             text = re.sub(r'"(lower_bound|upper_bound)":\s*\((-[^)"]*)\)', r'"\1": "\2"', text)
+            # ... a backslash that is not a JSON escape (equation tag [eq='\#1']) ...
+            text = re.sub(r'\\(.)', lambda mo: mo.group(0) if mo.group(1) in '"\\/bfnrtu' else "\\\\" + mo.group(1), text)
+            # ... a doubled closing quote after period2 in shocks(learnt_in/dates) paths ...
+            text = re.sub(r'("period2"\s*:\s*"[^"\n]*")"', r"\1", text)
+            # ... a missing comma in model_comparison lists, a missing quote in matched_irfs_weights ...
+            text = re.sub(r'("name":\s*"[^"\n]*")("prior":)', r"\1, \2", text)
+            text = re.sub(r'("exo\d":\s*)([A-Za-z_]\w*")', r'\1"\2', text)
+            # ... an unquoted MATLAB variable as the colormap option of plot_shock_decomposition ...
+            text = re.sub(r'("[\w.]*colormap":\s*)([A-Za-z_]\w*)(?=\s*[,}])', r'\1"\2"', text)
+            # ... and numbers written as .8 or 006 in option lists
+            text = re.sub(r'([:\[,]\s*)\.(\d)', r"\g<1>0.\2", text)
+            text = re.sub(r'([:\[,]\s*)0+(\d+)(?=\s*[,\]}])', r"\1\2", text)
             mf = json.loads(text)
         self._cache = CACHE if cache is None else bool(cache)
         self.raw = mf
@@ -311,10 +323,21 @@ class Model:
         if p.exists():
             self.steady_state_model = _pairs(json.loads(p.read_text())["steady_state_model"], "lhs", "rhs")
 
+    _IDENT = re.compile(r"[A-Za-z_]\w*")
+
     def _eval_with_vars(self, s: str) -> float:
-        """Evaluate an initval-style expression that may refer to variables set earlier."""
-        local = {safe_name(k): v for k, v in self.initval.items() if k not in self._ip}
-        return self.eval_expr(s, local)
+        """Value of an initval/endval right-hand side.  As in Dynare, a reference to an endogenous or
+        exogenous variable reads the current content of oo_.steady_state / oo_.exo_steady_state:
+        the value given earlier (in this block or a previous initval/endval block), the steady
+        state computed by an earlier ``steady``, or 0 if the variable was never set."""
+        s = str(s)
+        local = {}
+        for name in set(self._IDENT.findall(s)):
+            if name in self._ie:
+                local[name] = self._matlab.oo_value(name)
+            elif name in self._ix:
+                local[name] = np.float64(self._oo.get(name, 0.0))
+        return self._value(s, local)
 
     def _run_statements(self):
         """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
@@ -332,28 +355,29 @@ class Model:
         self.matlab_options = matlab.Struct()      # options_.x = ... assignments (stored, not acted upon)
         self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
         self._n_surprise = 0
-        self._matlab = None
-        if any(st["statementName"] in ("native", "verbatim") for st in self.statements):
-            self._matlab = matlab.ModSession(self, ModelError)
-            self._matlab.run(self.statements)
-        else:
-            for st in self.statements:
-                self._exec_statement(st)
+        self._oo: dict[str, float] = {}            # what Dynare holds in oo_.steady_state / oo_.exo_steady_state
+        # every file goes through the session, with or without MATLAB lines: it also follows which
+        # parameters and steady-state values an earlier steady/stoch_simul has changed in Dynare
+        self._matlab = matlab.ModSession(self, ModelError)
+        self._matlab.run(self.statements)
         if self._n_surprise > 1:
             warnings.warn("several shocks(surprise) blocks: they are merged; Dynare's 'overwrite' "
                           "option is not visible in the preprocessor output")
         if self.unhandled_statements:
             warnings.warn(f"statements not handled: {sorted(set(self.unhandled_statements))}")
 
-    def _value(self, s) -> float:
-        """Value of an expression in a Dynare statement.  Expressions that index a MATLAB matrix or
-        call a MATLAB function defined next to the .mod file are passed to the MATLAB interpreter."""
+    def _value(self, s, local=None) -> float:
+        """Value of an expression in a Dynare statement (Dynare passes these to MATLAB).  The fast
+        path is plain Python on numpy scalars; expressions that index a MATLAB matrix, call a MATLAB
+        function defined next to the .mod file, or whose result is not finite (1/0, a NaN operand,
+        a complex result) are evaluated by the MATLAB interpreter, which has MATLAB's semantics."""
         try:
-            return self.eval_expr(s)
-        except (NameError, TypeError, SyntaxError):
-            if self._matlab is None:
-                self._matlab = matlab.ModSession(self, ModelError)
-            return self._matlab.eval_value(s)
+            v = self.eval_expr(s, local)
+            if v - v == 0:                          # finite
+                return v
+        except (NameError, TypeError, SyntaxError, ArithmeticError, ValueError):
+            pass
+        return self._matlab.eval_value(s, local)
 
     def _exec_statement(self, st):
         """One Dynare statement of the .mod file."""
@@ -362,16 +386,19 @@ class Model:
             self.params[self._ip[st["name"]]] = self._value(st["value"])
         elif kind == "initval":
             for d in st["vals"]:
-                self.initval[d["name"]] = self._eval_with_vars(d["value"])
+                self.initval[d["name"]] = self._oo[d["name"]] = self._eval_with_vars(d["value"])
+                self._matlab.oo_written.add(d["name"])
         elif kind == "endval":
             for d in st["vals"]:
-                self.endval[d["name"]] = self._eval_with_vars(d["value"])
+                self.endval[d["name"]] = self._oo[d["name"]] = self._eval_with_vars(d["value"])
+                self._matlab.oo_written.add(d["name"])
         elif kind == "load_params_and_steady_state":
             for d in st.get("values", []):
                 if d["name"] in self._ip:
                     self.params[self._ip[d["name"]]] = self.eval_expr(d["value"])
                 else:
-                    self.initval[d["name"]] = self.eval_expr(d["value"])
+                    self.initval[d["name"]] = self._oo[d["name"]] = self.eval_expr(d["value"])
+                    self._matlab.oo_written.add(d["name"])
         elif kind == "shocks" and st.get("surprise"):
             self._n_surprise += 1
             self.options.setdefault("shock_paths", []).append(st)
@@ -392,7 +419,7 @@ class Model:
                     if d["name"] in self._ip:
                         self.params[self._ip[d["name"]]] = val
                     else:
-                        self.initval[d["name"]] = val
+                        self.initval[d["name"]] = self._oo[d["name"]] = val
         elif kind in ("stoch_simul", "estimation", "occbin_solver", "estimated_params",
                       "estimated_params_init", "varobs", "perfect_foresight_setup", "perfect_foresight_solver", "calib_smoother",
                           "shock_decomposition", "initial_condition_decomposition", "shock_groups",
@@ -415,7 +442,7 @@ class Model:
             self.measurement_errors.clear()
         for key, power in (("variance", 1), ("stderr", 2)):
             for d in st.get(key, []):
-                val = self.eval_expr(d[key]) ** power
+                val = self._value(d[key]) ** power
                 if d["name"] in ix:
                     S[ix[d["name"]], ix[d["name"]]] = val
                 else:                               # measurement error on an observed variable
@@ -426,13 +453,13 @@ class Model:
                     self.unhandled_statements.append("shocks: measurement-error covariance")
                     continue
                 i, j = ix[d["name"]], ix[d["name2"]]
-                val = self.eval_expr(d[key])
+                val = self._value(d[key])
                 if key == "correlation":
                     val *= np.sqrt(S[i, i] * S[j, j])
                 S[i, j] = S[j, i] = val
         for d in st.get("deterministic_shocks", []):
             for v in d["values"]:
-                self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), self.eval_expr(v["value"])))
+                self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), self._value(v["value"])))
         for key in ("skewness", "coskewness", "multiplicative_deterministic_shocks"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")

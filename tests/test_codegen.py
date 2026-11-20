@@ -152,3 +152,45 @@ def test_steady_state_block_compiled_once_matches_interpreted(tmp_path, monkeypa
             np.testing.assert_allclose(a[0], b[0], rtol=1e-14, atol=0, equal_nan=True)
         finally:
             m.params[:] = saved
+
+
+def test_max_min_with_nan_and_mod_agree_between_code_paths(tmp_path, monkeypatch):
+    """max/min ignore a NaN operand (as MATLAB's max/min do in the model files Dynare generates) and
+    mod follows MATLAB (mod(1, 0.1) is 0): the Python-float and the numpy versions must agree, in
+    the model functions and in a compiled steady_state_model block."""
+    from pydyn.expr import FAST_NAMESPACE, NAMESPACE
+    nan, inf = float("nan"), float("inf")
+    values = [nan, -inf, -2.5, -1.0, -0.0, 0.0, 0.1, 0.3, 1.0, 2.5, 10.0, 1e15, inf]
+    for a in values:
+        for b in values:
+            for name in ("max", "min", "mod"):
+                same(FAST_NAMESPACE[name](a, b), NAMESPACE[name](a, b))
+    assert FAST_NAMESPACE["max"](nan, 2.0) == 2.0 and NAMESPACE["min"](2.0, nan) == 2.0
+    assert np.isnan(NAMESPACE["max"](nan, nan)) and np.isnan(FAST_NAMESPACE["max"](nan, nan))
+    for x, y, r in ((1, 0.1, 0.0), (10, 0.1, 0.0), (0.3, 0.1, 0.0), (-7, 3, 2.0), (7, -3, -2.0), (5, 0, 5.0), (5.5, 2, 1.5)):
+        assert FAST_NAMESPACE["mod"](float(x), float(y)) == r and NAMESPACE["mod"](x, y) == r      # Octave values
+    # a model whose equations meet NaN operands, and a steady_state_model block that uses mod
+    (tmp_path / "mm.mod").write_text(
+        "var y c; varexo e; parameters p q;\np = 0.1; q = 3;\n"
+        "model; y = max(p, 2) + min(c(-1), 3) + e; c = max(y, c(-1)) - min(p, q); end;\n"
+        "steady_state_model; c = mod(1, p) + mod(q, 2); y = 5 + c; end;\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "mm.mod"))
+    for params in ([0.1, 3.0], [np.nan, 3.0], [0.1, np.nan]):
+        p = np.array(params)
+        for yy in (np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), np.array([np.nan, 2.0, 3.0, np.nan, 5.0, 6.0])):
+            a, b = both(monkeypatch, m.dynamic_resid, yy, np.zeros(1), p, yy[:2])
+            same(a, b)
+            a, b = both(monkeypatch, m.dynamic_jac, yy, np.zeros(1), p, yy[:2])
+            same(a, b)
+    r = m.dynamic_resid(np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), np.zeros(1), np.array([np.nan, 3.0]))
+    assert np.all(np.isfinite(r))                                  # max(NaN, 2) = 2 and min(NaN, 3) = 3, as in MATLAB
+    import pydyn.steady as st
+    fast, slow = st._compiled_block(m)
+    yl, pl = [0.0, 0.0], [0.1, 3.0]
+    fast(yl, [0.0], pl)
+    y2, p2 = np.zeros(2), np.array([0.1, 3.0])
+    slow(y2, np.zeros(1), p2)
+    same(yl, y2)
+    assert yl == [6.0, 1.0]                                         # mod(1, 0.1) = 0, mod(3, 2) = 1

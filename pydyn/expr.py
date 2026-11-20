@@ -63,6 +63,36 @@ def _matlab_round(x):
     return np.sign(x) * np.floor(np.abs(x) + 0.5)
 
 
+_EPS = float(np.finfo(float).eps)
+
+
+def _fmod(x, y):
+    """MATLAB's mod for two real scalars: mod(x, 0) is x, the result has the sign of y, and when y
+    is not an integer and x/y is within round-off of an integer the result is exactly 0
+    (mod(1, 0.1) is 0, where the C/numpy remainder gives 0.0999...)."""
+    if x != x or y != y or x in (math.inf, -math.inf):
+        return math.nan
+    if y == 0:
+        return x
+    if y in (math.inf, -math.inf):
+        return math.nan                 # Octave gives NaN, MATLAB documents x: not reproduced (pydyn.matlab refuses it)
+    q = x / y
+    if y != math.floor(y):
+        nq = math.floor(q + 0.5)
+        if nq != 0 and math.fabs((q - nq) / nq) < _EPS:
+            return 0.0
+    r = x - y * math.floor(q)
+    if x == y or r == 0:
+        return 0.0
+    return math.copysign(math.fabs(r), y)
+
+
+def _mod(x, y):
+    if isinstance(x, np.ndarray) or isinstance(y, np.ndarray):
+        return np.vectorize(_fmod, otypes=[float])(x, y)
+    return np.float64(_fmod(float(x), float(y)))
+
+
 #: names available to generated code
 NAMESPACE = {
     "exp": np.exp, "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2,
@@ -70,10 +100,11 @@ NAMESPACE = {
     "sin": np.sin, "cos": np.cos, "tan": np.tan, "asin": np.arcsin, "acos": np.arccos,
     "atan": np.arctan, "sinh": np.sinh, "cosh": np.cosh, "tanh": np.tanh,
     "asinh": np.arcsinh, "acosh": np.arccosh, "atanh": np.arctanh,
-    "max": np.maximum, "min": np.minimum, "erf": special.erf, "erfc": special.erfc,
+    # max/min ignore a NaN operand, as MATLAB's max/min do in Dynare's generated model files
+    "max": np.fmax, "min": np.fmin, "erf": special.erf, "erfc": special.erfc,
     "get_power_deriv": _get_power_deriv, "normcdf": _normcdf, "normpdf": _normpdf,
     "Inf": np.inf, "NaN": np.nan, "inf": np.inf, "nan": np.nan, "pi": np.pi,
-    "round": _matlab_round, "floor": np.floor, "ceil": np.ceil, "mod": np.mod,
+    "round": _matlab_round, "floor": np.floor, "ceil": np.ceil, "mod": _mod,
     "_lt": _Infix(np.less), "_gt": _Infix(np.greater), "_le": _Infix(np.less_equal),
     "_ge": _Infix(np.greater_equal), "_eq": _Infix(np.equal), "_ne": _Infix(np.not_equal),
 }
@@ -104,11 +135,11 @@ class _FastInfix(_Infix):
 
 
 def _fmax(a, b):
-    return a if a > b else b if b >= a else math.nan      # nan if either is nan, as np.maximum
+    return a if a > b else b if b >= a else (b if a != a else a)      # the other operand if one is nan, as np.fmax
 
 
 def _fmin(a, b):
-    return a if a < b else b if b <= a else math.nan
+    return a if a < b else b if b <= a else (b if a != a else a)
 
 
 def _fsign(x):
@@ -154,7 +185,7 @@ FAST_NAMESPACE = {
     "max": _fmax, "min": _fmin, "erf": math.erf, "erfc": math.erfc,
     "get_power_deriv": _get_power_deriv_fast, "normcdf": _fnormcdf, "normpdf": _fnormpdf,
     "Inf": math.inf, "NaN": math.nan, "inf": math.inf, "nan": math.nan, "pi": math.pi,
-    "round": _fround, "floor": _ffloor, "ceil": _fceil, "mod": _op.mod,
+    "round": _fround, "floor": _ffloor, "ceil": _fceil, "mod": _fmod,
     "_lt": _FastInfix(_op.lt), "_gt": _FastInfix(_op.gt), "_le": _FastInfix(_op.le),
     "_ge": _FastInfix(_op.ge), "_eq": _FastInfix(_op.eq), "_ne": _FastInfix(_op.ne),
 }

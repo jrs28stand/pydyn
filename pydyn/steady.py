@@ -24,15 +24,23 @@ WARM_START = os.environ.get("PYDYN_SS_WARMSTART", "0") == "1"
 
 
 def _resolver(model):
+    # the arrays have names no variable of the block can have: a block-local variable called x, y
+    # or params must not hide them
     def resolve(name, shift):
         if name in model._ie:
-            return f"y[{model._ie[name]}]"
+            return f"_Y_[{model._ie[name]}]"
         if name in model._ix:
-            return f"x[{model._ix[name]}]"
+            return f"_X_[{model._ix[name]}]"
         if name in model._ip:
-            return f"params[{model._ip[name]}]"
+            return f"_P_[{model._ip[name]}]"
         return None
     return resolve
+
+
+def _local(name):
+    """Python name of a block-local variable (never one of the names the generated code uses)."""
+    name = safe_name(name)
+    return name + "_" if name in ("_Y_", "_X_", "_P_", "_ssm") or name in NAMESPACE else name
 
 
 def _compiled_block(model):
@@ -45,14 +53,14 @@ def _compiled_block(model):
     if getattr(model, "matlab_functions", None):
         raise NotImplementedError("blocks that call MATLAB helper functions are interpreted")
     tr = Translator(_resolver(model))
-    lines, assigned = ["def _ssm(y, x, params):"], set()
+    lines, assigned = ["def _ssm(_Y_, _X_, _P_):"], set()
     for lhs, rhs in model.steady_state_model:
         if not isinstance(lhs, str) or not lhs.isidentifier():
             raise NotImplementedError(f"multiple-output steady-state assignment: {lhs}")
         if lhs in model._ie:
-            target = f"y[{model._ie[lhs]}]"
+            target = f"_Y_[{model._ie[lhs]}]"
         elif lhs in model._ip:
-            target = f"params[{model._ip[lhs]}]"
+            target = f"_P_[{model._ip[lhs]}]"
         else:
             target = safe_name(lhs)
             assigned.add(target)
@@ -103,7 +111,8 @@ def _from_steady_state_model_interpreted(model, params, x, y):
     tr = Translator(_resolver(model))
     ns = dict(NAMESPACE)
     ns.update(model.functions)
-    ns.update(y=y, x=x, params=params)
+    ns.update(_Y_=y, _X_=x, _P_=params)
+
     def store(lhs, val):
         if lhs in model._ie:
             y[model._ie[lhs]] = val
@@ -216,7 +225,8 @@ def _steady_state(model, params, guess, x):
             raise SteadyStateError(f"steady_state_fn returned {ys.shape}, expected ({n_orig},) or ({model.n_endo},)")
         ys = fill_auxiliary(model, ys, x, params)
     elif model.steady_state_model is not None:
-        ys, params = _from_steady_state_model(model, params, x)
+        with matlab.steady_context(model, params):      # MATLAB helpers may read "global M_"
+            ys, params = _from_steady_state_model(model, params, x)
         if np.any(~np.isfinite(ys)):
             bad = [v for v, ok in zip(model.endo_names, np.isfinite(ys)) if not ok]
             raise SteadyStateError(f"steady_state_model gives non-finite values for: {bad}")

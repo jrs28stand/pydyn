@@ -485,6 +485,48 @@ def refs(scratch, out):
     print(f"{len(files)} files -> {out} ({Path(out).stat().st_size} bytes)")
 
 
+def mutators(src):
+    """Scan Dynare's matlab/ tree for functions that change the calibration behind the caller's back:
+    functions that declare ``global M_`` or return M_, and assign M_.params, M_.Sigma_e, M_.H,
+    M_.Correlation_matrix(_ME) or M_.Skew_e or replace M_ as a whole; then the functions calling one
+    of the global writers (transitively, matched as ``name(``).  pydyn.matlab.MUTATORS and
+    MUTATOR_DOTTED must contain every name printed (set_param_value and set_shock_stderr_value are
+    implemented; steady and stoch_simul are handled as SOLVE_FUNCS)."""
+    codes = {}
+    for root, _, files in os.walk(src / "matlab"):
+        for f in files:
+            if f.endswith(".m"):
+                pk = [x[1:] for x in Path(root).parts if x.startswith("+")]
+                codes[".".join(pk + [f[:-2]])] = re.sub(r"%.*", "", (Path(root) / f).read_text(errors="replace"))
+    direct, global_writers = {}, set()
+    for name, code in codes.items():
+        writes = re.search(r"\bM_\.(params|Sigma_e|H|Correlation_matrix|Correlation_matrix_ME|Skew_e)\b\s*(\([^=\n]*\))?\s*=(?!=)", code)
+        whole = re.search(r"^\s*M_\s*=(?!=)|\[[^\]\n]*\bM_\b(?!\.)[^\]\n]*\]\s*=(?!=)", code, re.M)
+        head = re.search(r"^\s*function\s+(?:(\[[^\]]*\]|\w+)\s*=\s*)?([\w.]+)", code, re.M)
+        if not (writes or whole) or not head:
+            continue
+        has_global = bool(re.search(r"^\s*global\b[^\n]*\bM_\b", code, re.M))
+        returns = bool(re.search(r"\bM_\b", head.group(1) or ""))
+        if has_global or returns:
+            direct[name] = "global" if has_global else "returns M_"
+            if has_global:
+                global_writers.add(name)
+    closure = set(global_writers) - {"steady", "prior", "global_initialization", "gui.stochastic-simulation.read"}
+    changed = True
+    while changed:
+        changed = False
+        for name, code in codes.items():
+            if name not in closure and any(re.search(r"(?<![\w.])" + re.escape(w) + r"\s*\(", code) for w in closure):
+                closure.add(name)
+                changed = True
+    names = sorted(set(direct) | closure)
+    known = M.MUTATORS | M.MUTATOR_DOTTED | M.SOLVE_FUNCS | {"set_param_value", "set_shock_stderr_value", "steady", "gui.stochastic-simulation.read"}
+    for n in names:
+        print(f"{n:45s} {direct.get(n, 'calls a global writer'):22s} {'' if n in known else 'MISSING from pydyn.matlab'}")
+    print(f"{len(names)} functions, {sum(n not in known for n in names)} missing")
+    return [n for n in names if n not in known]
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "collect":
@@ -500,5 +542,7 @@ if __name__ == "__main__":
         octave(Path(sys.argv[2]), Path(sys.argv[3]), json.loads(Path(sys.argv[4]).read_text()) if len(sys.argv) > 4 else None)
     elif cmd == "compare":
         compare(Path(sys.argv[2]))
+    elif cmd == "mutators":
+        mutators(Path(sys.argv[2]))
     elif cmd == "refs":
         refs(Path(sys.argv[2]), Path(sys.argv[3]))
