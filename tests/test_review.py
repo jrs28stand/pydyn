@@ -8,15 +8,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import dynpy
+import pydyn
 
-EXAMPLES = Path(os.environ.get("DYNPY_EXAMPLES", "/home/claude/dl/src72/examples"))
+EXAMPLES = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/dl/src72/examples"))
 
 
 def build(tmp_path, text, name="m", **kw):
     f = tmp_path / f"{name}.mod"
     f.write_text(text)
-    return dynpy.Model(dynpy.run_preprocessor(f), **kw)
+    return pydyn.Model(pydyn.run_preprocessor(f), **kw)
 
 
 def fd_jac(m, y, h=1e-6):
@@ -66,7 +66,7 @@ def test_shock_blocks_follow_dynare_order(tmp_path, second, expected):
 def test_matlab_control_flow_is_an_error(tmp_path):
     text = ("var c; varexo e; parameters rho s; rho=0.5; s=2;\ncalib = 0;\nif calib == 1\n rho = 0.9; s = 5;\nend\n"
             "model; c = rho*c(-1) + s*e; end;")
-    with pytest.raises(dynpy.ModelError):
+    with pytest.raises(pydyn.ModelError):
         build(tmp_path, text)
 
 
@@ -83,7 +83,7 @@ def test_native_parameter_updates(tmp_path):
 ])
 def test_purely_backward_and_forward_models(tmp_path, eqs, G00):
     m = build(tmp_path, TWO + f"model; {eqs} end;")
-    sol = dynpy.first_order(m)
+    sol = pydyn.first_order(m)
     np.testing.assert_allclose(sol.G[0, 0], G00, atol=1e-12)
     np.testing.assert_allclose(sol.H[0, 0], 1.0, atol=1e-12)
 
@@ -91,11 +91,11 @@ def test_purely_backward_and_forward_models(tmp_path, eqs, G00):
 def test_numerical_steady_state_with_auxiliary_variables(tmp_path):
     src = EXAMPLES / "macroprocessor" / "bkk_1992.mod"
     shutil.copy(src, tmp_path)
-    m = dynpy.Model(dynpy.run_preprocessor(tmp_path / src.name))
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / src.name))
     assert m.raw["aux_vars"]
-    ys, params = dynpy.steady_state(m)
+    ys, params = pydyn.steady_state(m)
     assert np.max(np.abs(m.static_resid(ys, params=params))) < 1e-10
-    dynpy.first_order(m)
+    pydyn.first_order(m)
 
 
 def test_initval_may_refer_to_earlier_values(tmp_path):
@@ -109,17 +109,17 @@ def test_linear_model_at_second_order(tmp_path):
     m = build(tmp_path, TWO + "model; c = a*c(-1) + 0.1*c(+1) + e + k; k = 0.5*k(-1)+e; end;\n"
                               "shocks; var e; stderr 1; end;\nstoch_simul(order=2, irf=0);")
     try:
-        dynpy.korder.load_library()
+        pydyn.korder.load_library()
     except FileNotFoundError:
-        pytest.skip("libdynpy_korder.so not built")
-    dr = dynpy.k_order(m, order=2)
+        pytest.skip("libpydyn_korder.so not built")
+    dr = pydyn.k_order(m, order=2)
     assert np.max(np.abs(dr["ghxx"])) < 1e-12
-    np.testing.assert_allclose(dr["ghx"], dynpy.first_order(m).ghx, atol=1e-12)
+    np.testing.assert_allclose(dr["ghx"], pydyn.first_order(m).ghx, atol=1e-12)
 
 
 def test_model_without_statements(tmp_path):
     m = build(tmp_path, "var a b; varexo e1; model; a=0.5*a(-1)+e1; b=0.5*b(+1)+a; end;")
-    dynpy.first_order(m)
+    pydyn.first_order(m)
 
 
 def test_variable_named_like_a_temporary_term(tmp_path):
@@ -134,6 +134,6 @@ def test_steady_state_file_is_reported(tmp_path):
     src = EXAMPLES / "stochastic_simulations"
     shutil.copy(src / "nk_baseline.mod", tmp_path)
     shutil.copy(src / "nk_baseline_steadystate.m", tmp_path)
-    m = dynpy.Model(dynpy.run_preprocessor(tmp_path / "nk_baseline.mod"))
-    with pytest.raises(dynpy.SteadyStateError, match="steadystate.m"):
-        dynpy.steady_state(m)
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "nk_baseline.mod"))
+    with pytest.raises(pydyn.SteadyStateError, match="steadystate.m"):
+        pydyn.steady_state(m)

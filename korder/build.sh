@@ -9,5 +9,5 @@ FLAGS="-std=gnu++20 -O2 -fPIC -fopenmp -DOCTAVE_MEX_FILE -DPACKAGE_VERSION=\"7.2
 mkdir -p "$HERE/obj"
 ls $L/kord/*.cc $L/sylv/*.cc $L/tl/*.cc $L/utils/*.cc $L/k_ord_dynare.cc "$HERE/korder_capi.cc" \
   | xargs -P "$(nproc)" -I{} sh -c "g++ $FLAGS -c {} -o $HERE/obj/\$(basename {} .cc).o"
-g++ -shared -fopenmp "$HERE"/obj/*.o -o "$HERE/libdynpy_korder.so" -llapack -lblas -lpthread
-echo "built $HERE/libdynpy_korder.so"
+g++ -shared -fopenmp "$HERE"/obj/*.o -o "$HERE/libpydyn_korder.so" -llapack -lblas -lpthread
+echo "built $HERE/libpydyn_korder.so"

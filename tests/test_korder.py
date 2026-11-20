@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 from scipy.io import loadmat
 
-import dynpy
-from dynpy.korder import k_order, load_library
+import pydyn
+from pydyn.korder import k_order, load_library
 
-REF = Path(os.environ.get("DYNPY_REF", str(Path(__file__).resolve().parent.parent / "reference")))
-EXAMPLES = Path(os.environ.get("DYNPY_EXAMPLES", "/home/claude/dl/src72/examples"))
+REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))
+EXAMPLES = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/dl/src72/examples"))
 CASES = [
     # order 2: reference from Dynare's default (MATLAB) second-order solver
     (EXAMPLES / "stochastic_simulations" / "collard_2001_simulated_moments.mod", "clean_collard_order2.mat", 2),
@@ -24,13 +24,13 @@ try:
     HAVE_LIB = True
 except FileNotFoundError:
     HAVE_LIB = False
-pytestmark = pytest.mark.skipif(not HAVE_LIB, reason="libdynpy_korder.so not built")
+pytestmark = pytest.mark.skipif(not HAVE_LIB, reason="libpydyn_korder.so not built")
 
 
 @pytest.mark.parametrize("mod,refname,order", CASES, ids=["order2", "order3"])
 def test_higher_order_rules(mod, refname, order, tmp_path):
     shutil.copy(mod, tmp_path)
-    m = dynpy.Model(dynpy.run_preprocessor(tmp_path / mod.name))
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / mod.name))
     ref = loadmat(REF / refname, squeeze_me=True)
     res = k_order(m, order=order, ys=np.asarray(ref["ys"], float), params=np.asarray(ref["params"], float))
     expected = {2: ["ghx", "ghu", "ghxx", "ghxu", "ghuu", "ghs2"],
@@ -44,8 +44,8 @@ def test_higher_order_rules(mod, refname, order, tmp_path):
 def test_first_order_agrees_with_python_solver(tmp_path):
     mod = CASES[0][0]
     shutil.copy(mod, tmp_path)
-    m = dynpy.Model(dynpy.run_preprocessor(tmp_path / mod.name))
-    sol = dynpy.first_order(m)
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / mod.name))
+    sol = pydyn.first_order(m)
     res = k_order(m, order=1, ys=sol.ys)
     np.testing.assert_allclose(res["ghx"], sol.ghx, rtol=1e-9, atol=1e-12)
     np.testing.assert_allclose(res["ghu"], sol.ghu, rtol=1e-9, atol=1e-12)
@@ -54,6 +54,6 @@ def test_first_order_agrees_with_python_solver(tmp_path):
 def test_order_beyond_available_derivatives(tmp_path):
     mod = CASES[0][0]                      # .mod file asks for order 2 only
     shutil.copy(mod, tmp_path)
-    m = dynpy.Model(dynpy.run_preprocessor(tmp_path / mod.name))
-    with pytest.raises(dynpy.korder.KOrderError):
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / mod.name))
+    with pytest.raises(pydyn.korder.KOrderError):
         k_order(m, order=3)

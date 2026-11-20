@@ -1,4 +1,4 @@
-"""Load every Dynare example with dynpy and compare with saved Dynare results where they exist.
+"""Load every Dynare example with pydyn and compare with saved Dynare results where they exist.
 
 Usage: python tools/sweep_examples.py <dir with one sub-folder per example group, containing the
 .mod files and ref_<name>.mat files written by Dynare> 
@@ -14,7 +14,7 @@ from scipy.optimize import fsolve
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-import dynpy  # noqa: E402
+import pydyn  # noqa: E402
 
 
 def nk_fn():
@@ -45,7 +45,7 @@ def check(mod: Path):
     try:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            m = dynpy.Model(dynpy.run_preprocessor(mod), **EXTRA.get(name, {}))
+            m = pydyn.Model(pydyn.run_preprocessor(mod), **EXTRA.get(name, {}))
         out["skipped"] = "; ".join(sorted({str(x.message)[:140] for x in w if "not handled" in str(x.message)}))
     except Exception as e:  # noqa: BLE001
         pac = "dseries" in str(e) or "pac" in mod.stem
@@ -61,7 +61,7 @@ def check(mod: Path):
         return out
     try:
         params = np.asarray(ref["params"], float) if "params" in ref and np.all(np.isfinite(ref["params"])) else None
-        ys, p = dynpy.steady_state(m, params=params)
+        ys, p = pydyn.steady_state(m, params=params)
     except Exception as e:  # noqa: BLE001
         out["status"], out["detail"] = "steady state failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
@@ -84,7 +84,7 @@ def check(mod: Path):
         return out
     if "perfect_foresight_solver" in kinds:
         try:
-            pf = dynpy.perfect_foresight(m)
+            pf = pydyn.perfect_foresight(m)
             d = np.max(np.abs(pf.endo.T - ref["endo_simul"])) if "endo_simul" in ref else np.nan
             out["status"] = "matches Dynare" if d < 1e-6 else "MISMATCH"
             out["detail"] = f"perfect foresight path {d:.1e} ({pf.iterations} Newton steps)"
@@ -92,7 +92,7 @@ def check(mod: Path):
             out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
     try:
-        sol = dynpy.first_order(m, ys=ys, params=p)
+        sol = pydyn.first_order(m, ys=ys, params=p)
     except Exception as e:  # noqa: BLE001
         out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
@@ -112,7 +112,7 @@ def check(mod: Path):
     order = m.options.get("stoch_simul", {}).get("order", 1)
     if order >= 2 and "ghxx" in ref and m.max_deriv_order >= 2:
         try:
-            dr = dynpy.k_order(m, order=2, ys=ys, params=p)
+            dr = pydyn.k_order(m, order=2, ys=ys, params=p)
             d2 = max(np.max(np.abs(dr[k] - np.asarray(ref[k], float).reshape(dr[k].shape)))
                      for k in ("ghxx", "ghxu", "ghuu", "ghs2"))
             notes.append(f"order 2 {d2:.1e}")

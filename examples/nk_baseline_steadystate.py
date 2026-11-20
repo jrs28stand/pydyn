@@ -1,4 +1,4 @@
-# This file is part of pydyn/dynpy.
+# This file is part of pydyn.
 #
 # It is a Python port of examples/stochastic_simulations/nk_baseline_steadystate.m from Dynare 7.2
 # (Copyright (C) 2013-2024 Dynare Team, https://www.dynare.org), modified in 2026.
@@ -16,7 +16,7 @@ filled in automatically) together with the possibly updated parameters.
 import numpy as np
 from scipy.optimize import brentq, newton
 
-from dynpy import SteadyStateError
+from pydyn import SteadyStateError
 
 
 def steady_state(model, params, exo):

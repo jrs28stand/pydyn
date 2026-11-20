@@ -1,5 +1,5 @@
 /*
- * This file is part of pydyn/dynpy.
+ * This file is part of pydyn.
  *
  * It is adapted from mex/sources/k_order_perturbation/k_order_perturbation.cc in Dynare 7.2
  * (Copyright (C) 2008-2026 Dynare Team, https://www.dynare.org), modified in 2026, and is meant
@@ -96,10 +96,10 @@ store_deriv(Result& r, const Symmetry& sym, const FGSContainer& derivs, const st
 
 extern "C"
 {
-  /* Returns an opaque handle (never null). Check dynpy_korder_error() before reading results.
+  /* Returns an opaque handle (never null). Check pydyn_korder_error() before reading results.
      cols[] for order o holds nnz[o-1]*o entries; rows/cols/vals are concatenated over orders. */
   void*
-  dynpy_korder_solve(int order, int nstat, int npred, int nboth, int nfwrd, int nexo, int npar,
+  pydyn_korder_solve(int order, int nstat, int npred, int nboth, int nfwrd, int nexo, int npar,
                      const double* ys, const double* sigma_e, const double* params,
                      const int* dr_order, const int* nnz, const int* rows, const int* cols,
                      const double* vals, double qz_criterium, int pruning, int num_threads)
@@ -215,13 +215,13 @@ extern "C"
   }
 
   const char*
-  dynpy_korder_error(void* h)
+  pydyn_korder_error(void* h)
   {
     return static_cast<Result*>(h)->error.c_str();
   }
 
   int
-  dynpy_korder_dims(void* h, const char* name, int* nrows, int* ncols)
+  pydyn_korder_dims(void* h, const char* name, int* nrows, int* ncols)
   {
     auto r = static_cast<Result*>(h);
     auto it = r->dims.find(name);
@@ -233,7 +233,7 @@ extern "C"
   }
 
   void
-  dynpy_korder_copy(void* h, const char* name, double* out)
+  pydyn_korder_copy(void* h, const char* name, double* out)
   {
     auto r = static_cast<Result*>(h);
     const auto& v = r->data.at(name);
@@ -241,7 +241,7 @@ extern "C"
   }
 
   void
-  dynpy_korder_free(void* h)
+  pydyn_korder_free(void* h)
   {
     delete static_cast<Result*>(h);
   }

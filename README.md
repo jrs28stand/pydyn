@@ -1,7 +1,5 @@
 # pydyn
 
-Python package name: `dynpy`.
-
 Python front end for Dynare models with no MATLAB/Octave at run time. It runs the Dynare
 preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the numerical work in Python.
 
@@ -48,7 +46,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
   Collard model carries a residual of roughly 1e-6; ours is solved to 1e-14).
 
 Run: `DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
-(set `DYNPY_EXAMPLES` to Dynare's `examples` folder).
+(set `PYDYN_EXAMPLES` to Dynare's `examples` folder).
 
 ## Working after the model is loaded
 
@@ -56,11 +54,11 @@ The model is loaded once; everything afterwards is ordinary Python, so an extern
 re-run of the preprocessor:
 
 ```python
-m = dynpy.Model(dynpy.run_preprocessor("model.mod"))
+m = pydyn.Model(pydyn.run_preprocessor("model.mod"))
 for rho in (0.5, 0.7, 0.9):
     m.set_param("rho", rho)                    # like set_param_value
-    sol = dynpy.first_order(m)                 # steady state recomputed, then decision rules
-    resp = dynpy.irf(sol, shock, periods=20)
+    sol = pydyn.first_order(m)                 # steady state recomputed, then decision rules
+    resp = pydyn.irf(sol, shock, periods=20)
 ```
 
 `sol.params` holds the parameters actually used, including any the steady state updated.
@@ -91,35 +89,35 @@ code supplied as Python functions.
 ## The C++ k-order library
 
 `korder/build.sh /path/to/dynare-7.2` compiles Dynare's `mex/sources/libkorder` unchanged into
-`korder/libdynpy_korder.so`. Two small files make that possible:
+`korder/libpydyn_korder.so`. Two small files make that possible:
 
 - `korder/stub/mex.h`: a stand-in for the MATLAB header (the library only touches it in code
   paths we never call);
 - `korder/korder_capi.cc`: replaces the MEX gateway. Dynare's gateway calls back into MATLAB for
   the model derivatives; this one receives them precomputed from Python.
 
-`dynpy.k_order(model, order=2)` returns `ghx`, `ghu`, `ghxx`, `ghxu`, `ghuu`, `ghs2` (and the
+`pydyn.k_order(model, order=2)` returns `ghx`, `ghu`, `ghxx`, `ghxu`, `ghuu`, `ghs2` (and the
 third-order arrays) laid out as in `oo_.dr`. Third order needs third derivatives in the JSON:
 set `order=3` in the `.mod` file or run the preprocessor with `output=third`.
 
 ## Use
 
 ```python
-import dynpy
-jd = dynpy.run_preprocessor("model.mod")      # needs DYNARE_PREPROCESSOR or the binary on PATH
-m = dynpy.Model(jd)
-sol = dynpy.first_order(m)
+import pydyn
+jd = pydyn.run_preprocessor("model.mod")      # needs DYNARE_PREPROCESSOR or the binary on PATH
+m = pydyn.Model(jd)
+sol = pydyn.first_order(m)
 sol.ghx, sol.ghu                               # same layout as oo_.dr.ghx / oo_.dr.ghu
 sol.irf(shock_vector, periods=40)
 
-ob = dynpy.Occbin(m)                           # model with an occbin_constraints block
+ob = pydyn.Occbin(m)                           # model with an occbin_constraints block
 res = ob.simulate(ob.surprise_shocks(), periods=200)
 res.piecewise, res.linear, res.regime_history
 ob.irf([-0.05], periods=40)                    # piecewise IRF, relative to a no-shock baseline
 
-dr2 = dynpy.k_order(m, order=2)                # needs korder/libdynpy_korder.so
-path = dynpy.simulate(dr2, shocks, pruning=True)
-girf = dynpy.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, drop=100)
+dr2 = pydyn.k_order(m, order=2)                # needs korder/libpydyn_korder.so
+path = pydyn.simulate(dr2, shocks, pruning=True)
+girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, drop=100)
 ```
 
 ## Known limits

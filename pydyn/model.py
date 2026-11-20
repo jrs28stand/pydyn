@@ -175,7 +175,7 @@ class Model:
         ns = dict(NAMESPACE)
         ns.update(self.functions)
         ns["np"] = np
-        exec(compile(src, f"<dynpy:{self.json_dir}>", "exec"), ns)  # noqa: S102 - generated from the model
+        exec(compile(src, f"<pydyn:{self.json_dir}>", "exec"), ns)  # noqa: S102 - generated from the model
         self.source = src
         self._f = ns
         self.jac_dims = tuple(dyn["jacobian"]["dims"])

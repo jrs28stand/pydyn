@@ -30,7 +30,7 @@ class FirstOrderSolution:
     params: np.ndarray = None
 
     def as_dr(self) -> dict:
-        """Decision rule in the dict form used by ``dynpy.simulate`` / ``dynpy.irf``."""
+        """Decision rule in the dict form used by ``pydyn.simulate`` / ``pydyn.irf``."""
         return {"ys": self.ys, "order_var": self.order_var, "state_var": self.state_var,
                 "ghx": self.ghx, "ghu": self.ghu, "order": 1}
 

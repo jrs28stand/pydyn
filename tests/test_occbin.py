@@ -7,18 +7,18 @@ import numpy as np
 import pytest
 from scipy.io import loadmat
 
-import dynpy
+import pydyn
 
-REF = Path(os.environ.get("DYNPY_REF", str(Path(__file__).resolve().parent.parent / "reference")))
-EXAMPLES = Path(os.environ.get("DYNPY_EXAMPLES", "/home/claude/dl/src72/examples"))
+REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))
+EXAMPLES = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/dl/src72/examples"))
 
 
 @pytest.fixture(scope="module")
 def setup(tmp_path_factory):
     work = tmp_path_factory.mktemp("occbin")
     shutil.copy(EXAMPLES / "occbin" / "rbc_occbin.mod", work)
-    m = dynpy.Model(dynpy.run_preprocessor(work / "rbc_occbin.mod"))
-    ob = dynpy.Occbin(m)
+    m = pydyn.Model(pydyn.run_preprocessor(work / "rbc_occbin.mod"))
+    ob = pydyn.Occbin(m)
     ref = loadmat(REF / "clean_rbc_occbin.mat", squeeze_me=True)
     opts = m.options["occbin_solver"]
     res = ob.simulate(ob.surprise_shocks(), periods=opts["simul.periods"],

@@ -1,4 +1,4 @@
-"""Compare dynpy first-order solutions with saved Dynare 7.2 (Octave) results."""
+"""Compare pydyn first-order solutions with saved Dynare 7.2 (Octave) results."""
 import os
 import shutil
 from pathlib import Path
@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 from scipy.io import loadmat
 
-import dynpy
+import pydyn
 
-REF = Path(os.environ.get("DYNPY_REF", str(Path(__file__).resolve().parent.parent / "reference")))
-EXAMPLES = Path(os.environ.get("DYNPY_EXAMPLES", "/home/claude/dl/src72/examples"))
+REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))
+EXAMPLES = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/dl/src72/examples"))
 CASES = {
     "collard_2001_simulated_moments": EXAMPLES / "stochastic_simulations",
     "rbc_occbin": EXAMPLES / "occbin",
@@ -24,8 +24,8 @@ def case(request, tmp_path_factory):
     name = request.param
     work = tmp_path_factory.mktemp(name)
     shutil.copy(CASES[name] / f"{name}.mod", work)
-    jd = dynpy.run_preprocessor(work / f"{name}.mod")
-    model = dynpy.Model(jd)
+    jd = pydyn.run_preprocessor(work / f"{name}.mod")
+    model = pydyn.Model(jd)
     ref = loadmat(REF / f"clean_{name}.mat", squeeze_me=True)
     return name, model, ref
 
@@ -46,7 +46,7 @@ def test_steady_state(case):
     """Dynare stops its nonlinear solver at a looser tolerance than we do, so compare
     loosely and require that our residual is no worse than Dynare's."""
     _, m, ref = case
-    ys, params = dynpy.steady_state(m, params=ref["params"])
+    ys, params = pydyn.steady_state(m, params=ref["params"])
     np.testing.assert_allclose(ys, ref["ys"], rtol=1e-4, atol=1e-6)
     ours = np.max(np.abs(m.static_resid(ys, params=params)))
     theirs = np.max(np.abs(m.static_resid(ref["ys"], params=ref["params"])))
@@ -56,7 +56,7 @@ def test_steady_state(case):
 def test_decision_rules(case):
     """Decision rules at Dynare's own steady state and parameters must match tightly."""
     name, m, ref = case
-    sol = dynpy.first_order(m, ys=np.asarray(ref["ys"], float), params=np.asarray(ref["params"], float))
+    sol = pydyn.first_order(m, ys=np.asarray(ref["ys"], float), params=np.asarray(ref["params"], float))
     np.testing.assert_array_equal(sol.order_var + 1, ref["order_var"])
     ghx, ghu = sol.ghx, sol.ghu
     ref_ghx, ref_ghu = np.atleast_2d(ref["ghx"]), np.asarray(ref["ghu"]).reshape(ghu.shape)
@@ -70,7 +70,7 @@ def test_irfs(case):
     name, m, ref = case
     if "irfs" not in ref:
         pytest.skip("no IRFs in reference")
-    sol = dynpy.first_order(m, ys=np.asarray(ref["ys"], float), params=np.asarray(ref["params"], float))
+    sol = pydyn.first_order(m, ys=np.asarray(ref["ys"], float), params=np.asarray(ref["params"], float))
     chol = np.linalg.cholesky(m.Sigma_e)
     names, irfs = ref["irf_names"].split(","), np.atleast_2d(ref["irfs"])
     worst = 0.0

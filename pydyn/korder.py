@@ -34,25 +34,25 @@ def load_library(path: str | os.PathLike | None = None):
     global _lib
     if _lib is not None and path is None:
         return _lib
-    cands = [path, os.environ.get("DYNPY_KORDER_LIB"),
-             Path(__file__).resolve().parent.parent / "korder" / "libdynpy_korder.so"]
+    cands = [path, os.environ.get("PYDYN_KORDER_LIB"),
+             Path(__file__).resolve().parent.parent / "korder" / "libpydyn_korder.so"]
     for c in cands:
         if c and Path(c).exists():
             lib = ctypes.CDLL(str(c))
             break
     else:
-        raise FileNotFoundError("libdynpy_korder.so not found; build it with korder/build.sh "
-                                "or set DYNPY_KORDER_LIB")
+        raise FileNotFoundError("libpydyn_korder.so not found; build it with korder/build.sh "
+                                "or set PYDYN_KORDER_LIB")
     dp, ip = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int)
-    lib.dynpy_korder_solve.restype = ctypes.c_void_p
-    lib.dynpy_korder_solve.argtypes = [ctypes.c_int] * 7 + [dp, dp, dp, ip, ip, ip, ip, dp,
+    lib.pydyn_korder_solve.restype = ctypes.c_void_p
+    lib.pydyn_korder_solve.argtypes = [ctypes.c_int] * 7 + [dp, dp, dp, ip, ip, ip, ip, dp,
                                                             ctypes.c_double, ctypes.c_int, ctypes.c_int]
-    lib.dynpy_korder_error.restype = ctypes.c_char_p
-    lib.dynpy_korder_error.argtypes = [ctypes.c_void_p]
-    lib.dynpy_korder_dims.restype = ctypes.c_int
-    lib.dynpy_korder_dims.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ip, ip]
-    lib.dynpy_korder_copy.argtypes = [ctypes.c_void_p, ctypes.c_char_p, dp]
-    lib.dynpy_korder_free.argtypes = [ctypes.c_void_p]
+    lib.pydyn_korder_error.restype = ctypes.c_char_p
+    lib.pydyn_korder_error.argtypes = [ctypes.c_void_p]
+    lib.pydyn_korder_dims.restype = ctypes.c_int
+    lib.pydyn_korder_dims.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ip, ip]
+    lib.pydyn_korder_copy.argtypes = [ctypes.c_void_p, ctypes.c_char_p, dp]
+    lib.pydyn_korder_free.argtypes = [ctypes.c_void_p]
     _lib = lib
     return lib
 
@@ -103,21 +103,21 @@ def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, libr
     as_d = lambda a: a.ctypes.data_as(dp)  # noqa: E731
     as_i = lambda a: a.ctypes.data_as(ip)  # noqa: E731
     with _lock:
-        h = lib.dynpy_korder_solve(order, cnt["nstatic"], cnt["npred"], cnt["nboth"], cnt["nfwrd"],
+        h = lib.pydyn_korder_solve(order, cnt["nstatic"], cnt["npred"], cnt["nboth"], cnt["nfwrd"],
                                    model.n_exo, len(params), as_d(ys), as_d(sigma), as_d(params),
                                    as_i(dr), as_i(nnz), as_i(rows), as_i(cols), as_d(vals),
                                    QZ_CRITERIUM, int(bool(pruning)), int(threads))
     try:
-        err = lib.dynpy_korder_error(h).decode()
+        err = lib.pydyn_korder_error(h).decode()
         if err:
             raise KOrderError(err)
 
         def get(name):
             nr, nc = ctypes.c_int(), ctypes.c_int()
-            if not lib.dynpy_korder_dims(h, name.encode(), ctypes.byref(nr), ctypes.byref(nc)):
+            if not lib.pydyn_korder_dims(h, name.encode(), ctypes.byref(nr), ctypes.byref(nc)):
                 return None
             out = np.empty(nr.value * nc.value)
-            lib.dynpy_korder_copy(h, name.encode(), as_d(out))
+            lib.pydyn_korder_copy(h, name.encode(), as_d(out))
             return out.reshape((nr.value, nc.value), order="F")
 
         res = {"ys": ys, "order_var": order_var, "state_var": state_var, "order": order,
@@ -132,4 +132,4 @@ def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, libr
                 res[f"pruning_g_{i}"] = get(f"pruning_g_{i}")
         return res
     finally:
-        lib.dynpy_korder_free(h)
+        lib.pydyn_korder_free(h)

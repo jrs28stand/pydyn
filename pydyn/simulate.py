@@ -1,4 +1,4 @@
-# This file is part of pydyn/dynpy.
+# This file is part of pydyn.
 #
 # It is a Python port of matlab/stochastic_solver/simult_.m and irf.m from Dynare 7.2
 # (Copyright (C) 2001-2026 Dynare Team, https://www.dynare.org), modified in 2026.
@@ -10,7 +10,7 @@
 """Simulation and impulse responses from perturbation decision rules (orders 1 to 3).
 
 Ports of Dynare's ``simult_.m`` and ``irf.m``. Decision rules are dicts as returned by
-``dynpy.k_order`` (or ``FirstOrderSolution.as_dr()``): arrays ``ghx``, ``ghu``, ``ghxx`` ... with
+``pydyn.k_order`` (or ``FirstOrderSolution.as_dr()``): arrays ``ghx``, ``ghu``, ``ghxx`` ... with
 rows in decision-rule order, plus ``ys``, ``order_var`` and ``state_var``.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""dynpy: a Python front end for Dynare models, built on the Dynare preprocessor's JSON output."""
+"""pydyn: a Python front end for Dynare models, built on the Dynare preprocessor's JSON output."""
 from .preprocessor import run_preprocessor
 from .model import Model, ModelError
 from .steady import steady_state, SteadyStateError
