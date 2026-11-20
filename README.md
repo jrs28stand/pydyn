@@ -13,12 +13,12 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Steady state: analytical block, numerical, Python steady-state function, helper functions | done, validated |
 | First-order solution (`ghx`, `ghu`, IRFs, simulation) | done, validated |
 | OccBin piecewise-linear simulation, one or two constraints, `curb_retrench` | done, validated |
-| OccBin impulse responses (`Occbin.irf`) | done; no Dynare reference yet (built on the validated simulation) |
+| OccBin impulse responses (`Occbin.irf`) | done, validated |
 | Orders 2 and 3 through Dynare's C++ k-order library | done, validated |
 | Simulation and IRFs at orders 2 and 3, with and without pruning | done, validated |
 | Model-local (`#`) and auxiliary variables (leads/lags beyond one, on endogenous and exogenous) | done, validated |
 | Perfect foresight (stacked Newton; `initval`, `endval`, deterministic `shocks`) | done, validated on one example |
-| OccBin: periodic solutions, initial regime guesses | not ported |
+| OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data) | done, validated |
 | Estimation, piecewise Kalman filter | in progress / not started |

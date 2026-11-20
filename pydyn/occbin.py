@@ -1,3 +1,9 @@
+# This file is part of pydyn. It is a Python port of matlab/+occbin/{solve_one_constraint, solve_two_constraints,
+# mkdatap_anticipated_dyn, mkdatap_anticipated_2constraints_dyn, map_regime, mkdata}.m from Dynare 7.2 (public domain:
+# original authors Luca Guerrieri and Matteo Iacoviello, adapted by the Dynare Team), modified in 2026. The option
+# handling (set_default_options.m, setup.m, solver.m), the IRF routine (irf.m) and the constraint-error defaults
+# (preprocessor ComputingTasks.cc, occbin_difference) follow Dynare Team files released under GPL-3.0-or-later.
+# Released under the GNU General Public License, version 3 or later; see LICENSE. No warranty.
 """Occasionally binding constraints: piecewise-linear solution (Guerrieri and Iacoviello, 2015).
 
 Follows the algorithm of Dynare's ``occbin.solve_one_constraint`` / ``solve_two_constraints``:
@@ -17,7 +23,33 @@ from .steady import steady_state
 
 
 class OccbinError(Exception):
-    pass
+    """Failure of the OccBin solver. ``error_flag`` is Dynare's code: 310 (guesses alternate between
+    two regimes and ``periodic_solution`` is off), 311 (no convergence within ``maxit``), 312 (a
+    constraint still binds at the end of the check-ahead horizon: increase ``check_ahead_periods``),
+    313 (infinite loop of regime guesses). ``period`` is the 1-based shock period that failed."""
+    error_flag = 0
+
+    def __init__(self, message="", error_flag=None, period=None):
+        super().__init__(message)
+        if error_flag is not None:
+            self.error_flag = error_flag
+        self.period = period
+
+
+class OccbinPeriodicError(OccbinError):
+    error_flag = 310
+
+
+class OccbinMaxitError(OccbinError):
+    error_flag = 311
+
+
+class OccbinHorizonError(OccbinError):
+    error_flag = 312
+
+
+class OccbinLoopError(OccbinError):
+    error_flag = 313
 
 
 @dataclass
@@ -28,6 +60,10 @@ class OccbinResult:
     regime_history: list             # per shock period: [(regimes, starts) for each constraint], starts 1-based
     ys: np.ndarray
     iterations: list = field(default_factory=list)
+    exo_pos: tuple = ()              # 0-based positions of the columns of ``shocks`` among the exogenous variables
+    error_flag: int = 0              # always 0: failures raise OccbinError
+    periodic: list = field(default_factory=list)   # per shock period: True if a periodic solution was selected
+    diagnostics: list = field(default_factory=list)  # per shock period: dict(max_err, violates, n_viol, selected), per iteration
 
 
 def _split_comparison(expr: str):
@@ -97,56 +133,80 @@ class Occbin:
         tr = Translator(resolve, steady=lambda v: f"ss[{m._ie[v]}]", shiftable=set(m._ie))
         ns = dict(NAMESPACE)
 
-        def make(expr):
-            cond = eval("lambda z, params, ss: " + tr(expr), ns)  # noqa: S307 - model expression
+        def fn(src):
+            return eval("lambda z, params, ss: " + tr(src), ns)  # noqa: S307 - model expression
+
+        def absdiff(expr):
+            """abs(lhs - rhs) of a comparison, Dynare's default constraint error."""
             parts = _split_comparison(expr)
             if parts is None:
-                err = lambda z, params, ss: np.asarray(cond(z, params, ss), float)  # noqa: E731
-            else:
-                err = eval(f"lambda z, params, ss: abs(({tr(parts[0])}) - ({tr(parts[2])})) + 0*z[:, 0]", ns)  # noqa: S307
-            return cond, err
+                f = fn(expr)
+                return lambda z, params, ss: np.asarray(f(z, params, ss), float)
+            return fn(f"abs(({parts[0]}) - ({parts[2]}))")
 
         self._cons = []
         for c in m.occbin_constraints:
-            bind, ebind = make(c["bind"])
-            if c.get("relax"):
-                relax, erelax = make(c["relax"])
+            bind, relax = c["bind"], c.get("relax") or None
+            eb_src, er_src = c.get("error_bind") or None, c.get("error_relax") or None
+            # the defaults of ComputingTasks.cc (OccbinConstraintsStatement::writeOutput)
+            ebind = fn(eb_src) if eb_src else absdiff(bind)
+            if er_src:
+                erelax = fn(er_src)
+            elif relax:
+                erelax = absdiff(relax)
             else:
-                relax, erelax = None, None
-            self._cons.append((bind, ebind, relax, erelax))
+                erelax = absdiff(bind)       # equals ebind unless error_bind was given
+            self._cons.append((fn(bind), ebind, fn(relax) if relax else None, erelax))
 
     def check(self, z_levels):
-        """Return boolean arrays (binding, relax) and error arrays, each of shape (T, k)."""
+        """Return boolean arrays (binding, relax) and error arrays, each of shape (T, k).
+
+        The errors are Dynare's ``err.binding_constraint_j`` / ``err.relax_constraint_j``: the
+        ``error_bind`` / ``error_relax`` expressions of the ``occbin_constraints`` block if given,
+        otherwise the absolute difference between the two sides of the bind / relax condition."""
         T = z_levels.shape[0]
         binding, relax = np.zeros((T, self.k), bool), np.zeros((T, self.k), bool)
         eb, er = np.zeros((T, self.k)), np.zeros((T, self.k))
+        args = (z_levels, self.params, self.ys)
         for j, (bind, ebind, rel, erel) in enumerate(self._cons):
-            binding[:, j] = np.broadcast_to(bind(z_levels, self.params, self.ys), (T,))
-            eb[:, j] = ebind(z_levels, self.params, self.ys)
-            if rel is None:
-                relax[:, j], er[:, j] = ~binding[:, j], eb[:, j]
-            else:
-                relax[:, j] = np.broadcast_to(rel(z_levels, self.params, self.ys), (T,))
-                er[:, j] = erel(z_levels, self.params, self.ys)
+            binding[:, j] = np.broadcast_to(np.asarray(bind(*args), float) != 0, (T,))
+            eb[:, j] = np.broadcast_to(np.asarray(ebind(*args), float), (T,))
+            relax[:, j] = ~binding[:, j] if rel is None else np.broadcast_to(np.asarray(rel(*args), float) != 0, (T,))
+            er[:, j] = np.broadcast_to(np.asarray(erel(*args), float), (T,))
         return binding, relax, eb, er
 
     # ---------------------------------------------------------------- path for a given guess
-    def rules(self, indicator: np.ndarray):
+    @staticmethod
+    def last_regime_start(col) -> int:
+        """1-based start of the last regime of a 0/1 column (``regime_start(end)`` in map_regime)."""
+        ch = np.nonzero(col[1:] != col[:-1])[0]
+        return int(ch[-1]) + 2 if len(ch) else 1
+
+    def tmax(self, indicator) -> int:
+        """Dynare's ``Tmax = max(regime_start(end)) - 1``: last period of the last binding regime."""
+        return max(self.last_regime_start(indicator[:, j]) for j in range(self.k)) - 1
+
+    def rules(self, indicator: np.ndarray, Tmax: int | None = None):
         """Time-varying rules y_t = T_t y_{t-1} + R_t u_t + C_t for t = 1..Tmax (list of tuples)."""
-        any_bind = indicator.any(axis=1)
-        Tmax = int(np.nonzero(any_bind)[0][-1]) + 1 if any_bind.any() else 0
+        if Tmax is None:
+            Tmax = self.tmax(indicator)
         n, out = self.n, [None] * Tmax
         T_next, C_next = self.P, np.zeros(n)
         for i in range(Tmax - 1, -1, -1):
-            C, B, A, J, D = self.regime_matrices(tuple(bool(b) for b in indicator[i]))
+            reg = tuple(bool(b) for b in indicator[i])
+            if i == Tmax - 1:
+                # Dynare takes the regime of the last binding period from the guess for two
+                # constraints (10, 11, else 01) and as "binding" for one constraint
+                reg = (True,) if self.k == 1 else (reg if any(reg) else (False, True))
+            C, B, A, J, D = self.regime_matrices(reg)
             sol = -np.linalg.solve(B + A @ T_next, np.column_stack([C, J, A @ C_next + D]))
             T_next, R, C_next = sol[:, :n], sol[:, n:n + self.n_exo], sol[:, -1]
             out[i] = (T_next, R, C_next)
         return out
 
-    def path(self, indicator: np.ndarray, init: np.ndarray, shock: np.ndarray):
+    def path(self, indicator: np.ndarray, init: np.ndarray, shock: np.ndarray, Tmax: int | None = None):
         """Deviations from steady state for len(indicator) periods given a regime guess."""
-        rules = self.rules(indicator)
+        rules = self.rules(indicator, Tmax)
         N = indicator.shape[0]
         z = np.empty((N, self.n))
         y = init
@@ -168,83 +228,252 @@ class Occbin:
                 start.append(i + 1)
         return regime, start
 
+    def _apply_regime_guess(self, bi, per):
+        """Dynare's ``init_regime`` guess for one shock period: fill the columns of ``bi`` from
+        [(regime, start), ...] (one pair per constraint, starts 1-based), as in solve_*_constraint.m.
+        Like MATLAB's indexed assignment, a start beyond the current rows grows the matrix."""
+        bi = bi.copy()
+        for j, (regime, start) in enumerate(per):
+            bi[:, j] = bool(regime[-1])
+            for ir in range(len(regime) - 1):
+                a, b = int(start[ir]) - 1, int(start[ir + 1]) - 1
+                if b > bi.shape[0]:
+                    bi = np.vstack([bi, np.zeros((b - bi.shape[0], self.k), bool)])
+                bi[a:b, j] = bool(regime[ir])
+        return bi
+
     # ---------------------------------------------------------------- simulation
     def simulate(self, shocks, periods=100, check_ahead_periods=200, maxit=30, init=None,
-                 curb_retrench=False) -> OccbinResult:
-        """Piecewise-linear simulation under a sequence of unanticipated shocks.
+                 curb_retrench=False, *, periodic_solution=False, periodic_solution_threshold=1,
+                 periodic_solution_strict=True, init_regime=None, init_binding_indicator=None,
+                 max_check_ahead_periods=np.inf, reset_check_ahead_periods_in_new_period=False,
+                 reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1) -> OccbinResult:
+        """Piecewise-linear simulation under a sequence of unanticipated shocks (Dynare's
+        ``occbin.solver`` with the ``simul`` options, defaults as in ``set_default_options.m``).
 
-        ``shocks`` has shape (n_shock_periods, n_exo); the simulation runs for ``periods`` periods.
+        ``shocks`` has shape (n_shock_periods, n_exo), or (n_shock_periods, len(exo_pos)) when
+        ``exo_pos`` (0-based positions or names of the exogenous variables, Dynare's ``exo_pos``)
+        is given. The simulation runs for ``periods`` periods. ``init`` is ``endo_init``:
+        deviations from steady state in declaration order.
+
+        ``init_regime`` (Dynare's ``init_regime``) is a list with one entry per leading shock period,
+        each a list of ``(regime, regime_start)`` pairs, one per constraint, i.e. the format of
+        ``OccbinResult.regime_history``. ``init_binding_indicator`` is a (rows, n_constraints)
+        0/1 array: the initial guess for the first shock period.
+
+        Failures raise OccbinError whose ``error_flag`` is Dynare's (310-313); see OccbinError.
         """
-        shocks = np.atleast_2d(np.asarray(shocks, float))
-        S = shocks.shape[0]
-        periods = max(periods, S)
-        N = max(check_ahead_periods, periods - S)          # look-ahead horizon (rows = N + 1)
-        y0 = np.zeros(self.n) if init is None else np.asarray(init, float)
+        k, n, n_exo, m = self.k, self.n, self.n_exo, self.model
+        shocks_in = np.atleast_2d(np.asarray(shocks, float))
+        if exo_pos is None:
+            exo_idx = tuple(range(n_exo))
+        else:
+            exo_idx = tuple(m._ix[p] if isinstance(p, str) else int(p) for p in np.atleast_1d(np.asarray(exo_pos, dtype=object)))
+        if shocks_in.shape[1] != len(exo_idx):
+            raise ValueError(f"shocks have {shocks_in.shape[1]} columns but exo_pos selects {len(exo_idx)} shocks")
+        S = shocks_in.shape[0]
+        shocks = np.zeros((S, n_exo))
+        shocks[:, list(exo_idx)] = shocks_in
+        n_periods = max(periods, S)
+        max_check = np.inf if max_check_ahead_periods is None else max_check_ahead_periods
+        if check_ahead_periods > max_check:          # occbin.solver: check_ahead cannot exceed max
+            check_ahead_periods = int(max_check)
+        n0 = max(check_ahead_periods, n_periods - S)  # nperiods_0
+        y0 = np.zeros(n) if init is None or np.size(init) == 0 else np.asarray(init, float).ravel().copy()
         init_orig = y0.copy()
-        bi = np.zeros((N + 1, self.k), bool)
-        piecewise = np.zeros((periods, self.n))
-        history, iters, z = [], [], None
+
+        bi = np.zeros((0, k), bool) if init_binding_indicator is None else \
+            np.asarray(init_binding_indicator, bool).reshape(-1, k)
+        if bi.shape[0] > n0 + 1:
+            raise ValueError("init_binding_indicator has more rows than check_ahead_periods + 1")
+        if bi.shape[0] < n0 + 1:
+            bi = np.vstack([bi, np.zeros((n0 + 1 - bi.shape[0], k), bool)])
+
+        piecewise = np.zeros((n_periods, n))
+        history, iters, periodic_flags, diag = [], [], [], []
+        z = used = None
 
         for sp in range(S):
-            changed, it, increased, seen = True, 0, False, []
-            while changed and it < maxit:
+            changed, it, increased = True, 0, False
+            is_periodic = is_loop = False
+            guess_it = init_regime is not None and sp < len(init_regime)
+            hist = []
+            max_err = np.full(maxit, np.nan)
+            viol_exp = np.zeros(maxit, bool)
+            n_viol = np.zeros(maxit)
+            shock_here = sp == 0 or np.any(shocks[sp] != 0)
+            chosen_periodic, selected = False, None
+
+            while changed and it < maxit and not is_periodic and not is_loop:
                 it += 1
-                if bi[-1].any():
-                    bi = np.vstack([bi, np.zeros((1, self.k), bool)])
+                if bi[-1].any() and n0 < max_check:
+                    bi = np.vstack([bi, np.zeros((1, k), bool)])
+                    n0 += 1
                     increased = True
+                elif n0 >= max_check:
+                    bi = bi[:int(max_check) + 1].copy()
+                    bi[-1] = False
+                if bi.shape[0] < n0 + 1:
+                    bi = np.vstack([bi, np.zeros((n0 + 1 - bi.shape[0], k), bool)])
+                if it == 1 and guess_it:
+                    bi = self._apply_regime_guess(bi, init_regime[sp])
+                    n0 = bi.shape[0] - 1
                 used = bi.copy()
-                seen.append(used)
-                if sp == 0 or np.any(shocks[sp] != 0):
-                    z, _ = self.path(used, y0, shocks[sp])
-                    binding, relax, _, _ = self.check(z + self.ys)
-                    changed = bool(np.any(binding & ~used) or np.any(relax & used))
+                hist.append(used)
+
+                if shock_here:
+                    if it == 1 and reset_regime_in_new_period:
+                        if reset_check_ahead_periods_in_new_period:
+                            n0 = max(check_ahead_periods, n_periods - S)
+                            bi = np.zeros((n0 + 1, k), bool)
+                        else:
+                            bi = np.zeros_like(bi)
+                        used = bi.copy()
+                        hist[-1] = used
+                    z, _ = self.path(used, y0, shocks[sp], self.tmax(used))
+                    binding, relax, eb, er = self.check(z + self.ys)
+                    L = bi.shape[0]
+                    if np.isfinite(max_check) and max_check < L:
+                        E, pad = int(max_check), L - int(max_check)
+                    else:
+                        E, pad = L, 0
+                    new_viol = binding[:E] & ~bi[:E]
+                    new_rel = relax[:E] & bi[:E]
+                    if new_viol.any() or new_rel.any():
+                        max_err[it - 1] = np.max(np.abs(np.concatenate([eb[:E][new_viol], er[:E][new_rel]])))
+                        changed = True
+                        viol_exp[it - 1] = new_viol.any()
+                    else:
+                        changed = False
+                        max_err[it - 1] = 0.0
+                    # enforce the unconstrained regime beyond max_check_ahead_periods
+                    bind_new = np.vstack([binding[:E], np.zeros((pad, k), bool)])
+                    rel_new = np.vstack([relax[:E], np.ones((pad, k), bool)])
+                    if k == 1:   # solve_one_constraint: sum(bi - next guess), can be negative
+                        n_viol[it - 1] = np.sum(bi.astype(int) - ((bi | bind_new) & ~(bi & rel_new)).astype(int))
+                    else:        # solve_two_constraints: (bi - (bi|new)) & ~(bi&relax), i.e. newly binding periods
+                        n_viol[it - 1] = max(int(np.sum(~bi[:, c] & bind_new[:, c])) for c in range(k))
                     if curb_retrench:
                         # slow the update down: release at most the last binding period per constraint
-                        retrench = np.zeros_like(used)
-                        for j in range(self.k):
-                            rb = np.nonzero(relax[:, j] & used[:, j])[0]
-                            r_all, b_all = np.nonzero(relax[:, j])[0], np.nonzero(used[:, j])[0]
-                            if len(rb) and len(b_all) and r_all[-1] >= b_all[-1]:
+                        retrench = np.zeros_like(bi)
+                        for j in range(k):
+                            rb = np.nonzero(relax[:E, j] & bi[:E, j])[0]
+                            r_all, b_all = np.nonzero(relax[:E, j])[0], np.nonzero(bi[:E, j])[0]
+                            if len(rb) and r_all[-1] >= b_all[-1]:
                                 retrench[rb[-1], j] = True
-                        bi = (used | binding) & ~retrench
+                        bi = (bi | bind_new) & ~retrench
                     else:
-                        bi = (used | binding) & ~(used & relax)
-                    if it > 1 and changed and not increased and any(
-                            g.shape == bi.shape and np.array_equal(g, bi) for g in seen[:-1]):
-                        raise OccbinError(f"period {sp + 1}: regime guesses cycle without converging")
+                        bi = (bi | bind_new) & ~(bi & rel_new)
+
+                    if it > 1 and changed and not increased:
+                        is_loop = any(h.shape == bi.shape and np.array_equal(h, bi) for h in hist[:it - 1])
+                        prev = hist[it - 2]
+                        same = prev.shape == bi.shape and np.array_equal(prev, bi)
+                        if k == 1:
+                            small = int(np.sum(used.astype(int) - bi.astype(int))) <= periodic_solution_threshold
+                        else:
+                            small = all(int(np.sum(used[:, c].astype(int) - bi[:, c].astype(int))) <= periodic_solution_threshold
+                                        for c in range(k))
+                        is_periodic = bool(same and small)
+                        is_per_all = np.zeros(it - 1, bool)
+                        is_per_all[it - 2] = is_periodic
+                        strict = is_periodic
+                        if is_loop and not is_periodic and not periodic_solution_strict:
+                            cand = n_viol[:it][~viol_exp[:it]]
+                            ok = np.any(cand <= periodic_solution_threshold) if k == 1 else \
+                                np.any(cand < periodic_solution_threshold)
+                            if ok:
+                                is_periodic = True
+                                is_per_all = np.zeros(it - 1, bool)
+                                is_per_all[0] = True    # consider all guesses
+                        if is_periodic and periodic_solution:
+                            inx = list(range(int(np.argmax(is_per_all)), it))
+                            inx1 = [i for i in inx if not viol_exp[i]]
+                            if inx1:
+                                inx = inx1
+                            vals = max_err[inx] if (strict or not inx1) else n_viol[inx]
+                            best = inx[int(np.nanargmin(vals))]
+                            bi = hist[best].copy()
+                            chosen_periodic, selected = True, best + 1
+                            if best < it - 1:
+                                used = bi.copy()
+                                z, _ = self.path(used, y0, shocks[sp], self.tmax(used))
                 else:
                     changed = False
                     z = np.vstack([z[1:], self.P @ z[-1]])
                     if z.shape[0] < bi.shape[0]:
                         z = np.vstack([z, self.P @ z[-1]])
+
             if changed:
-                raise OccbinError(f"period {sp + 1}: no convergence in {maxit} iterations")
+                if maxit > algo_truncation:
+                    if is_periodic:
+                        if not periodic_solution:
+                            raise OccbinPeriodicError(
+                                f"period {sp + 1}: regime guesses alternate between two regimes (error 310); "
+                                "use periodic_solution=True to pick the guess with the smallest error", period=sp + 1)
+                    elif is_loop:
+                        raise OccbinLoopError(f"period {sp + 1}: regime guesses cycle without converging (error 313)",
+                                              period=sp + 1)
+                    else:
+                        raise OccbinMaxitError(f"period {sp + 1}: no convergence in {maxit} iterations (error 311)",
+                                               period=sp + 1)
+                else:
+                    bi = hist[-1].copy()
             if used[-1].any():
-                raise OccbinError(f"period {sp + 1}: a constraint binds at the end of the horizon; "
-                                  "increase check_ahead_periods")
-            history.append([self.map_regime(used[:, j]) for j in range(self.k)])
+                raise OccbinHorizonError(f"period {sp + 1}: a constraint binds at the end of the horizon; "
+                                         "increase check_ahead_periods (error 312)", period=sp + 1)
+            history.append([self.map_regime(used[:, j]) for j in range(k)])
             iters.append(it)
+            periodic_flags.append(bool(changed and chosen_periodic))
+            diag.append(dict(max_err=max_err[:it].copy(), violates=viol_exp[:it].copy(), n_viol=n_viol[:it].copy(),
+                             selected=selected))
             y0 = z[0].copy()
             piecewise[sp] = y0
-            bi = np.vstack([used[1:], np.zeros((1, self.k), bool)])
-        piecewise[S:] = z[1:periods - S + 1]
+            bi = np.vstack([bi[1:], np.zeros((1, k), bool)])
+        piecewise[S:] = z[1:n_periods - S + 1]
 
-        linear = np.empty((periods, self.n))
+        linear = np.empty((n_periods, n))
         y = init_orig
-        for t in range(periods):
+        for t in range(n_periods):
             y = self.P @ y + (self.Q @ shocks[t] if t < S else 0.0)
             linear[t] = y
-        return OccbinResult(piecewise=piecewise + self.ys, linear=linear + self.ys, shocks=shocks,
-                            regime_history=history, ys=self.ys, iterations=iters)
+        return OccbinResult(piecewise=piecewise + self.ys, linear=linear + self.ys, shocks=shocks_in,
+                            regime_history=history, ys=self.ys, iterations=iters, exo_pos=exo_idx,
+                            periodic=periodic_flags, diagnostics=diag)
+
+    # option names of occbin_setup / occbin_solver (JSON keys) -> simulate() keywords
+    _MOD_OPTIONS = {
+        "simul.periods": ("periods", int),
+        "simul.maxit": ("maxit", int),
+        "simul.curb_retrench": ("curb_retrench", bool),
+        "simul.check_ahead_periods": ("check_ahead_periods", int),
+        "simul.max_check_ahead_periods": ("max_check_ahead_periods", int),
+        "simul.periodic_solution": ("periodic_solution", bool),
+        "simul.periodic_solution_threshold": ("periodic_solution_threshold", int),
+        "simul.periodic_solution_strict": ("periodic_solution_strict", bool),
+        "simul.reset_check_ahead_periods_in_new_period": ("reset_check_ahead_periods_in_new_period", bool),
+        "simul.reset_regime_in_new_period": ("reset_regime_in_new_period", bool),
+    }
+
+    def mod_options(self) -> dict:
+        """simulate() keywords set by the .mod file's occbin_setup / occbin_solver statements
+        (``simul_debug`` is accepted and has no effect). Unset options keep Dynare's defaults."""
+        o = {**self.model.options.get("occbin_setup", {}), **self.model.options.get("occbin_solver", {})}
+        out = {}
+        for key, (kw, typ) in self._MOD_OPTIONS.items():
+            if key in o:
+                v = o[key]
+                out[kw] = (str(v).lower() == "true") if typ is bool and isinstance(v, str) else typ(v)
+        return out
 
     def run(self, **overrides) -> OccbinResult:
         """Simulate as the .mod file specifies: its shocks(surprise) blocks and the options given
-        to occbin_setup / occbin_solver (simul_periods, simul_check_ahead_periods, simul_maxit,
-        simul_curb_retrench). Keyword arguments override them."""
-        o = {**self.model.options.get("occbin_setup", {}), **self.model.options.get("occbin_solver", {})}
-        kw = dict(periods=o.get("simul.periods", 100),
-                  check_ahead_periods=o.get("simul.check_ahead_periods", 200),
-                  maxit=o.get("simul.maxit", 30), curb_retrench=bool(o.get("simul.curb_retrench", False)))
+        to occbin_setup / occbin_solver (simul_periods, simul_maxit, simul_curb_retrench,
+        simul_check_ahead_periods, simul_max_check_ahead_periods, simul_periodic_solution,
+        simul_periodic_solution_threshold, simul_periodic_solution_strict,
+        simul_reset_check_ahead_periods, simul_reset_regime_in_new_period). Keyword arguments
+        override them."""
+        kw = self.mod_options()
         kw.update(overrides)
         return self.simulate(self.surprise_shocks(), **kw)
 
@@ -253,6 +482,7 @@ class Occbin:
         period's shocks minus the simulation without it. Returns (periods, n_endo).
 
         Unlike a linear IRF this depends on the size and sign of the impulse and on the baseline.
+        See ``irf_occbin`` for Dynare's own definition (shock size, signs, horizon).
         """
         base = np.zeros((1, self.n_exo)) if baseline_shocks is None else np.atleast_2d(np.asarray(baseline_shocks, float)).copy()
         hit = base.copy()
@@ -260,6 +490,42 @@ class Occbin:
         a = self.simulate(hit, periods=periods, **kw)
         b = self.simulate(base, periods=periods, **kw)
         return a.piecewise - b.piecewise
+
+    def irf_occbin(self, periods=40, shocksize=None, exo_names=None, shocksigns=("pos", "neg"),
+                   check_ahead_periods=30, maxit=30, init_regime=None, **kw):
+        """OccBin IRFs as Dynare's ``occbin.irf`` computes them (``t0 = 0``, no smoother).
+
+        For each shock in ``exo_names`` (default all) and each sign: one simulation with
+        ``+/- shocksize`` in period 1 and zero shocks for ``periods + 1`` shock periods (Dynare
+        passes ``options_.irf + 1`` rows of shocks), minus the simulation without the shock.
+        ``shocksize`` defaults to the shock's standard deviation (0.01 if that is below 1e-9) and
+        may be a scalar or one value per shock. ``check_ahead_periods`` (30) and ``maxit`` (30) are
+        the ``irf`` options, which replace the ``simul`` ones; further keywords (``curb_retrench``,
+        ``periodic_solution``...) go to ``simulate``. Returns {(exo_name, sign): {"piecewise": array,
+        "linear": array}} with arrays of shape (periods + 1, n_endo) in deviations from steady state.
+        """
+        m = self.model
+        names = list(m.exo_names if exo_names is None else exo_names)
+        idx = [m._ix[nm] for nm in names]
+        if shocksize is None:
+            size = np.sqrt(np.diag(m.Sigma_e)[idx])
+            size[size < 1e-9] = 0.01
+        else:
+            size = np.atleast_1d(np.asarray(shocksize, float))
+            if size.size == 1:
+                size = np.repeat(size, len(idx))
+        sim = dict(periods=periods, check_ahead_periods=check_ahead_periods, maxit=maxit,
+                   init_regime=init_regime, **kw)
+        base_shocks = np.zeros((periods + 1, self.n_exo))
+        base = self.simulate(base_shocks, **sim)
+        out = {}
+        for sign in shocksigns:
+            for nm, j, sz in zip(names, idx, size):
+                sh = base_shocks.copy()
+                sh[0, j] += sz if "pos" in sign else -sz
+                r = self.simulate(sh, **sim)
+                out[(nm, sign)] = {"piecewise": r.piecewise - base.piecewise, "linear": r.linear - base.linear}
+        return out
 
     def surprise_shocks(self):
         """Shock sequence from the model's ``shocks(surprise)`` blocks, shape (max period, n_exo)."""
