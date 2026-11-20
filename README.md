@@ -19,6 +19,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Model-local (`#`) and auxiliary variables (leads/lags beyond one, on endogenous and exogenous) | done, validated |
 | Perfect foresight (stacked Newton; `initval`, `endval`, deterministic `shocks`) | done, validated on one example |
 | OccBin: periodic solutions, initial regime guesses | not ported |
+| Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data) | done, validated |
 | Estimation, piecewise Kalman filter | in progress / not started |
 
