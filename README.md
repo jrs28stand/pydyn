@@ -31,7 +31,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 `reference/*.m` scripts):
 
 - First order: `collard_2001_simulated_moments`, `rbc_occbin`, `schorfheide_2000_sim`.
-  Decision rules agree to about 1e-13; 28 IRFs agree to about 1e-15.
+  Decision rules agree to about 1e-13 and 28 IRFs to about 1e-15 (measured; the tests assert 1e-9).
 - OccBin, two constraints: `rbc_occbin` (200 periods). Piecewise and linear paths agree to 1e-15
   and the regime history is identical in all 169 shock periods.
 - OccBin, one constraint: Dynare's `borrcon` test model, default options and `curb_retrench`.
@@ -135,6 +135,17 @@ path = pydyn.simulate(dr2, shocks, pruning=True)
 girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, drop=100)
 ```
 
+## Options from the .mod file
+
+Loading a model does not run its commands; the Python functions do the work and take their
+defaults from the `.mod` file where that is meaningful: `order`, `pruning` and `qz_criterium`
+(`k_order`, `first_order`, `simulate`, `irf`), `steady(tolf, nocheck)`, the `stoch_simul` options
+used by `moments`, the `simul_*` options of OccBin, the estimation and smoother options listed in
+their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
+act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
+(`lmmcp`, `[mcp]` tags, OccBin constraints in linear estimation) raise an error instead.
+`docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
+
 ## Performance
 
 - The first-order solver is a port of Dynare's reduced algorithm (static variables removed by QR, QZ
@@ -153,10 +164,12 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 - MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
   dates), random numbers and file-system functions are not supported; see the section above.
-- Not handled: `loglinear`, external functions inside the model block, deterministic exogenous
-  variables, Ramsey/optimal policy, heterogeneous-agent models, measurement-error covariances,
-  steady-state assignments with several outputs (`[a, b] = f(...)`), `steady_state()` of an
-  expression.
+- Not handled: `loglinear` in the solution functions (`first_order`, `k_order`, `simulate`, `irf`,
+  `moments`: they work in levels and warn; estimation and the smoother do honour it), external
+  functions inside the model block, deterministic exogenous variables, Ramsey/optimal policy,
+  heterogeneous-agent models, measurement-error covariances, `steady_state()` of an expression.
+- Linear estimation and the smoother refuse models with `occbin_constraints`; OccBin filtering
+  and estimation are not implemented.
 - `shocks(surprise, overwrite)`: the preprocessor's JSON does not record `overwrite` for surprise
   blocks, so several surprise blocks are merged (with a warning).
 - OccBin regime matrices are evaluated at the exogenous steady state; Dynare uses zero. The two
@@ -164,8 +177,9 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 - The k-order library keeps process-wide state. Calls are serialised with a lock, and a call in a
   forked child process after the parent used the library raises an error: use the `spawn` start
   method for multiprocessing.
-- `examples/estimation/rbc_irf_matching.mod`: the 7.2 preprocessor writes invalid JSON for this
-  file, so it cannot be loaded.
+- The 7.2 preprocessor writes invalid JSON for some statements. The loader repairs `matched_irfs`
+  and `estimated_params_bounds`; files using `shock_paths`, `model_comparison` or `colormap=`
+  still fail to load.
 
 ## Independent review
 

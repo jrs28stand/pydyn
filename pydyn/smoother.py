@@ -77,10 +77,23 @@ def _scalar(v):
     return v
 
 
+#: options of the estimation command that concern the optimiser, the sampler or its output, not the smoother
+_ESTIMATION_ONLY = {
+    "mode_compute", "mode_file", "mode_check", "mh_replic", "mh_nblocks", "mh_jscale", "mh_drop", "mh_init_scale",
+    "mh_tune_jscale", "optim", "cova_compute", "posterior_sampling_method", "bayesian_irf", "moments_varendo",
+    "irf", "forecast", "conf_sig", "mh_conf_sig", "load_mh_file", "prior_trunc", "smoother", "order",
+    "posterior_sampler_options", "additional_optimizer_steps", "nobs_vec", "lyapunov", "sub_draws",
+}
+
+
 def _resolve_options(model, user, extra_statements=()):
     opts = dict(_DEFAULTS)
     from_file = _statement_options(model, _STATEMENTS + tuple(extra_statements))
     opts.update({k: v for k, v in from_file.items() if k in _DEFAULTS})
+    from . import options as _opt
+    dropped = sorted(set(from_file) - set(_DEFAULTS) - _opt.COSMETIC - _ESTIMATION_ONLY)
+    if dropped:
+        _opt.warn_once(model, "the smoother does not act on these options from the .mod file: " + ", ".join(dropped))
     unknown = set(user) - set(_DEFAULTS)
     if unknown:
         raise TypeError(f"unknown smoother option(s): {sorted(unknown)}")
@@ -768,6 +781,8 @@ def smooth(model, data=None, sol=None, **options) -> SmootherResult:
     recursion is used (equal to Dynare's ``kalman_algo=4``); True reproduces Dynare's
     ``kalman_algo=3`` output.
     """
+    from . import options as _opt
+    _opt.refuse_occbin(model, "The smoother")
     from .perturbation import first_order
 
     opts = _resolve_options(model, options)

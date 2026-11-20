@@ -241,8 +241,18 @@ def _solve_full(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM):
     return G, H, eig
 
 
-def first_order(model, ys=None, params=None) -> FirstOrderSolution:
+def first_order(model, ys=None, params=None, qz_criterium=None) -> FirstOrderSolution:
+    """First-order solution in levels. ``qz_criterium`` defaults to the value set in the .mod file
+    (``stoch_simul``/``check``/``estimation``), else Dynare's 1 + 1e-6."""
+    from . import options as _opt
     from .steady import steady_state
+
+    if _opt.stoch_options(model).get("loglinear"):
+        _opt.warn_once(model, "the .mod file sets loglinear: first_order, simulate and irf work in levels "
+                              "(estimation and the smoother do honour loglinear)")
+    for key in ("partial_information", "aim_solver", "dr", "dr_cycle_reduction_tol", "sylvester"):
+        if key in _opt.stoch_options(model):
+            _opt.warn_once(model, f"the .mod file sets {key}: pydyn always uses its QZ-based solver")
 
     if ys is None:
         ys, params = steady_state(model, params)
@@ -250,7 +260,8 @@ def first_order(model, ys=None, params=None) -> FirstOrderSolution:
     n = model.n_endo
     J = model.dynamic_jac(np.tile(ys, 3), model.exo_steady(), params, ys)
     fm, f0, fp, fu = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:]
-    G, H, eig = solve_linear_re(fm, f0, fp, fu, lead_lag_incidence=model.lead_lag_incidence)
+    G, H, eig = solve_linear_re(fm, f0, fp, fu, qz_criterium=_opt.qz_criterium(model, qz_criterium),
+                                lead_lag_incidence=model.lead_lag_incidence)
     order_var, state_var, _ = dr_ordering(model.lead_lag_incidence)
     # clean numerical noise in columns of non-state variables
     mask = np.ones(n, bool)

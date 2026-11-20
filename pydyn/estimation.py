@@ -612,6 +612,8 @@ class Estimation:
     """
 
     def __init__(self, model, data=None, **options):
+        from . import options as _opt
+        _opt.refuse_occbin(model, "Estimation")
         self.model = model
         opts = dict(_DEFAULTS)
         raw = dict(model.options.get("estimation", {}))
@@ -628,6 +630,11 @@ class Estimation:
             elif k is not None:
                 self.ignored_options.append(k)
         self.options = opts
+        unused = sorted(set(self.ignored_options) - _opt.COSMETIC)
+        if unused:
+            _opt.warn_once(model, "Estimation does not act on these estimation options: " + ", ".join(unused)
+                           + " (mode() uses its own optimiser and sample() is random-walk Metropolis-Hastings; "
+                           "smoothing, forecasts and posterior IRFs are separate calls or not available)")
         if int(opts["order"]) != 1:
             raise NotImplementedError("estimation is implemented for order=1 only")
         if opts["diffuse_filter"] or opts["kalman_algo"] in (3, 4):

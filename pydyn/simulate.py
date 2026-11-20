@@ -22,7 +22,7 @@ def _as_dr(dr):
     return dr.as_dr() if hasattr(dr, "as_dr") else dr
 
 
-def simulate(dr, shocks, order=None, pruning=False, y0=None) -> np.ndarray:
+def simulate(dr, shocks, order=None, pruning=None, y0=None) -> np.ndarray:
     """Simulate levels for a (T, n_exo) shock array; returns (T, n_endo) in declaration order.
 
     ``y0`` is the initial level vector (default: steady state). At order 2 with ``pruning`` this is
@@ -30,6 +30,7 @@ def simulate(dr, shocks, order=None, pruning=False, y0=None) -> np.ndarray:
     """
     dr = _as_dr(dr)
     order = dr.get("order", 1) if order is None else order
+    pruning = bool(dr.get("pruning", False)) if pruning is None else bool(pruning)   # as the rule was solved
     if order > dr.get("order", 1):
         raise ValueError(f"decision rule only available up to order {dr.get('order', 1)}")
     ys, ov, sv = dr["ys"], dr["order_var"], dr["state_var"]
@@ -99,7 +100,7 @@ def simulate(dr, shocks, order=None, pruning=False, y0=None) -> np.ndarray:
     return out
 
 
-def irf(dr, impulse, Sigma_e=None, periods=40, order=None, pruning=False, drop=100, replic=50,
+def irf(dr, impulse, Sigma_e=None, periods=40, order=None, pruning=None, drop=100, replic=50,
         rng=None, draws=None) -> np.ndarray:
     """Impulse responses, shape (periods, n_endo), deviations as Dynare reports them.
 

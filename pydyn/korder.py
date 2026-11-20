@@ -57,7 +57,8 @@ def load_library(path: str | os.PathLike | None = None):
     return lib
 
 
-def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, library=None) -> dict:
+def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, library=None,
+            qz_criterium=None) -> dict:
     """Solve the model by perturbation at ``order`` (1 to 3) with Dynare's C++ solver.
 
     Returns a dict with Dynare's decision-rule arrays (``ghx``, ``ghu``, ``ghxx``, ``ghxu``,
@@ -65,6 +66,15 @@ def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, libr
     ``ys``, ``order_var`` and ``state_var`` (0-based declaration indices).
     Rows are in decision-rule order; state columns are (state variables, shocks).
     """
+    from . import options as _opt
+    so = _opt.stoch_options(model)
+    if order is None:                      # as in the .mod file; Dynare's own default is 2
+        order = int(so.get("order", 2))
+    if pruning is None:
+        pruning = bool(so.get("pruning", False))
+    if so.get("loglinear"):
+        _opt.warn_once(model, "the .mod file sets loglinear: k_order, simulate and irf work in levels")
+    qz = _opt.qz_criterium(model, qz_criterium)
     if order > model.max_deriv_order:
         raise KOrderError(f"the preprocessor output only has derivatives up to order "
                           f"{model.max_deriv_order}; rerun it with output=third or set order in the .mod file")
@@ -106,7 +116,7 @@ def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, libr
         h = lib.pydyn_korder_solve(order, cnt["nstatic"], cnt["npred"], cnt["nboth"], cnt["nfwrd"],
                                    model.n_exo, len(params), as_d(ys), as_d(sigma), as_d(params),
                                    as_i(dr), as_i(nnz), as_i(rows), as_i(cols), as_d(vals),
-                                   QZ_CRITERIUM, int(bool(pruning)), int(threads))
+                                   qz, int(bool(pruning)), int(threads))
     try:
         err = lib.pydyn_korder_error(h).decode()
         if err:
@@ -120,7 +130,7 @@ def k_order(model, order=2, ys=None, params=None, pruning=False, threads=1, libr
             lib.pydyn_korder_copy(h, name.encode(), as_d(out))
             return out.reshape((nr.value, nc.value), order="F")
 
-        res = {"ys": ys, "order_var": order_var, "state_var": state_var, "order": order,
+        res = {"ys": ys, "order_var": order_var, "state_var": state_var, "order": order, "pruning": bool(pruning),
                "params": params.copy()}
         for nm in _NAMES:
             a = get(nm)

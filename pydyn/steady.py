@@ -158,12 +158,27 @@ def fill_auxiliary(model, ys, x, params):
     return ys
 
 
-def steady_state(model, params=None, guess=None, tol=1e-10, check=True, exo=None):
+#: Dynare's default tolerance on the steady-state residuals (options_.solve_tolf = eps^(1/3))
+DYNARE_TOLF = float(np.finfo(float).eps ** (1.0 / 3.0))
+
+
+def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None):
     """Return ``(ys, params)``.
 
-    Uses the ``steady_state_model`` block when the model has one, otherwise solves the
-    static model numerically from ``initval`` (or ``guess``).
+    Uses a Python steady-state function, the ``steady_state_model`` block or a steady-state ``.m``
+    file when the model has one, otherwise solves the static model numerically from ``initval``
+    (or ``guess``). The residuals are then checked against ``tol``: by default the ``tolf`` given
+    to ``steady`` in the .mod file, else Dynare's default (about 6e-6). A residual above 1e-8 that
+    passes is reported in a warning. ``check=False`` (or ``steady(nocheck)``) skips the test.
     """
+    from . import options as _opt
+    so = model.options.get("steady", {})
+    if tol is None:
+        tol = float(so.get("solve_tolf", DYNARE_TOLF))
+    if check is None:
+        check = not so.get("steadystate.nocheck", False)
+    _opt.warn_unused(model, "steady", {"solve_tolf", "steadystate.nocheck", "homotopy_mode", "homotopy_steps"},
+                     "steady_state")
     params = model.params if params is None else np.asarray(params, float)
     x = model.exo_steady() if exo is None else np.asarray(exo, float)
     with np.errstate(all="ignore"):
@@ -172,6 +187,9 @@ def steady_state(model, params=None, guess=None, tol=1e-10, check=True, exo=None
         res = np.max(np.abs(model.static_resid(ys, x, params)))
         if not res < tol:
             raise SteadyStateError(f"steady state not found: max |residual| = {res:.3e}")
+        if res > 1e-8:
+            _opt.warn_once(model, f"steady state accepted with max |residual| = {res:.1e} "
+                                  f"(tolerance {tol:.1e}, as in Dynare); results are only that accurate")
     return ys, params
 
 

@@ -35,13 +35,24 @@ def exo_path(model, periods):
 
 
 def perfect_foresight(model, periods=None, params=None, exo=None, y_init=None, y_term=None,
-                      guess=None, tol=1e-9, maxit=50) -> PerfectForesightResult:
+                      guess=None, tol=None, maxit=None) -> PerfectForesightResult:
     """Solve F(y[t-1], y[t], y[t+1], x[t]) = 0 for t = 1..periods.
 
     By default the path starts at the steady state for ``initval``, ends at the steady state for
     ``endval`` (or the initial one), and the exogenous path comes from the ``shocks`` blocks, as
     with ``perfect_foresight_setup`` followed by ``perfect_foresight_solver`` in Dynare.
     """
+    from . import options as _opt
+    so = model.options.get("perfect_foresight_solver", {})
+    for key in ("lmmcp", "linear_approximation", "endogenous_terminal_period"):
+        if so.get(key):
+            raise NotImplementedError(f"perfect_foresight_solver({key}) is not implemented")
+    if any("mcp" in (eq.get("tags") or {}) for eq in model.raw.get("model", []) if isinstance(eq, dict)):
+        raise NotImplementedError("equations tagged [mcp=...] (complementarity conditions) are not implemented")
+    tol = float(so.get("dynatol.f", 1e-9)) if tol is None else tol      # Dynare's default is 1e-5; ours is tighter
+    maxit = int(so.get("simul.maxit", 50)) if maxit is None else maxit
+    _opt.warn_unused(model, "perfect_foresight_solver", {"dynatol.f", "simul.maxit"}, "perfect_foresight")
+    _opt.warn_unused(model, "perfect_foresight_setup", {"periods"}, "perfect_foresight")
     if periods is None:
         periods = model.options.get("perfect_foresight_setup", {}).get("periods")
         if periods is None:
