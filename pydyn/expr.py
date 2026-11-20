@@ -78,6 +78,89 @@ NAMESPACE = {
     "_ge": _Infix(np.greater_equal), "_eq": _Infix(np.equal), "_ne": _Infix(np.not_equal),
 }
 
+
+# ---------------------------------------------------------------- scalar namespace
+# The generated model functions are written once and executed in two namespaces. In
+# FAST_NAMESPACE their inputs are Python lists of floats and the functions come from ``math``:
+# about three times faster than numpy scalars. Python floats raise where numpy returns nan or
+# inf (log of a negative number, division by zero, overflow) and a negative base with a
+# fractional exponent gives a complex number; the callers catch ArithmeticError, ValueError and
+# TypeError and re-evaluate with NAMESPACE, so results are those of numpy in every such case.
+# For that to hold no function here may quietly turn a complex number into a real one, hence
+# ``math.fabs`` rather than ``abs`` and comparisons that reject complex operands.
+class _FastInfix(_Infix):
+    __slots__ = ()
+
+    def _l(self, other):
+        return _FastInfix(self.fn, other, True)
+
+    def _r(self, other):
+        if not self.bound:
+            raise TypeError("comparison is missing its left operand")
+        return 1.0 if self.fn(float(self.left), float(other)) else 0.0
+
+    __rxor__ = __ror__ = _l
+    __xor__ = __or__ = _r
+
+
+def _fmax(a, b):
+    return a if a > b else b if b >= a else math.nan      # nan if either is nan, as np.maximum
+
+
+def _fmin(a, b):
+    return a if a < b else b if b <= a else math.nan
+
+
+def _fsign(x):
+    return 1.0 if x > 0 else -1.0 if x < 0 else 0.0 if x == 0 else math.nan
+
+
+def _fround(x):
+    return math.copysign(math.floor(math.fabs(x) + 0.5), x) if x == x and x not in (math.inf, -math.inf) else x
+
+
+def _ffloor(x):
+    return float(math.floor(x)) if math.isfinite(x) else x
+
+
+def _fceil(x):
+    return float(math.ceil(x)) if math.isfinite(x) else x
+
+
+def _fnormcdf(x, mu=0.0, sigma=1.0):
+    return 0.5 * (1.0 + math.erf((x - mu) / (sigma * math.sqrt(2.0))))
+
+
+def _fnormpdf(x, mu=0.0, sigma=1.0):
+    return math.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * math.sqrt(2.0 * math.pi))
+
+
+def _get_power_deriv_fast(x, p, k):
+    if k == 1:          # nearly every call in a Jacobian
+        if -1e-12 < x < 1e-12 and 0 <= p < 1 and -1e-12 < p - round(p) < 1e-12:
+            return 0.0
+        return x ** (p - 1) * p
+    return _get_power_deriv(x, p, k)
+
+
+import operator as _op  # noqa: E402
+
+FAST_NAMESPACE = {
+    "exp": math.exp, "log": math.log, "ln": math.log, "log10": math.log10, "log2": math.log2,
+    "sqrt": math.sqrt, "cbrt": math.cbrt, "abs": math.fabs, "sign": _fsign,
+    "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos,
+    "atan": math.atan, "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+    "asinh": math.asinh, "acosh": math.acosh, "atanh": math.atanh,
+    "max": _fmax, "min": _fmin, "erf": math.erf, "erfc": math.erfc,
+    "get_power_deriv": _get_power_deriv_fast, "normcdf": _fnormcdf, "normpdf": _fnormpdf,
+    "Inf": math.inf, "NaN": math.nan, "inf": math.inf, "nan": math.nan, "pi": math.pi,
+    "round": _fround, "floor": _ffloor, "ceil": _fceil, "mod": _op.mod,
+    "_lt": _FastInfix(_op.lt), "_gt": _FastInfix(_op.gt), "_le": _FastInfix(_op.le),
+    "_ge": _FastInfix(_op.ge), "_eq": _FastInfix(_op.eq), "_ne": _FastInfix(_op.ne),
+}
+#: exceptions after which a scalar evaluation is repeated with numpy semantics
+FAST_ERRORS = (ArithmeticError, ValueError, TypeError)
+
 _CMP = {"<": "^_lt^", ">": "^_gt^", "<=": "^_le^", ">=": "^_ge^", "==": "|_eq|", "!=": "|_ne|"}
 
 

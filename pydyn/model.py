@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import warnings
 from pathlib import Path
@@ -9,7 +10,13 @@ from pathlib import Path
 import numpy as np
 
 from . import matlab
-from .expr import NAMESPACE, Translator, safe_name, temp_name
+from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name, temp_name
+
+#: "fast": generated model functions run on Python floats with a numpy fallback; "numpy": numpy
+#: scalars only (the original behaviour). Environment variable PYDYN_CODEGEN overrides it.
+CODEGEN = os.environ.get("PYDYN_CODEGEN", "fast")
+#: evaluate each exp(y[i]) / log(y[i]) once per generated function
+HOIST = os.environ.get("PYDYN_HOIST", "1") != "0"
 
 
 def _pairs(items, key_a, key_b):
@@ -141,61 +148,85 @@ class Model:
             out.append((d.get("variable", d.get("name")), d.get("value")))
         return out
 
+    _HOIST = re.compile(r"(?<![\w.])(exp|log)\(y\[(\d+)\]\)")
+    _CHUNK = 500
+
     def _build(self, tr, block, name):
-        """Return source for residual and Jacobian functions of a (static|dynamic) block."""
+        """Source of the residual and derivative functions of a (static|dynamic) block, and the
+        positions of the values they return.
+
+        Each function takes ``(y, x, params, ss)`` and returns a flat list: the residuals, or the
+        structural non-zeros of a derivative in the order of the preprocessor's JSON. The same
+        source runs with Python floats (expr.FAST_NAMESPACE) and with numpy (expr.NAMESPACE)."""
         tr.temps = {d["temporary_term"] for k, v in block.items() if k.startswith("temporary_terms_") for d in v}
-        assign = []
-        for k, v in self._locals(block):
-            assign.append(f"    {safe_name(k)} = {tr(v)}")
-        tt_res = [f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}" for d in block["temporary_terms_"]]
-        tt_jac = [f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}" for d in block["temporary_terms_jacobian"]]
         for key in ("external_functions_temporary_terms_", "external_functions_temporary_terms_jacobian"):
             if block.get(key):
                 raise NotImplementedError("external functions are not supported")
+        assign = [f"    {safe_name(k)} = {tr(v)}" for k, v in self._locals(block)]
 
-        neq = len(block["residuals"])
-        lines = [f"def {name}_resid(y, x, params, ss):"] + assign + tt_res
-        lines.append(f"    r = np.empty({neq})")
-        for i, d in enumerate(block["residuals"]):
-            e = d["residual"]
-            rhs = e.get("rhs", "0")
-            lines.append(f"    r[{i}] = ({tr(e['lhs'])}) - ({tr(rhs)})")
-        lines.append("    return r\n")
+        def temps(key):
+            return [f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}" for d in block.get(key, [])]
 
+        def function(fn, body, values):
+            hoisted = {}
+
+            def hoist(mo):          # exp(y[i]) and log(y[i]) recur in most equations: evaluate once
+                return hoisted.setdefault(mo.group(0), f"_hx_{mo.group(1)}{mo.group(2)}")
+            if HOIST:
+                body = [self._HOIST.sub(hoist, ln) for ln in body]
+                values = [self._HOIST.sub(hoist, v) for v in values]
+            out = [f"def {name}_{fn}(y, x, params, ss):"] + [f"    {v} = {k}" for k, v in hoisted.items()] + body
+            if len(values) <= self._CHUNK:
+                out.append("    return [" + ", ".join(values) + "]\n")
+            else:                   # keep list displays (and the evaluation stack) of moderate size
+                out.append("    v = [" + ", ".join(values[:self._CHUNK]) + "]")
+                for i in range(self._CHUNK, len(values), self._CHUNK):
+                    out.append("    v += [" + ", ".join(values[i:i + self._CHUNK]) + "]")
+                out.append("    return v\n")
+            return out
+
+        meta = {}
+        body = assign + temps("temporary_terms_")
+        lines = function("resid", body, [f"({tr(d['residual']['lhs'])}) - ({tr(d['residual'].get('rhs', '0'))})"
+                                         for d in block["residuals"]])
         jac = block["jacobian"]
-        lines += [f"def {name}_jac(y, x, params, ss):"] + assign + tt_res + tt_jac
-        lines.append(f"    g = np.zeros(({jac['dims'][0]}, {jac['dims'][1]}))")
-        for e in jac["entries"]:
-            r, c = e["indices"]
-            lines.append(f"    g[{r - 1}, {c - 1}] = {tr(e['val'])}")
-        lines.append("    return g\n")
-
-        tt_prev = assign + tt_res + tt_jac
+        body = body + temps("temporary_terms_jacobian")
+        lines += function("jac", body, [tr(e["val"]) for e in jac["entries"]])
+        meta[f"{name}_jac"] = (tuple(jac["dims"]), np.array([e["indices"][0] - 1 for e in jac["entries"]], dtype=np.intp),
+                               np.array([e["indices"][1] - 1 for e in jac["entries"]], dtype=np.intp))
         for fn, key, ttkey, order in (("hess", "hessian", "temporary_terms_hessian", 2),
                                       ("third", "third_derivative", "temporary_terms_third_derivative", 3)):
-            tt_prev = tt_prev + [f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}" for d in block.get(ttkey, [])]
-            lines += [f"def {name}_{fn}(y, x, params, ss):"] + tt_prev
-            lines.append("    rows, cols, vals = [], [], []")
-            for e in block.get(key, {}).get("entries", []):
-                r, *c = e["indices"]
-                lines.append(f"    rows.append({r - 1}); cols.append({tuple(i - 1 for i in c)}); vals.append({tr(e['val'])})")
-            lines.append("    return rows, cols, vals\n")
-        return "\n".join(lines)
+            body = body + temps(ttkey)
+            entries = block.get(key, {}).get("entries", [])
+            lines += function(fn, body, [tr(e["val"]) for e in entries])
+            meta[f"{name}_{fn}"] = (np.array([e["indices"][0] - 1 for e in entries], dtype=np.int32),
+                                    np.array([[i - 1 for i in e["indices"][1:]] for e in entries],
+                                             dtype=np.int32).reshape(len(entries), order))
+        return "\n".join(lines), meta
 
     def _compile(self, dyn, sta):
-        src = self._build(self._tr_dynamic(), dyn, "dynamic") + "\n" + self._build(self._tr_static(), sta, "static")
-        ns = dict(NAMESPACE)
-        ns.update(self.functions)
-        ns["np"] = np
-        exec(compile(src, f"<pydyn:{self.json_dir}>", "exec"), ns)  # noqa: S102 - generated from the model
+        src_d, meta = self._build(self._tr_dynamic(), dyn, "dynamic")
+        src_s, meta_s = self._build(self._tr_static(), sta, "static")
+        meta.update(meta_s)
+        src = src_d + "\n" + src_s
+        code = compile(src, f"<pydyn:{self.json_dir}>", "exec")
         self.source = src
-        self._f = ns
-        self.jac_dims = tuple(dyn["jacobian"]["dims"])
-        self._jac_entries = [(e["indices"][0] - 1, e["indices"][1] - 1) for e in dyn["jacobian"]["entries"]]
+        self._meta = meta
+        self._exec(code)
+        self.jac_dims, self.jac_rows, self.jac_cols = meta["dynamic_jac"]
+        self._jac_entries = list(zip(self.jac_rows.tolist(), self.jac_cols.tolist()))
         # highest derivative order the preprocessor computed (a linear model has an empty Hessian)
         self.max_deriv_order = 1 + sum(f"dynamic_g{o}_sparse_indices" in self._deriv_keys for o in (2, 3))
         if self.jac_dims[1] != 3 * self.n_endo + self.n_exo:
             raise NotImplementedError(f"unexpected dynamic Jacobian layout {self.jac_dims}")
+
+    def _exec(self, code):
+        """Bind the generated functions twice: with Python floats (fast) and with numpy scalars."""
+        self._fn, self._ff = dict(NAMESPACE), dict(FAST_NAMESPACE)
+        for ns in (self._fn, self._ff):
+            ns.update(self.functions)
+            ns["np"] = np
+            exec(code, ns)  # noqa: S102 - generated from the model
 
     # ------------------------------------------------------------------ statements
     def _param_translator(self, extra=None):
@@ -379,21 +410,45 @@ class Model:
         self.Sigma_e[i, i] = float(value) ** 2
 
     # ------------------------------------------------------------------ evaluation
-    def _x0(self, x):
-        return np.zeros(self.n_exo) if x is None else np.asarray(x, float)
+    def _values(self, fn, y, x, params, ss):
+        """Values returned by generated function ``fn`` as a float array.
+
+        Python-float evaluation first; if it hits something Python raises on but numpy does not
+        (log of a negative number, overflow, division by zero, a complex power), the numpy version
+        is used, which gives nan/inf exactly as before."""
+        y = np.asarray(y, float)
+        x = np.zeros(self.n_exo) if x is None else np.asarray(x, float)
+        params = self.params if params is None else np.asarray(params, float)
+        if CODEGEN == "fast":
+            try:
+                return np.array(self._ff[fn](y.tolist(), x.tolist(), params.tolist(),
+                                             None if ss is None else np.asarray(ss, float).tolist()), dtype=float)
+            except FAST_ERRORS:
+                pass
+        return np.array(self._fn[fn](y, x, params, ss), dtype=float)
+
+    def _dense(self, fn, vals):
+        dims, rows, cols = self._meta[fn]
+        g = np.zeros(dims)
+        g[rows, cols] = vals
+        return g
 
     def static_resid(self, y, x=None, params=None):
-        return self._f["static_resid"](np.asarray(y, float), self._x0(x), self.params if params is None else params, None)
+        return self._values("static_resid", y, x, params, None)
 
     def static_jac(self, y, x=None, params=None):
-        return self._f["static_jac"](np.asarray(y, float), self._x0(x), self.params if params is None else params, None)
+        return self._dense("static_jac", self._values("static_jac", y, x, params, None))
 
     def dynamic_resid(self, yy, x=None, params=None, ss=None):
-        return self._f["dynamic_resid"](np.asarray(yy, float), self._x0(x), self.params if params is None else params, ss)
+        return self._values("dynamic_resid", yy, x, params, ss)
 
     def dynamic_jac(self, yy, x=None, params=None, ss=None):
         """Dense Jacobian, columns ordered [y(-1), y, y(+1), exogenous]."""
-        return self._f["dynamic_jac"](np.asarray(yy, float), self._x0(x), self.params if params is None else params, ss)
+        return self._dense("dynamic_jac", self._values("dynamic_jac", yy, x, params, ss))
+
+    def dynamic_jac_values(self, yy, x=None, params=None, ss=None):
+        """Structural non-zeros of the dynamic Jacobian, at ``(jac_rows, jac_cols)``."""
+        return self._values("dynamic_jac", yy, x, params, ss)
 
     def dynamic_sparse_derivs(self, order, yy, x=None, params=None, ss=None):
         """Order-``order`` derivatives of the dynamic model as (rows, cols, vals).
@@ -401,19 +456,14 @@ class Model:
         ``cols`` has shape (nnz, order); indices are 0-based with columns ordered
         [y(-1), y, y(+1), exogenous]. For order >= 2 each symmetric entry appears once.
         """
-        yy, x = np.asarray(yy, float), self._x0(x)
-        params = self.params if params is None else params
         if order == 1:
-            g = self._f["dynamic_jac"](yy, x, params, ss)
-            rows = np.array([r for r, _ in self._jac_entries], dtype=np.int32)
-            cols = np.array([[c] for _, c in self._jac_entries], dtype=np.int32)
-            return rows, cols, g[rows, cols[:, 0]]
+            return (self.jac_rows.astype(np.int32), self.jac_cols.astype(np.int32)[:, None],
+                    self._values("dynamic_jac", yy, x, params, ss))
         fn = {2: "dynamic_hess", 3: "dynamic_third"}.get(order)
         if fn is None:
             raise NotImplementedError("derivatives above third order")
-        rows, cols, vals = self._f[fn](yy, x, params, ss)
-        return (np.array(rows, dtype=np.int32), np.array(cols, dtype=np.int32).reshape(len(rows), order),
-                np.array(vals, float))
+        rows, cols = self._meta[fn]
+        return rows, cols, self._values(fn, yy, x, params, ss)
 
     def exo_steady(self, terminal=False):
         src = {**self.initval, **self.endval} if terminal else self.initval
