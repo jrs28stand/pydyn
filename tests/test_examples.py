@@ -32,7 +32,7 @@ EXPECTED = {
     "stochastic_simulations/schorfheide_2000_nonstationary": MATCH,
     "heterogeneity/hank_one_asset": "not supported",
     "optimal_policy/nk_ramsey_osr": "not supported",
-    "perfect_foresight/perfect_foresight_expectation_errors": "not supported",
+    "perfect_foresight/perfect_foresight_expectation_errors": MATCH,
     "semistructural/pac_model": "not supported",
 }
 

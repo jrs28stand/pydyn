@@ -18,7 +18,9 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Orders 2 and 3 through Dynare's C++ k-order library | done, validated |
 | Simulation and IRFs at orders 2 and 3, with and without pruning | done, validated |
 | Model-local (`#`) and auxiliary variables (leads/lags beyond one, on endogenous and exogenous) | done, validated |
-| Perfect foresight (stacked Newton; `initval`, `endval`, deterministic `shocks`) | done, validated on one example |
+| Perfect foresight: `initval`/`endval`/`histval` with or without `steady`, `shocks`, `mshocks`, homotopy, `linear_approximation`, `endogenous_terminal_period`, purely backward/forward/static and linear models | done, validated |
+| Perfect foresight with complementarity conditions (`lmmcp`, `[mcp=...]` tags and the perpendicular syntax; port of Dynare's LMMCP solver) | done, validated (lower bound binding 11 periods; two-sided bound) |
+| Perfect foresight with expectation errors (`learnt_in`), and a helper for sequences of unanticipated shocks | done, validated |
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data, observation trends) | done, validated |
@@ -108,10 +110,10 @@ computed steady state after `steady`).
 ## Dynare's shipped examples
 
 `tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's
-own results (stored in `reference/examples`). Twelve match (decision rules, second order where the
+own results (stored in `reference/examples`). Thirteen match (decision rules, second order where the
 example asks for it, and the perfect-foresight path); `rbc_irf_matching` loads and solves but has
-no reference; ten are outside the scope of this package: the six heterogeneous-agent examples, the
-two Ramsey examples, perfect foresight with expectation errors, and the PAC model. `nk_baseline`
+no reference; the expectation-errors example matches too; nine are outside the scope of this package: the six
+heterogeneous-agent examples, the two Ramsey examples and the PAC model. `nk_baseline`
 and `collard_2001_analytical_steady_state` use their MATLAB steady-state code directly.
 
 ## The C++ k-order library
@@ -156,7 +158,7 @@ defaults from the `.mod` file where that is meaningful: `order`, `pruning` and `
 used by `moments`, the `simul_*` options of OccBin, the estimation and smoother options listed in
 their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
 act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
-(`lmmcp`, `[mcp]` tags, OccBin constraints in linear estimation) raise an error instead.
+(OccBin constraints in linear estimation, `initval_file`, controlled paths) raise an error instead.
 `docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
 
 ## Performance

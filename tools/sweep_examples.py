@@ -61,12 +61,11 @@ def check(mod: Path, ref_file: Path | None = None):
             # Dynare's nonlinear solver stops early; evaluate the rules at its steady state
             ys = ref_ys
             notes.append("rules at Dynare's ys")
-    if "perfect_foresight_with_expectation_errors_solver" in kinds:
-        out["status"], out["detail"] = "not supported", "perfect foresight with expectation errors; " + ", ".join(notes)
-        return out
-    if "perfect_foresight_solver" in kinds:
+    if kinds & {"perfect_foresight_solver", "perfect_foresight_with_expectation_errors_solver"}:
         try:
-            pf = pydyn.perfect_foresight(m)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pf = pydyn.perfect_foresight(m, tol=1e-12)
             d = np.max(np.abs(pf.endo.T - ref["endo_simul"])) if "endo_simul" in ref else np.nan
             out["status"] = "matches Dynare" if d < 1e-6 else "MISMATCH"
             out["detail"] = f"perfect foresight path {d:.1e} ({pf.iterations} Newton steps)"

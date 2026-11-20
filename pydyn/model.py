@@ -425,7 +425,9 @@ class Model:
                           "shock_decomposition", "initial_condition_decomposition", "shock_groups",
                           "observation_trends", "estimated_params_bounds",
                           "plot_shock_decomposition", "realtime_shock_decomposition",
-                          "squeeze_shock_decomposition", "init2shocks", "filter_initial_state"):
+                          "squeeze_shock_decomposition", "init2shocks", "filter_initial_state",
+                          "perfect_foresight_with_expectation_errors_setup",
+                          "perfect_foresight_with_expectation_errors_solver", "histval", "mshocks"):
             self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
@@ -462,7 +464,7 @@ class Model:
         for d in st.get("deterministic_shocks", []):
             for v in d["values"]:
                 self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), self._value(v["value"])))
-        for key in ("skewness", "coskewness", "multiplicative_deterministic_shocks"):
+        for key in ("skewness", "coskewness"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")
 
