@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import optimize
 
+from . import matlab
 from .expr import NAMESPACE, Translator, safe_name
 
 
@@ -31,17 +32,45 @@ def _from_steady_state_model(model, params, x=None):
     ns = dict(NAMESPACE)
     ns.update(model.functions)
     ns.update(y=y, x=x, params=params)
-    for lhs, rhs in model.steady_state_model:
-        if not isinstance(lhs, str) or not lhs.isidentifier():
-            raise NotImplementedError(f"multiple-output steady-state assignment: {lhs}")
-        val = eval(tr(rhs), ns)  # noqa: S307 - model expression
+    def store(lhs, val):
         if lhs in model._ie:
             y[model._ie[lhs]] = val
         elif lhs in model._ip:
             params[model._ip[lhs]] = val
         else:
             ns[safe_name(lhs)] = val
+
+    for lhs, rhs in model.steady_state_model:
+        try:
+            if isinstance(lhs, (list, tuple)):          # [a, b] = f(...)
+                with matlab.nargout(len(lhs)):
+                    vals = eval(tr(rhs), ns)  # noqa: S307 - model expression
+                if not isinstance(vals, (list, tuple)) or len(vals) < len(lhs):
+                    raise SteadyStateError(f"steady_state_model: {rhs[:60]} does not return {len(lhs)} values")
+                for name, val in zip(lhs, vals):
+                    store(name, val)
+                continue
+            if not isinstance(lhs, str) or not lhs.isidentifier():
+                raise NotImplementedError(f"multiple-output steady-state assignment: {lhs}")
+            val = eval(tr(rhs), ns)  # noqa: S307 - model expression
+        except matlab.Unsupported as exc:
+            raise SteadyStateError(f"steady_state_model: a MATLAB function called in {rhs[:60]!r} cannot be "
+                                   f"interpreted ({exc}); pass a Python function in Model(..., functions=...)") from None
+        except matlab.MatlabError as exc:
+            raise SteadyStateError(f"steady_state_model: MATLAB error in {rhs[:60]!r}: {exc}") from None
+        store(lhs, val)
     return y, params
+
+
+def steady_state_file_fn(model):
+    """The model's ``<name>_steadystate.m`` as a steady-state function (interpreted or translated by
+    ``pydyn.matlab``), or None if there is no such file."""
+    if model.steady_state_file is None:
+        return None
+    fn = getattr(model, "_steady_state_file_fn", None)
+    if fn is None or fn.path != model.steady_state_file:
+        fn = model._steady_state_file_fn = matlab.SteadyStateFile(model.steady_state_file)
+    return fn
 
 
 def fill_auxiliary(model, ys, x, params):
@@ -75,8 +104,17 @@ def steady_state(model, params=None, guess=None, tol=1e-10, check=True, exo=None
 
 
 def _steady_state(model, params, guess, x):
-    if model.steady_state_fn is not None:
-        out = model.steady_state_fn(model, params.copy(), x)
+    # precedence: Python function given by the caller, steady_state_model block, steady-state .m file
+    fn = model.steady_state_fn
+    if fn is None and model.steady_state_model is None:
+        fn = steady_state_file_fn(model)
+    if fn is not None:
+        try:
+            out = fn(model, params.copy(), x)
+        except matlab.Unsupported as exc:
+            raise SteadyStateError(
+                f"{model.steady_state_file.name} cannot be interpreted ({exc}): pass an equivalent "
+                "function as Model(..., steady_state_fn=...)") from None
         if isinstance(out, tuple):
             ys, params = np.asarray(out[0], float), np.asarray(out[1], float)
         else:
@@ -93,10 +131,6 @@ def _steady_state(model, params, guess, x):
             bad = [v for v, ok in zip(model.endo_names, np.isfinite(ys)) if not ok]
             raise SteadyStateError(f"steady_state_model gives non-finite values for: {bad}")
     else:
-        if model.steady_state_file is not None and guess is None and not model.initval:
-            raise SteadyStateError(
-                f"{model.steady_state_file.name} cannot be run from Python: pass an equivalent "
-                "function as Model(..., steady_state_fn=...)")
         if guess is None:
             y0 = np.array([model.initval.get(v, 0.0) for v in model.endo_names])
             y0 = fill_auxiliary(model, y0, x, params)      # as Dynare does before solving

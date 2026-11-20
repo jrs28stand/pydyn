@@ -63,13 +63,6 @@ def test_shock_blocks_follow_dynare_order(tmp_path, second, expected):
     np.testing.assert_allclose(m.Sigma_e, expected)                              # Dynare
 
 
-def test_matlab_control_flow_is_an_error(tmp_path):
-    text = ("var c; varexo e; parameters rho s; rho=0.5; s=2;\ncalib = 0;\nif calib == 1\n rho = 0.9; s = 5;\nend\n"
-            "model; c = rho*c(-1) + s*e; end;")
-    with pytest.raises(pydyn.ModelError):
-        build(tmp_path, text)
-
-
 def test_native_parameter_updates(tmp_path):
     m = build(tmp_path, "var c; varexo e; parameters rho s; rho=0.5; s=2;\n"
                         "lambda = 0.25;\nscale = lambda*2;\nset_param_value('rho', 0.9);\nM_.params(2) = scale;\n"
@@ -128,12 +121,3 @@ def test_variable_named_like_a_temporary_term(tmp_path):
                         "T34 = 0.5*T34(-1) + exp(c)*exp(c) + e; end;")
     y = np.array([0.1, 0.2, 0.3])
     np.testing.assert_allclose(m.static_jac(y), fd_jac(m, y), atol=1e-6)
-
-
-def test_steady_state_file_is_reported(tmp_path):
-    src = EXAMPLES / "stochastic_simulations"
-    shutil.copy(src / "nk_baseline.mod", tmp_path)
-    shutil.copy(src / "nk_baseline_steadystate.m", tmp_path)
-    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "nk_baseline.mod"))
-    with pytest.raises(pydyn.SteadyStateError, match="steadystate.m"):
-        pydyn.steady_state(m)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import matlab
 from .expr import NAMESPACE, Translator, safe_name, temp_name
 
 
@@ -35,12 +36,23 @@ class Model:
         self.functions = dict(functions or {})
         self.steady_state_fn = steady_state_fn
         self.json_dir = json_dir
+        # MATLAB function files next to the .mod file that the steady_state_model block calls are
+        # interpreted automatically; functions passed by the caller take precedence
+        self.matlab_functions = {}
+        ssm = json_dir / "steady_state_model.json"
+        if ssm.exists() and len(json_dir.parents) > 2:
+            used = set(re.findall(r"[A-Za-z_]\w*", ssm.read_text()))
+            self.matlab_functions = matlab.helper_functions(json_dir.parents[2], used, set(self.functions) | set(NAMESPACE))
+            self.functions.update(self.matlab_functions)
         text = (json_dir / "modfile.json").read_text()
         try:
             mf = json.loads(text)
         except json.JSONDecodeError:
             # Dynare 7.2 writes a misplaced brace in matched_irfs blocks: "period2": }5, ...
-            mf = json.loads(re.sub(r'("period2":\s*)\}(\d+)', r"\1\2", text))
+            # ... and unquoted negative bounds in estimated_params_bounds: "lower_bound": (-1)
+            text = re.sub(r'("period2":\s*)\}(\d+)', r"\1\2", text)
+            text = re.sub(r'"(lower_bound|upper_bound)":\s*\((-[^)"]*)\)', r'"\1": "\2"', text)
+            mf = json.loads(text)
         dyn = json.loads((json_dir / "dynamic.json").read_text())["dynamic_model"]
         sta = json.loads((json_dir / "static.json").read_text())["static_model"]
         self.raw = mf
@@ -209,56 +221,17 @@ class Model:
         if p.exists():
             self.steady_state_model = _pairs(json.loads(p.read_text())["steady_state_model"], "lhs", "rhs")
 
-    _NATIVE_ASSIGN = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*([^=].*?);?\s*$")
-    _NATIVE_SETPARAM = re.compile(r"^\s*set_param_value\(\s*'(\w+)'\s*,\s*(.+)\)\s*;?\s*$")
-    _NATIVE_MPARAMS = re.compile(r"^\s*M_\.params\(\s*(\d+)\s*\)\s*=\s*(.+?);?\s*$")
-    _NATIVE_FLOW = re.compile(r"^\s*(if|for|while|switch|elseif|else|case|otherwise|end|function)\b")
-    _NATIVE_IGNORE = re.compile(r"^\s*(%|close\b|clc\b|clear\b|disp\(|fprintf\(|figure\b|plot\(|$)")
-
-    def _native(self, text: str):
-        """MATLAB code embedded in the .mod file. Scalar assignments and parameter updates are
-        executed; code that could change the calibration in ways we cannot follow is an error."""
-        text = text.strip()
-        if self._NATIVE_IGNORE.match(text):
-            return
-        if self._NATIVE_FLOW.match(text):
-            raise ModelError(f"MATLAB control flow in the .mod file is not supported: {text[:60]!r}. "
-                             "Use the macro language (@#if ...) or set parameters from Python.")
-        mt = self._NATIVE_SETPARAM.match(text)
-        if mt and mt.group(1) in self._ip:
-            self.params[self._ip[mt.group(1)]] = self._native_value(mt.group(2), text)
-            return
-        mt = self._NATIVE_MPARAMS.match(text)
-        if mt:
-            self.params[int(mt.group(1)) - 1] = self._native_value(mt.group(2), text)
-            return
-        mt = self._NATIVE_ASSIGN.match(text)
-        if mt and mt.group(1) not in self._ip:
-            try:
-                self.workspace[mt.group(1)] = self._native_value(mt.group(2), text)
-                return
-            except ModelError:
-                pass
-        if re.search(r"\bM_\.|\bset_param_value\b|\boo_\.steady", text):
-            raise ModelError(f"MATLAB statement changes the model and cannot be interpreted: {text[:80]!r}")
-        self.unhandled_statements.append("native: " + text[:60])
-
-    def _native_value(self, expr: str, text: str) -> float:
-        if expr.count("^") > 1 and re.search(r"\^[^()+\-*/]*\^", expr):
-            raise ModelError(f"chained ^ is ambiguous between MATLAB and Python: {text[:60]!r}")
-        try:
-            return self.eval_expr(expr)
-        except Exception as exc:
-            raise ModelError(f"cannot evaluate MATLAB expression {expr[:60]!r}") from exc
-
     def _eval_with_vars(self, s: str) -> float:
         """Evaluate an initval-style expression that may refer to variables set earlier."""
         local = {safe_name(k): v for k, v in self.initval.items() if k not in self._ip}
         return self.eval_expr(s, local)
 
     def _run_statements(self):
+        """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
+        ``pydyn.matlab`` together with the Dynare statements, so that MATLAB control flow around
+        parameter assignments (``if calib == 1 ... end``) behaves as in Dynare."""
         self.params = np.full(len(self.param_names), np.nan)
-        self.workspace: dict[str, float] = {}      # plain MATLAB assignments in the .mod file
+        self.workspace: dict[str, float] = {}      # scalar MATLAB variables of the .mod file
         self.initval: dict[str, float] = {}
         self.endval: dict[str, float] = {}
         self.det_shocks: list = []                 # (exo index, first period, last period, value), 1-based
@@ -266,49 +239,83 @@ class Model:
         self.measurement_errors: dict[str, float] = {}
         self.occbin_constraints = []
         self.options: dict[str, dict] = {}
-        n_surprise = 0
-        for st in self.statements:
-            kind = st["statementName"]
-            if kind == "param_init":
-                self.params[self._ip[st["name"]]] = self.eval_expr(st["value"])
-            elif kind == "initval":
-                for d in st["vals"]:
-                    self.initval[d["name"]] = self._eval_with_vars(d["value"])
-            elif kind == "endval":
-                for d in st["vals"]:
-                    self.endval[d["name"]] = self._eval_with_vars(d["value"])
-            elif kind == "load_params_and_steady_state":
-                for d in st.get("values", []):
-                    if d["name"] in self._ip:
-                        self.params[self._ip[d["name"]]] = self.eval_expr(d["value"])
-                    else:
-                        self.initval[d["name"]] = self.eval_expr(d["value"])
-            elif kind == "shocks" and st.get("surprise"):
-                n_surprise += 1
-                self.options.setdefault("shock_paths", []).append(st)
-            elif kind == "shocks":
-                self._shocks(st)
-            elif kind == "occbin_constraints":
-                self.occbin_constraints = st["constraints"]
-            elif kind in ("steady", "check", "occbin_setup", "occbin_graph", "rplot"):
-                self.options.setdefault(kind, st.get("options", {}))
-            elif kind in ("stoch_simul", "estimation", "occbin_solver", "estimated_params",
-                          "estimated_params_init", "varobs", "perfect_foresight_setup",
-                          "perfect_foresight_solver"):
-                self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
-            elif kind in ("native", "verbatim"):
-                self._native(st["string"])
-            elif kind in ("write_latex_dynamic_model", "write_latex_static_model",
-                          "write_latex_original_model", "write_latex_steady_state_model",
-                          "collect_latex_files", "write_latex_definitions"):
-                pass
-            else:
-                self.unhandled_statements.append(kind)
-        if n_surprise > 1:
+        self.matlab_options = matlab.Struct()      # options_.x = ... assignments (stored, not acted upon)
+        self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
+        self._n_surprise = 0
+        self._matlab = None
+        if any(st["statementName"] in ("native", "verbatim") for st in self.statements):
+            self._matlab = matlab.ModSession(self, ModelError)
+            self._matlab.run(self.statements)
+        else:
+            for st in self.statements:
+                self._exec_statement(st)
+        if self._n_surprise > 1:
             warnings.warn("several shocks(surprise) blocks: they are merged; Dynare's 'overwrite' "
                           "option is not visible in the preprocessor output")
         if self.unhandled_statements:
             warnings.warn(f"statements not handled: {sorted(set(self.unhandled_statements))}")
+
+    def _value(self, s) -> float:
+        """Value of an expression in a Dynare statement.  Expressions that index a MATLAB matrix or
+        call a MATLAB function defined next to the .mod file are passed to the MATLAB interpreter."""
+        try:
+            return self.eval_expr(s)
+        except (NameError, TypeError, SyntaxError):
+            if self._matlab is None:
+                self._matlab = matlab.ModSession(self, ModelError)
+            return self._matlab.eval_value(s)
+
+    def _exec_statement(self, st):
+        """One Dynare statement of the .mod file."""
+        kind = st["statementName"]
+        if kind == "param_init":
+            self.params[self._ip[st["name"]]] = self._value(st["value"])
+        elif kind == "initval":
+            for d in st["vals"]:
+                self.initval[d["name"]] = self._eval_with_vars(d["value"])
+        elif kind == "endval":
+            for d in st["vals"]:
+                self.endval[d["name"]] = self._eval_with_vars(d["value"])
+        elif kind == "load_params_and_steady_state":
+            for d in st.get("values", []):
+                if d["name"] in self._ip:
+                    self.params[self._ip[d["name"]]] = self.eval_expr(d["value"])
+                else:
+                    self.initval[d["name"]] = self.eval_expr(d["value"])
+        elif kind == "shocks" and st.get("surprise"):
+            self._n_surprise += 1
+            self.options.setdefault("shock_paths", []).append(st)
+        elif kind == "shocks":
+            self._shocks(st)
+        elif kind == "occbin_constraints":
+            self.occbin_constraints = st["constraints"]
+        elif kind == "homotopy" and st.get("values") and all(
+                d["name"] in self._ip or d["name"] in self._ix for d in st["values"]):
+            self._homotopy = st["values"]          # applied by the next steady(homotopy_mode=...)
+        elif kind in ("steady", "check", "occbin_setup", "occbin_graph", "rplot"):
+            self.options.setdefault(kind, st.get("options", {}))
+            if kind == "steady" and st.get("options", {}).get("homotopy_mode") and getattr(self, "_homotopy", None):
+                # Dynare's steady moves these parameters and exogenous variables to their final values
+                # (it stops with an error if the homotopy fails); later statements see the final values
+                for d in self._homotopy:
+                    val = self.eval_expr(d["final_value"])
+                    if d["name"] in self._ip:
+                        self.params[self._ip[d["name"]]] = val
+                    else:
+                        self.initval[d["name"]] = val
+        elif kind in ("stoch_simul", "estimation", "occbin_solver", "estimated_params",
+                      "estimated_params_init", "varobs", "perfect_foresight_setup", "perfect_foresight_solver", "calib_smoother",
+                          "shock_decomposition", "initial_condition_decomposition", "shock_groups",
+                          "observation_trends", "estimated_params_bounds"):
+            self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
+        elif kind in ("native", "verbatim"):
+            pass                                   # run by pydyn.matlab.ModSession
+        elif kind in ("write_latex_dynamic_model", "write_latex_static_model",
+                      "write_latex_original_model", "write_latex_steady_state_model",
+                      "collect_latex_files", "write_latex_definitions"):
+            pass
+        else:
+            self.unhandled_statements.append(kind)
 
     def _shocks(self, st):
         """One shocks block, applied in Dynare's order: reset, variances, covariances, correlations."""

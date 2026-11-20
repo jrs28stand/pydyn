@@ -10,7 +10,8 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Preprocessor runner, JSON model loader | done (Dynare 7.2 JSON layout; 6.0 differs and is not supported) |
 | Parameters, `initval`, `shocks`, `steady_state_model` | done |
 | Changing parameters and re-solving without reloading (`set_param`, `set_params`) | done, validated |
-| Steady state: analytical block, numerical, Python steady-state function, helper functions | done, validated |
+| Steady state: analytical block, numerical, MATLAB steady-state files and `.m` helpers (interpreted or translated), Python functions | done, validated |
+| MATLAB code in `.mod` files (control flow, matrices, `M_.params`, `set_param_value`, ...) | done, validated on Dynare's test suite |
 | First-order solution (`ghx`, `ghu`, IRFs, simulation) | done, validated |
 | OccBin piecewise-linear simulation, one or two constraints, `curb_retrench` | done, validated |
 | OccBin impulse responses (`Occbin.irf`) | done, validated |
@@ -66,18 +67,29 @@ for rho in (0.5, 0.7, 0.9):
 
 `sol.params` holds the parameters actually used, including any the steady state updated.
 
-### Steady-state files
+### MATLAB code in `.mod` files and steady-state files
 
-MATLAB `_steadystate.m` files cannot be run. The options are:
+`pydyn.matlab` is an interpreter for the subset of MATLAB that `.mod` files use to set up a
+calibration. It runs the MATLAB lines of a `.mod` file in order with the Dynare statements, so
+control flow around parameter assignments (`if`, `for`, `switch`, ...) behaves as in Dynare.
 
-- a `steady_state_model` block in the `.mod` file (works as is, including parameter updates);
-- a Python function passed as `Model(..., steady_state_fn=fn)` with signature
-  `fn(model, params, exo) -> ys` or `(ys, params)`; see `examples/nk_baseline_steadystate.py`;
-- for `.m` helper functions called inside `steady_state_model`, a Python function of the same
-  name passed as `Model(..., functions={"name": fn})`.
+- A `<model>_steadystate.m` file next to the `.mod` file is used automatically. Where possible it
+  is translated to Python once (`pydyn.matlab.translate_steady_state(path)` returns the source)
+  and reused, which costs about the same per call as a hand-written Python function.
+- `.m` helper functions called from a `steady_state_model` block are found and run the same way.
+- A Python `steady_state_fn` or `functions={...}` entry passed to `Model` takes precedence.
+- Display, plotting and post-processing lines are skipped with one summarised warning
+  (`model.matlab_skipped` lists them); `options_.x = ...` assignments are stored in
+  `model.matlab_options` and not acted on.
+- Code that could change the calibration in a way the interpreter cannot follow raises
+  `ModelError` naming the line. It is deliberately strict: refusing is preferred to guessing.
+- MATLAB text is parsed and evaluated by the interpreter itself and never passed to Python's
+  `eval`/`exec`; file access is limited to reading `.m` and `.mat` files next to the `.mod` file.
 
-Plain scalar assignments in the `.mod` file (`phi = 0.1;`) are understood; any other MATLAB code
-in the file is not executed and is reported in a warning.
+On 212 files from Dynare's own test suite that contain MATLAB code and that Dynare runs under
+Octave: 156 load with a calibration identical to Dynare's, 41 are refused with a clear error, 15
+are outside this package for unrelated reasons, none load with a different calibration
+(`tools/sweep_matlab.py`). References are from Octave; MATLAB-only behaviour rests on documentation.
 
 ## Dynare's shipped examples
 
@@ -86,8 +98,8 @@ Dynare's own results. Twelve match (decision rules, second order where the examp
 and the perfect-foresight path); `rbc_irf_matching` loads and solves but has no reference; ten
 are outside the scope of this package: the six heterogeneous-agent examples, the two Ramsey
 examples, perfect foresight with expectation errors, and the PAC model. No `.mod` file needed
-editing; `nk_baseline` and `collard_2001_analytical_steady_state` need their MATLAB steady-state
-code supplied as Python functions.
+editing; `nk_baseline` and `collard_2001_analytical_steady_state` use their MATLAB steady-state
+code directly.
 
 ## The C++ k-order library
 
@@ -127,10 +139,8 @@ girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, d
 
 - The first-order solver uses a full-size QZ decomposition (2n x 2n). Correct, but slower than
   Dynare's reduced algorithm for large models.
-- MATLAB inside `.mod` files: scalar assignments, `set_param_value('name', value)` and
-  `M_.params(i) = value` are executed. MATLAB control flow (`if`, `for`, ...) raises an error,
-  because the parameter assignments inside it would otherwise be applied unconditionally. Use the
-  macro language (`@#if`) or set parameters from Python.
+- MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
+  dates), random numbers and file-system functions are not supported; see the section above.
 - Not handled: `loglinear`, external functions inside the model block, deterministic exogenous
   variables, Ramsey/optimal policy, heterogeneous-agent models, measurement-error covariances,
   steady-state assignments with several outputs (`[a, b] = f(...)`), `steady_state()` of an
