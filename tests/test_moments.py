@@ -310,10 +310,10 @@ def test_text_output_matches_dynare_tables(cases, name, case):
     else:
         mo = moments.theoretical_moments(cs.m, cs.dr(kw["order"]), vl, **kw)
     mine, theirs = _lines(mo.format()), _lines(str(cs.r[f"{case}_text"]))
-    if case == "th2p_sub":
-        # a variable whose autocorrelations are zero up to +-1e-17 (a lagged shock) is printed with one more
-        # column of width by Dynare when the noise is negative: compare the tokens instead of the layout
-        # and numerical zeros of either sign are the same number
+    if mine != theirs:
+        # Dynare prints a numerical zero (+-1e-17) with its sign, and widens the table by one column when
+        # such noise is negative. The sign of that noise depends on the solver's rounding, so fall back to
+        # comparing the tokens, with zeros of either sign treated as the same number.
         mine, theirs = ([[x.lstrip("-") if set(x) <= set("-0.") else x for x in ln.split()] for ln in side]
                         for side in (mine, theirs))
     assert mine == theirs

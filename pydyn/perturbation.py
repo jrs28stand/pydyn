@@ -1,10 +1,12 @@
 """First-order perturbation solution."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
 from scipy import linalg
+from scipy.linalg import lapack
 
 QZ_CRITERIUM = 1.0 + 1e-6  # Dynare's default: eigenvalues below this count as stable
 
@@ -72,8 +74,151 @@ def dr_ordering(lead_lag_incidence: np.ndarray):
                                                          nboth=len(both), nfwrd=len(fwrd))
 
 
-def solve_linear_re(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM):
-    """Solve fp E y(+1) + f0 y + fm y(-1) + fu u = 0 for y = G y(-1) + H u."""
+#: "reduced" (Dynare's dyn_first_order_solver algorithm: static variables removed by QR, QZ on the
+#: dynamic block only) or "full" (the original 2n x 2n pencil). Environment variable
+#: PYDYN_FIRST_ORDER overrides the default.
+SOLVER = os.environ.get("PYDYN_FIRST_ORDER", "reduced")
+
+
+def solve_linear_re(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM, lead_lag_incidence=None, method=None):
+    """Solve fp E y(+1) + f0 y + fm y(-1) + fu u = 0 for y = G y(-1) + H u.
+
+    ``lead_lag_incidence`` (n x 3, non-zero where a variable appears with a lag / lead) lets the
+    reduced solver use the model's structure; without it the structure is read off the non-zero
+    columns of ``fm`` and ``fp``. ``method`` is "reduced" or "full" (default: ``SOLVER``)."""
+    method = SOLVER if method is None else method
+    if method == "full":
+        return _solve_full(fm, f0, fp, fu, qz_criterium)
+    if method != "reduced":
+        raise ValueError(f"unknown first-order solver {method!r}")
+    if lead_lag_incidence is None:
+        lag, lead = np.any(fm != 0, axis=0), np.any(fp != 0, axis=0)
+    else:
+        lag, lead = lead_lag_incidence[:, 0] > 0, lead_lag_incidence[:, 2] > 0
+    return _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium)
+
+
+def _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium=QZ_CRITERIUM):
+    """Port of the QZ branch of Dynare's dyn_first_order_solver.m.
+
+    Variables are put in decision-rule order (static, purely backward, mixed, purely forward).
+    The static variables are eliminated with a QR factorisation of their columns of ``f0``; the
+    generalised Schur decomposition is then taken of a pencil of size npred + 2*nboth + nfwrd
+    instead of 2n."""
+    n = f0.shape[0]
+    key = (lag.tobytes(), lead.tobytes())
+    st = _STRUCT.get(key)
+    if st is None:
+        idx = np.arange(n)
+        static, pred, both, fwrd = idx[~lag & ~lead], idx[lag & ~lead], idx[lag & lead], idx[~lag & lead]
+        ov = np.concatenate([static, pred, both, fwrd])
+        ns, npred, nboth, nfwrd = len(static), len(pred), len(both), len(fwrd)
+        sv = ov[ns:ns + npred + nboth]
+        if len(_STRUCT) > 64:
+            _STRUCT.clear()
+        st = _STRUCT[key] = (ov, sv, ov[ns + npred:], np.ix_(ov, sv), ns, npred, nboth, nfwrd)
+    ov, sv, jv, ov_sv, ns, npred, nboth, nfwrd = st
+    nspred, nsfwrd, ndyn = npred + nboth, nboth + nfwrd, n - ns
+    nd = nspred + nsfwrd
+    k = fu.shape[1]
+    # [A | B | C | fu]: lagged states, all current variables, led jumpers, shocks (DR order)
+    aa = np.empty((n, nspred + n + nsfwrd + k), order="F")
+    aa[:, :nspred] = fm[:, sv]
+    aa[:, nspred:nspred + n] = f0[:, ov]
+    aa[:, nspred + n:nspred + n + nsfwrd] = fp[:, jv]
+    aa[:, nspred + n + nsfwrd:] = fu
+    if not np.all(np.isfinite(aa)):
+        raise BlanchardKahnError("the Jacobian of the dynamic model contains NaN or Inf")
+    if ns:
+        qr_, tau, _, _ = lapack.dgeqrf(aa[:, nspred:nspred + ns])
+        aa, _, info = lapack.dormqr("L", "T", qr_, tau, aa, max(64 * aa.shape[1], 1), overwrite_c=1)
+        if info:
+            raise BlanchardKahnError("QR factorisation of the static block failed")
+    A, B = aa[:, :nspred], aa[:, nspred:nspred + n]
+    C, FU = aa[:, nspred + n:nspred + n + nsfwrd], aa[:, nspred + n + nsfwrd:]
+
+    if nd:
+        D, E = np.zeros((nd, nd), order="F"), np.zeros((nd, nd), order="F")
+        D[:ndyn, :npred] = B[ns:, ns:ns + npred]
+        D[:ndyn, nspred:] = C[ns:]
+        E[:ndyn, :nspred] = -A[ns:]
+        E[:ndyn, nspred:] = -B[ns:, ns + npred:]
+        if nboth:
+            r = np.arange(nboth)
+            D[ndyn + r, npred + r] = 1.0
+            E[ndyn + r, nspred + r] = 1.0
+        S, T, alpha, beta, w, sdim = _ordered_qz(E, D, qz_criterium)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            eig = alpha / beta
+        if np.any((np.abs(alpha) <= QZ_ZERO_THRESHOLD) & (np.abs(beta) <= QZ_ZERO_THRESHOLD)):
+            raise BlanchardKahnError("one of the generalised eigenvalues is close to 0/0 "
+                                     "(the model has a singularity: Dynare's error 7)")
+    else:
+        S = T = w = np.zeros((0, 0))
+        eig, sdim = np.zeros(0), 0
+    if sdim != nspred:
+        kind = "indeterminacy" if sdim > nspred else "no stable solution"
+        raise BlanchardKahnError(
+            f"Blanchard-Kahn conditions not satisfied ({kind}): {nd - sdim} unstable roots for "
+            f"{nsfwrd} forward-looking variables")
+    w11, w12, w22 = w[:nspred, :nspred], w[:nspred, nspred:], w[nspred:, nspred:]
+    if nsfwrd:
+        lu, piv, info = lapack.dgetrf(w22.T)
+        rc = lapack.dgecon(lu, np.abs(w22).sum(axis=1).max())[0] if info == 0 else 0.0
+        if rc < 1e-9:
+            raise BlanchardKahnError("rank condition not satisfied")
+        gx = -lapack.dgetrs(lu, piv, w12.T)[0]                     # jumpers on states
+    else:
+        gx = np.zeros((0, nspred))
+    if nspred:
+        # hx = w11 T11^-1 S11 w11^-1: transition matrix of the states
+        hx = lapack.dtrtrs(T[:nspred, :nspred], w11.T, lower=0, trans=1)[0].T
+        hx = hx @ np.linalg.solve(w11.T, S[:nspred, :nspred].T).T
+    else:
+        hx = np.zeros((0, 0))
+    ghx = np.empty((n, nspred))
+    ghx[ns:ns + nspred] = hx
+    ghx[ns + nspred:] = gx[nboth:]
+    Cgx = C @ gx
+    if ns:
+        rhs = -(Cgx[:ns] @ hx) - A[:ns] - B[:ns, ns:] @ ghx[ns:]
+        ghx[:ns] = lapack.dtrtrs(B[:ns, :ns], rhs, lower=0)[0]
+    A_ = B.copy()
+    A_[:, ns:ns + nspred] += Cgx
+    G, H = np.zeros((n, n)), np.empty((n, k))
+    G[ov_sv] = ghx
+    H[ov] = -np.linalg.solve(A_, FU) if k else np.zeros((n, 0))
+    return G, H, eig
+
+
+QZ_ZERO_THRESHOLD = 1e-6      # Dynare's options_.qz_zero_threshold
+_STRUCT: dict = {}            # index sets per lead/lag structure
+
+
+def _ordered_qz(E, D, qz_criterium):
+    """Real generalised Schur form of (E, D) with the eigenvalues below ``qz_criterium`` in modulus
+    first. Returns S, T, alpha, beta, Z, sdim.
+
+    This is the LAPACK call Dynare's mjdgges makes (dgges with a selection function). SciPy's
+    ``ordqz`` (dgges followed by dtgsen) is the fallback: it gives the same decomposition but costs
+    20 to 40% more, and it is used on Windows, where SciPy avoids LAPACK callbacks."""
+    c2 = qz_criterium * qz_criterium
+    if os.name != "nt":
+        S, T, sdim, ar, ai, beta, _, Z, _, info = lapack.dgges(
+            lambda re, im, b: re * re + im * im < c2 * b * b, E, D, jobvsl=0, jobvsr=1, sort_t=1,
+            overwrite_a=1, overwrite_b=1)
+        if info == 0:
+            return S, T, (ar + 1j * ai if np.any(ai) else ar), beta, Z, int(sdim)
+        if info < 0 or info <= E.shape[0]:
+            raise BlanchardKahnError(f"generalised Schur decomposition failed (LAPACK dgges info={info})")
+        # info = n+2 / n+3: reordering changed or could not order the eigenvalues; let ordqz decide
+    stable = lambda alpha, beta: np.abs(alpha) < qz_criterium * np.abs(beta)  # noqa: E731
+    S, T, alpha, beta, _, Z = linalg.ordqz(E, D, sort=stable, output="real", check_finite=False)
+    return S, T, alpha, beta, Z, int(np.sum(stable(alpha, beta)))
+
+
+def _solve_full(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM):
+    """The original solver: QZ of the full 2n x 2n pencil. Kept as a cross-check."""
     n = f0.shape[0]
     I, Z0 = np.eye(n), np.zeros((n, n))
     # A x_{t+1} = B x_t with x_t = [y_{t-1}; y_t]
@@ -105,7 +250,7 @@ def first_order(model, ys=None, params=None) -> FirstOrderSolution:
     n = model.n_endo
     J = model.dynamic_jac(np.tile(ys, 3), model.exo_steady(), params, ys)
     fm, f0, fp, fu = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:]
-    G, H, eig = solve_linear_re(fm, f0, fp, fu)
+    G, H, eig = solve_linear_re(fm, f0, fp, fu, lead_lag_incidence=model.lead_lag_incidence)
     order_var, state_var, _ = dr_ordering(model.lead_lag_incidence)
     # clean numerical noise in columns of non-state variables
     mask = np.ones(n, bool)
