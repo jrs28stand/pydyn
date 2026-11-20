@@ -8,7 +8,8 @@ import warnings
 COSMETIC = {
     "nograph", "nodisplay", "graph_format", "noprint", "nocorr", "nomoments", "nofunctions", "tex",
     "nodecomposition", "contemporaneous_correlation", "TeX", "no_graph.posterior", "no_graph.shock_decomposition",
-    "nodiagnostic", "console_mode", "silent_optimizer", "debug", "fast_realtime", "plot_priors",
+    "nodiagnostic", "console_mode", "silent_optimizer", "debug", "plot_priors",
+    "no_graph.plot_shock_decomposition",
     "graph_save_formats", "sub_draws", "irf_plot_threshold", "dirname", "verbosity", "simul.debug",
 }
 

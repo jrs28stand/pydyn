@@ -423,7 +423,9 @@ class Model:
         elif kind in ("stoch_simul", "estimation", "occbin_solver", "estimated_params",
                       "estimated_params_init", "varobs", "perfect_foresight_setup", "perfect_foresight_solver", "calib_smoother",
                           "shock_decomposition", "initial_condition_decomposition", "shock_groups",
-                          "observation_trends", "estimated_params_bounds"):
+                          "observation_trends", "estimated_params_bounds",
+                          "plot_shock_decomposition", "realtime_shock_decomposition",
+                          "squeeze_shock_decomposition", "init2shocks", "filter_initial_state"):
             self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession

@@ -21,7 +21,9 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Perfect foresight (stacked Newton; `initval`, `endval`, deterministic `shocks`) | done, validated on one example |
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
-| Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data) | done, validated |
+| Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data, observation trends) | done, validated |
+| Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
+| Shock groups, `init2shocks`, real-time decomposition, squeeze; decomposition figures (bars, detail panels, year-on-year, flip, steady state) | done, validated incl. the plotted bars against Dynare's drawing calls |
 | Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
 | OccBin estimation (piecewise Kalman filter, inversion filter) | not started |
 

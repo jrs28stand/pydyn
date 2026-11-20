@@ -1,14 +1,22 @@
-"""Kalman filter, Kalman smoother and historical shock decomposition at the model's current
-parameters: the counterpart of Dynare's ``calib_smoother``, ``shock_decomposition`` and
-``initial_condition_decomposition`` commands.
+"""Kalman filter, Kalman smoother and historical shock decompositions: the counterpart of Dynare's
+``calib_smoother``, the smoother run by ``estimation`` / ``evaluate_smoother`` at a parameter set
+(calibration, posterior mode / mean / median, ML mode, prior mean / mode, or any parameter vector),
+``shock_decomposition``, ``initial_condition_decomposition``, ``realtime_shock_decomposition``,
+``squeeze_shock_decomposition``, ``shock_groups`` / ``init2shocks`` and the numbers drawn by
+``plot_shock_decomposition`` (the figures are in ``pydyn.plotting``).
 
 This module is derived from Dynare 7.2 (GPL-3.0-or-later, Copyright Dynare Team):
-``matlab/kalman/DsgeSmoother.m``, ``missing_DiffuseKalmanSmootherH1_Z.m``,
+``matlab/kalman/DsgeSmoother.m``, ``evaluate_smoother.m``, ``missing_DiffuseKalmanSmootherH1_Z.m``,
 ``missing_DiffuseKalmanSmootherH3_Z.m``, ``store_smoother_results.m``,
-``matlab/estimation/compute_Pinf_Pstar.m``, ``matlab/shock_decomposition/shock_decomposition.m``,
-``initial_condition_decomposition.m`` and ``make_the_groups`` in ``plot_shock_decomposition.m``.
+``matlab/estimation/compute_Pinf_Pstar.m``, ``matlab/compute_trend_coefficients.m``, ``set_prior.m`` (prior
+modes), ``matlab/distributions/compute_prior_mode.m``, and in ``matlab/shock_decomposition/``:
+``shock_decomposition.m``, ``initial_condition_decomposition.m``, ``realtime_shock_decomposition.m``,
+``squeeze_shock_decomposition.m``, ``plot_shock_decomposition.m`` (with ``make_the_groups``),
+``expand_group.m``, ``graph_decomp.m`` and ``graph_decomp_detail.m`` (screening and stacking rules).
 
-It is self-contained on purpose: it does not use ``pydyn.kalman`` / ``pydyn.estimation``.
+The filter and smoother recursions are self-contained (they do not use ``pydyn.kalman``); a
+``pydyn.estimation.Estimation`` object is only used, through its public interface, to map a vector
+of estimated parameters into the model.
 
 Conventions (all Dynare's, see ``SmootherResult``):
 
@@ -16,7 +24,7 @@ Conventions (all Dynare's, see ``SmootherResult``):
   arrays are in declaration order;
 * variables are returned as Dynare stores them: deviation plus steady state, or plus the log of
   the steady state with ``loglinear``; observed variables under ``prefilter=1`` get the sample
-  mean of the data instead;
+  mean of the data instead, and the linear trend of an ``observation_trends`` block is added;
 * ``FilteredVariables[name][t]`` is the forecast of period ``t+1`` made in period ``t``
   (Dynare's ``aK(1,:,2:end)``), so its last entry is an out-of-sample forecast.
 """
@@ -32,7 +40,10 @@ import numpy as np
 from scipy import linalg
 
 __all__ = ["smooth", "shock_decomposition", "initial_condition_decomposition", "group_shocks",
-           "check", "load_data", "SmootherResult", "ShockDecomposition", "SmootherError"]
+           "check", "load_data", "SmootherResult", "ShockDecomposition", "SmootherError",
+           "parameter_vector", "prior_mode", "shock_groups", "init2shocks", "apply_init2shocks",
+           "squeeze_shock_decomposition", "realtime_shock_decomposition", "RealtimeDecomposition",
+           "decomposition_plot_data", "DecompositionPlotData", "stack_bars", "PARAMETER_SETS"]
 
 
 class SmootherError(Exception):
@@ -45,8 +56,10 @@ _DEFAULTS = dict(
     presample=0, diffuse_filter=False, lik_init=1, kalman_algo=0, kalman_tol=1e-10,
     diffuse_kalman_tol=1e-6, qz_criterium=None, filtered_vars=False, filter_step_ahead=None,
     filter_covariance=False, smoothed_state_uncertainty=False, parameter_set="calibration",
-    varobs=None, replicate_dynare_bugs=False,
+    varobs=None, replicate_dynare_bugs=False, Harvey_scale_factor=10.0,
 )
+PARAMETER_SETS = ("calibration", "posterior_mode", "posterior_mean", "posterior_median", "mle_mode",
+                  "prior_mode", "prior_mean")
 _STATEMENTS = ("estimation", "calib_smoother")
 _NATIVE_OPTION = re.compile(r"^\s*options_\.(\w+)\s*=\s*(true|false|[-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*;")
 
@@ -83,6 +96,7 @@ _ESTIMATION_ONLY = {
     "mh_tune_jscale", "optim", "cova_compute", "posterior_sampling_method", "bayesian_irf", "moments_varendo",
     "irf", "forecast", "conf_sig", "mh_conf_sig", "load_mh_file", "prior_trunc", "smoother", "order",
     "posterior_sampler_options", "additional_optimizer_steps", "nobs_vec", "lyapunov", "sub_draws",
+    "mh_nblck", "mh_recover", "mcmc_jumping_covariance", "mode_check.status",
 }
 
 
@@ -101,8 +115,10 @@ def _resolve_options(model, user, extra_statements=()):
     opts["first_obs"] = int(_scalar(opts["first_obs"]))
     if opts["nobs"] is not None:
         opts["nobs"] = int(_scalar(opts["nobs"]))
-    if opts["parameter_set"] not in (None, "calibration"):
-        raise NotImplementedError("only parameter_set=calibration is available (no estimation results here)")
+    if opts["parameter_set"] is None:
+        opts["parameter_set"] = "calibration"
+    if opts["parameter_set"] not in PARAMETER_SETS:
+        raise ValueError(f"unknown parameter_set {opts['parameter_set']!r}; use one of {PARAMETER_SETS}")
     if int(opts["prefilter"]) not in (0, 1):
         raise ValueError("prefilter must be 0 or 1")
     fsa = opts["filter_step_ahead"]
@@ -245,6 +261,18 @@ class SmootherResult:
     kalman_algo: int = 0               # filter actually used (1, 2, 3 or 4, Dynare's numbering)
     diffuse_periods: int = 0
     options: dict = field(default_factory=dict)
+    # --- observation trends (Dynare's oo_.Smoother.Trend / TrendCoeffs); zero without the block
+    Trend: dict = field(default_factory=dict)          # {name: (T,)}, zero for non-observed variables
+    TrendCoeffs: np.ndarray = None                     # (n_endo,) slopes, declaration order
+    # --- the calibration used
+    parameter_set: str = "calibration"                 # or "theta" when a vector was passed
+    theta: np.ndarray = None                           # estimated-parameter vector used (None: calibration)
+    params: np.ndarray = None                          # structural parameters used (after the steady state)
+    Sigma_e: np.ndarray = None                         # shock covariance used
+    me_cov: np.ndarray = None                          # measurement-error covariance used (n_obs, n_obs)
+    solution: object = None                            # first-order solution used (levels)
+    raw: np.ndarray = None                             # data as loaded: all periods, before logs and prefilter
+    first_obs: int = 1
 
     @property
     def nobs(self):
@@ -261,6 +289,9 @@ class ShockDecomposition:
     columns: list
     kind: str = "shocks"               # "shocks", "initial_conditions" or "groups"
     init_state: int = 0
+    steady_state: np.ndarray = None    # level steady state of the variables at the parameters used
+    parameter_set: str = "calibration"
+    first_period: int = 1              # number of the first period (Dynare counts the sample from 1)
 
     def __getitem__(self, name):
         return dict(zip(self.columns, self.z[self.endo_names.index(name)]))
@@ -372,12 +403,14 @@ def _stationary_variance(T, R, Q, qz_criterium):
 
 # --------------------------------------------------------------------------------- multivariate smoother
 def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_tol, dk_tol,
-                           want_V, want_PK, compat):
+                           want_V, want_PK, compat, a_pred=None, a_zero=None):
     """Port of ``missing_DiffuseKalmanSmootherH1_Z``. ``Y`` is (n_obs, T). Returns ``None`` when
     Dynare's routine reports a singular forecast-error variance (the caller then switches to the
     univariate smoother, as ``DsgeSmoother`` does).
 
     ``compat=True`` reproduces three defects of Dynare 7.2 in the diffuse phase (see ``smooth``).
+    ``a_pred`` is the state forecast for period 1 and ``a_zero`` the mean of the period-0 state
+    (both zero by default; set by ``filter_initial_state``, stationary initialisations only).
     """
     mm = T.shape[0]
     pp, smpl = Y.shape
@@ -392,7 +425,9 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
     P = np.zeros((smpl + 1, mm, mm))
     QQ = R @ Q @ R.T
     QRt = Q @ R.T
-    a0, P0 = np.zeros(mm), Pstar1.copy()
+    a0, P0 = (np.zeros(mm) if a_zero is None else np.asarray(a_zero, float)), Pstar1.copy()
+    if a_pred is not None:
+        a[0] = a_pred
     diffuse = Pinf1 is not None
     Pstar = {0: Pstar1.copy()}
     Pinf = {0: Pinf1.copy()} if diffuse else {}
@@ -587,7 +622,7 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
 
 # --------------------------------------------------------------------------------- univariate smoother
 def _smoother_univariate(T, Z, R, Q, Hd, Pinf1, Pstar1, Y, di_list, nk, kalman_tol, dk_tol,
-                         want_V, want_PK, compat=False):
+                         want_V, want_PK, compat=False, a_pred=None, a_zero=None):
     """Port of ``missing_DiffuseKalmanSmootherH3_Z`` (no OccBin). ``Hd`` is the diagonal of the
     measurement-error covariance. ``compat=True`` keeps a defect of Dynare 7.2 in the smoothed
     state uncertainty of the diffuse phase (see ``smooth``)."""
@@ -609,7 +644,9 @@ def _smoother_univariate(T, Z, R, Q, Hd, Pinf1, Pstar1, Y, di_list, nk, kalman_t
     P1 = np.zeros((smpl + 1, mm, mm))
     QQ = R @ Q @ R.T
     QRt = Q @ R.T
-    ainit, Pinit = a1[0].copy(), Pstar1.copy()
+    if a_pred is not None:
+        a1[0] = a_pred
+    ainit, Pinit = (a1[0].copy() if a_zero is None else np.asarray(a_zero, float)), Pstar1.copy()
     diffuse = Pinf1 is not None
     Pstar = {0: Pstar1.copy()}
     Pinf = {0: Pinf1.copy()} if diffuse else {}
@@ -752,6 +789,146 @@ def _smoother_univariate(T, Z, R, Q, Hd, Pinf1, Pstar1, Y, di_list, nk, kalman_t
                 d=d, alphahat0=alphahat0)
 
 
+# --------------------------------------------------------------------------------- parameter sets
+def prior_mode(prior) -> np.ndarray:
+    """Mode of each prior of a ``pydyn.priors.Prior`` (Dynare's ``bayestopt_.p5``, port of
+    ``compute_prior_mode.m`` as called by ``set_prior.m``). NaN for a uniform prior, as in Dynare."""
+    out = np.full(len(prior), np.nan)
+    eps = np.finfo(float).eps
+    for i, sh in enumerate(prior.shape):
+        a, b, lo, hi = prior.p6[i], prior.p7[i], prior.p3[i], prior.p4[i]
+        if sh == 1:
+            if a > 1 and b > 1:
+                m = (a - 1) / (a + b - 2)
+            elif a < 1 and b < 1:
+                m = 0.0                                    # two modes, 0 and 1: Dynare keeps the first
+            elif (a < 1 and b > 1 - eps) or (abs(a - 1) < 2 * eps and b > 1):
+                m = 0.0
+            elif (a > 1 and b < 1 + eps) or (abs(a - 1) < 2 * eps and b < 1):
+                m = 1.0
+            else:
+                m = 0.5
+            out[i] = m * (hi - lo) + lo
+        elif sh == 2:
+            out[i] = (0.0 if a < 1 else (a - 1) * b) + lo
+        elif sh == 3:
+            out[i] = prior.p1[i]
+        elif sh == 4:
+            out[i] = 1 / np.sqrt((b + 1) / a) + lo
+        elif sh == 6:
+            out[i] = a / (b + 2) + lo
+        elif sh == 8:
+            out[i] = (0.0 if a <= 1 else b * ((a - 1) / a) ** (1 / a)) + lo
+    return out
+
+
+def parameter_vector(estimation, parameter_set, mode=None, mcmc=None) -> np.ndarray:
+    """The estimated-parameter vector Dynare's ``evaluate_smoother`` uses for ``parameter_set``.
+
+    ``posterior_mode`` / ``mle_mode``: ``mode`` (a ``ModeResult`` or a vector), else the attribute
+    ``estimation.posterior_mode`` / ``estimation.mle_mode`` if the caller stored one there;
+    ``posterior_mean`` / ``posterior_median``: from ``mcmc`` (an ``MCMCResult``: mean / median of
+    the draws kept after ``mh_drop``, or a vector), else ``estimation.posterior_mean`` /
+    ``estimation.posterior_median``; ``prior_mean`` and ``prior_mode`` from the priors.
+    """
+    est = estimation
+    if est is None:
+        raise SmootherError(f"parameter_set={parameter_set!r} needs estimation=<pydyn.Estimation> "
+                            "(or pass the vector with theta=...)")
+
+    def as_vector(x, what):
+        if x is None:
+            x = getattr(est, parameter_set, None)
+        if x is None:
+            raise SmootherError(f"parameter_set={parameter_set!r}: pass {what}, or store the vector as "
+                                f"estimation.{parameter_set}")
+        return np.asarray(getattr(x, "x", x), float)
+
+    bayes = bool(est.prior.is_bayesian)
+    if parameter_set in ("posterior_mode", "mle_mode"):
+        if (parameter_set == "mle_mode") == bayes:
+            raise SmootherError(f"parameter_set={parameter_set!r} does not fit "
+                                f"{'a Bayesian' if bayes else 'a maximum-likelihood'} estimation")
+        return as_vector(mode, "mode=estimation.mode() (a ModeResult) or mode=<vector>")
+    if parameter_set in ("posterior_mean", "posterior_median"):
+        if not bayes:
+            raise SmootherError(f"parameter_set={parameter_set!r} needs priors")
+        if mcmc is not None and hasattr(mcmc, "kept"):
+            kept = mcmc.kept()
+            return kept.mean(axis=0) if parameter_set == "posterior_mean" else np.median(kept, axis=0)
+        return as_vector(mcmc, "mcmc=estimation.sample(...) (an MCMCResult) or mcmc=<vector>")
+    if parameter_set in ("prior_mean", "prior_mode"):
+        if not bayes:
+            raise SmootherError(f"parameter_set={parameter_set!r} needs priors")
+        x = np.array(est.prior.p1, float) if parameter_set == "prior_mean" else prior_mode(est.prior)
+        if not np.all(np.isfinite(x)):
+            bad = [n for n, v in zip(est.names, x) if not np.isfinite(v)]
+            raise SmootherError(f"parameter_set={parameter_set!r} is not defined for {bad} (Dynare's "
+                                "mode of a uniform prior is NaN and its smoother then fails too)")
+        return x
+    raise ValueError(f"unknown parameter_set {parameter_set!r}")
+
+
+def _calibration(estimation, theta):
+    """Structural parameters, shock covariance and measurement-error covariance at ``theta``,
+    through the public interface of ``Estimation``; nothing is written to the model."""
+    theta = np.asarray(theta, float).ravel()
+    if theta.shape != (len(estimation.names),):
+        raise SmootherError(f"theta has {theta.size} entries for the {len(estimation.names)} estimated "
+                            f"parameters {estimation.names}")
+    if hasattr(estimation, "calibration"):
+        c = estimation.calibration(theta)
+        params, Q, H = c["params"], c["Sigma_e"], c["H"]
+    else:
+        params = estimation.model_params(theta)
+        Q, H = estimation.covariances(theta)
+    return np.array(params, float), np.array(Q, float), np.array(H, float), theta
+
+
+def _statements(model, kind):
+    return [st for st in getattr(model, "statements", []) if st.get("statementName") == kind]
+
+
+def _trend_coefficients(model, varobs, params):
+    """Slopes of the ``observation_trends`` block in ``varobs`` order (``compute_trend_coefficients.m``)."""
+    coeff = np.zeros(len(varobs))
+    blocks = _statements(model, "observation_trends")
+    for st in blocks:
+        tr = st.get("trends", st.get("vals", {}))
+        table = ({d.get("var", d.get("name")): d.get("trend", d.get("value")) for d in tr}
+                 if isinstance(tr, list) else dict(tr))
+        unknown = [v for v in table if v not in varobs]
+        if unknown:
+            raise SmootherError(f"observation_trends on non-observed variable(s) {unknown}")
+        for v, expr in table.items():
+            coeff[varobs.index(v)] = float(model.eval_expr(expr, {"params": params}))
+    return coeff, bool(blocks)
+
+
+def _initial_state(model, names, state_var, ys, params, loglinear):
+    """Deviation of the period-0 state set by a ``filter_initial_state`` block (zero elsewhere);
+    ``None`` without a block. Only state variables are used, as in Dynare."""
+    blocks = _statements(model, "filter_initial_state")
+    if not blocks:
+        return None
+    a = np.zeros(len(names))
+    states = set(int(k) for k in state_var)
+    for st in blocks:
+        for d in st.get("states", []):
+            if int(d.get("lag", 0)) != 0:
+                raise NotImplementedError("filter_initial_state on a lagged variable is not supported")
+            i = names.index(d["var"])
+            if i not in states:
+                continue
+            val = float(model.eval_expr(str(d["value"]).rstrip(";"), {"params": params}))
+            a[i] = np.log(val) - np.log(ys[i]) if loglinear else val - ys[i]
+    return a
+
+
+_FROM_ESTIMATION = ("datafile", "first_obs", "nobs", "prefilter", "loglinear", "logdata", "presample", "lik_init",
+                    "diffuse_filter", "kalman_algo", "kalman_tol", "diffuse_kalman_tol", "Harvey_scale_factor")
+
+
 # --------------------------------------------------------------------------------- public: smoother
 def _loglinear_rules(G, H, ys):
     if np.any(ys <= 0) or not np.all(np.isfinite(ys)):
@@ -760,46 +937,106 @@ def _loglinear_rules(G, H, ys):
     return G * ys[None, :] / ys[:, None], H / ys[:, None]
 
 
-def smooth(model, data=None, sol=None, **options) -> SmootherResult:
-    """Kalman filter and smoother at the current parameters (Dynare's ``calib_smoother``).
+def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, mcmc=None, _reuse=None,
+           **options) -> SmootherResult:
+    """Kalman filter and smoother (Dynare's ``calib_smoother`` and ``evaluate_smoother``).
 
     ``data``: array ``(T, n_obs)`` with columns in ``varobs`` order, dict of series, or a file
     path; when omitted the ``datafile`` option is used (relative to the ``.mod`` file's folder).
-    ``sol``: a first-order solution (computed if omitted).
+    ``sol``: a first-order solution (computed if omitted; calibration only).
+
+    Parameters used. By default the model's current calibration (``parameter_set="calibration"``).
+    With ``estimation=`` (a ``pydyn.Estimation`` of the same model):
+
+    * ``theta=vector``: the estimated-parameter vector, ordered as ``estimation.names`` (Dynare's
+      ``xparam1``); it is mapped into structural parameters, shock standard deviations,
+      measurement-error standard deviations and correlations as Dynare's ``set_all_parameters``;
+    * ``parameter_set=`` ``"posterior_mode"`` / ``"mle_mode"`` (with ``mode=estimation.mode()`` or
+      a vector), ``"posterior_mean"`` / ``"posterior_median"`` (with ``mcmc=estimation.sample()``
+      or a vector), ``"prior_mean"``, ``"prior_mode"``: see ``parameter_vector``.
+
+    The model object is never modified. With ``estimation`` the options that object was built with
+    (sample, ``prefilter``, ``loglinear``, ``lik_init``, ...) are the defaults here; the data are
+    still read from ``data`` / ``datafile``.
 
     Options are Dynare's and default to those of the ``estimation`` / ``calib_smoother``
     statements of the ``.mod`` file, in file order; keyword arguments take precedence:
-    ``datafile, first_obs, nobs, prefilter, loglinear, logdata, diffuse_filter, lik_init (1 or 3),
-    kalman_algo (0-4), filtered_vars, filter_step_ahead, filter_covariance,
+    ``datafile, first_obs, nobs, prefilter, loglinear, logdata, diffuse_filter, lik_init (1, 2 or 3),
+    Harvey_scale_factor, kalman_algo (0-4), filtered_vars, filter_step_ahead, filter_covariance,
     smoothed_state_uncertainty, kalman_tol, diffuse_kalman_tol, varobs``. ``presample`` is
     accepted and has no effect on the smoother (as in Dynare).
 
-    ``replicate_dynare_bugs`` (default False) concerns the multivariate diffuse smoother
-    (``kalman_algo=3``) only, when a period inside the diffuse phase has no observation at all or
-    a zero ``F_inf``. Dynare 7.2 then drops terms of the backward recursion; its output breaks the
-    transition equation and differs from its own univariate smoother. With False the textbook
-    recursion is used (equal to Dynare's ``kalman_algo=4``); True reproduces Dynare's
-    ``kalman_algo=3`` output.
+    Blocks of the ``.mod`` file. ``observation_trends``: the linear trends are removed from the data
+    (demeaned over the sample under ``prefilter``) and returned in ``Trend`` / ``TrendCoeffs``;
+    smoothed, updated and filtered *observed* variables include them (k-step-ahead forecasts with
+    the trend moved k periods ahead), as in Dynare. ``filter_initial_state``: the filter starts
+    from the given state (stationary initialisations only).
+
+    ``replicate_dynare_bugs`` (default False):
+
+    * multivariate diffuse smoother (``kalman_algo=3``) when a period inside the diffuse phase has
+      no observation at all or a zero ``F_inf``: Dynare 7.2 then drops terms of the backward
+      recursion; its output breaks the transition equation and differs from its own univariate
+      smoother. With False the textbook recursion is used (equal to Dynare's ``kalman_algo=4``);
+      True reproduces Dynare's ``kalman_algo=3`` output;
+    * ``filter_initial_state``: Dynare centres the smoothed period-0 state on ``T a`` instead of
+      the prescribed state ``a`` (``Init_State`` only; later periods are unaffected). True
+      reproduces that.
     """
     from . import options as _opt
     _opt.refuse_occbin(model, "The smoother")
     from .perturbation import first_order
 
-    opts = _resolve_options(model, options)
-    for st in getattr(model, "statements", []):
-        if st.get("statementName") in ("observation_trends", "filter_initial_state", "heteroskedastic_shocks"):
-            raise NotImplementedError(f"{st['statementName']} blocks are not supported by the smoother")
+    user = dict(options)
+    if estimation is not None:
+        if list(estimation.model.endo_names) != list(model.endo_names):
+            raise SmootherError("estimation= was built for another model")
+        eo = estimation.options
+        for k in _FROM_ESTIMATION:
+            if k in eo and k not in user and eo[k] is not None:
+                user[k] = eo[k]
+    opts = _resolve_options(model, user)
+    if _statements(model, "heteroskedastic_shocks"):
+        raise NotImplementedError("heteroskedastic_shocks blocks are not supported by the smoother")
     varobs = list(opts["varobs"] or model.varobs)
     if not varobs:
         raise SmootherError("no observed variables: declare varobs or pass varobs=[...]")
-    if sol is None:
-        sol = first_order(model)
     names = list(model.endo_names)
     n, nx, pp = len(names), model.n_exo, len(varobs)
     try:
         mf = np.array([names.index(v) for v in varobs])
     except ValueError as exc:
         raise SmootherError(f"observed variable not in the model: {exc}") from exc
+
+    # ---- parameters (Dynare's set_all_parameters when a vector is used)
+    pset = opts["parameter_set"]
+    if _reuse is not None:
+        sol, Q, Hme, theta, pset = _reuse.solution, _reuse.Sigma_e, _reuse.me_cov, _reuse.theta, _reuse.parameter_set
+    else:
+        if theta is None and pset != "calibration":
+            theta = parameter_vector(estimation, pset, mode=mode, mcmc=mcmc)
+        elif theta is not None:
+            if estimation is None:
+                raise SmootherError("theta= needs estimation=<pydyn.Estimation> to map the vector into the model")
+            if "parameter_set" not in options:
+                pset = "theta"
+        if theta is not None:
+            if sol is not None:
+                raise TypeError("sol= cannot be combined with a parameter vector")
+            if list(varobs) != list(estimation.varobs):
+                raise SmootherError("varobs differs from the observed variables of the estimation")
+            params, Q, Hme, theta = _calibration(estimation, theta)
+            sol = first_order(model, params=params)
+        else:
+            Q = np.array(model.Sigma_e, float)
+            Hme = np.diag([float(model.measurement_errors.get(v, 0.0)) for v in varobs])
+            extra_me = set(model.measurement_errors) - set(varobs)
+            if extra_me:
+                raise SmootherError(f"measurement error declared on non-observed variable(s) {sorted(extra_me)}")
+            if sol is None:
+                sol = first_order(model)
+    opts["parameter_set"] = pset
+    params = np.array(getattr(sol, "params", model.params), float)
     ys = np.asarray(sol.ys, float)
     loglinear = bool(opts["loglinear"])
     if loglinear:
@@ -813,7 +1050,8 @@ def smooth(model, data=None, sol=None, **options) -> SmootherResult:
     src = data if data is not None else opts["datafile"]
     if src is None:
         raise SmootherError("no data: pass data=... or a datafile option")
-    raw = load_data(src, varobs, base_dir=Path(model.json_dir).parents[2] if hasattr(model, "json_dir") else None)
+    loaded = load_data(src, varobs, base_dir=Path(model.json_dir).parents[2] if hasattr(model, "json_dir") else None)
+    raw = loaded
     if loglinear and not opts["logdata"]:
         with np.errstate(invalid="ignore", divide="ignore"):
             raw = np.log(raw)
@@ -823,38 +1061,53 @@ def smooth(model, data=None, sol=None, **options) -> SmootherResult:
         raise SmootherError(f"first_obs={first}, nobs={nobs} do not fit the {raw.shape[0]} observations in the data")
     obs = raw[first - 1:first - 1 + nobs]
     obs_const = const_all[mf].copy()
-    if int(opts["prefilter"]) == 1:
+    prefilter = int(opts["prefilter"]) == 1
+    if prefilter:
         if np.any(np.abs(obs_const) > 1e-9):
             raise SmootherError("prefilter=1 is inconsistent with observed variables that have a "
                                 "non-zero steady state (same check as Dynare)")
         obs_const = np.nanmean(obs, axis=0)
-    Yd = (obs - obs_const).T                          # (n_obs, T), deviations
+    trend_coeff, with_trend = _trend_coefficients(model, varobs, params)
+    trend = np.outer(np.arange(first, first + nobs), trend_coeff)       # (T, n_obs)
+    if prefilter:
+        trend = trend - trend.mean(axis=0)
+    Yd = (obs - obs_const - trend).T                  # (n_obs, T), deviations
     smpl = Yd.shape[1]
     di_list = [np.where(~np.isnan(Yd[:, t]))[0] for t in range(smpl)]
 
     # ---- state space
-    Q = np.array(model.Sigma_e, float)
-    Hme = np.diag([float(model.measurement_errors.get(v, 0.0)) for v in varobs])
-    extra_me = set(model.measurement_errors) - set(varobs)
-    if extra_me:
-        raise SmootherError(f"measurement error declared on non-observed variable(s) {sorted(extra_me)}")
     Z = np.zeros((pp, n))
     Z[np.arange(pp), mf] = 1.0
     kalman_algo = int(opts["kalman_algo"])
     lik_init = int(opts["lik_init"])
     if opts["diffuse_filter"] or kalman_algo in (3, 4):
+        if lik_init == 2:
+            raise SmootherError("options diffuse_filter, lik_init and/or kalman_algo have contradictory settings")
         lik_init = 3
     qz = opts["qz_criterium"]
     if lik_init == 1:
         qz = 1 - 1e-6 if qz is None else qz
         kalman_algo = 2 if kalman_algo == 2 else 1
         Pstar, Pinf = _stationary_variance(G, Hs, Q, qz), None
+    elif lik_init == 2:                               # Dynare's "old" diffuse filter: a large variance
+        kalman_algo = 2 if kalman_algo == 2 else 1
+        Pstar, Pinf = float(opts["Harvey_scale_factor"]) * np.eye(n), None
     elif lik_init == 3:
         qz = 1 + 1e-6 if qz is None else qz
         kalman_algo = 4 if kalman_algo == 4 else 3
         Pstar, Pinf = compute_Pinf_Pstar(mf, G, Hs, Q, qz)
     else:
-        raise NotImplementedError(f"lik_init={lik_init}: only 1 (stationary) and 3 (diffuse) are implemented")
+        raise NotImplementedError(f"lik_init={lik_init}: only 1 (stationary), 2 (large variance) and 3 (diffuse) "
+                                  "are implemented")
+    compat = bool(opts["replicate_dynare_bugs"])
+    a_init = _initial_state(model, names, sol.state_var, ys, params, loglinear)
+    a_pred = a_zero = None
+    if a_init is not None and np.any(a_init):
+        if lik_init == 3:
+            raise NotImplementedError("filter_initial_state with the diffuse filter is not supported (Dynare 7.2 "
+                                      "applies the transition matrix twice to the prescribed state there)")
+        a_pred = G @ a_init
+        a_zero = a_pred if compat else a_init
     nk = max(opts["filter_step_ahead"]) if opts["filter_step_ahead"] else 1
     want_V, want_PK = bool(opts["smoothed_state_uncertainty"]), bool(opts["filter_covariance"])
     ktol, dtol = float(opts["kalman_tol"]), float(opts["diffuse_kalman_tol"])
@@ -862,31 +1115,36 @@ def smooth(model, data=None, sol=None, **options) -> SmootherResult:
     out = None
     if kalman_algo in (1, 3):
         out = _smoother_multivariate(G, Z, Hs, Q, Hme, Pinf, Pstar, Yd, di_list, nk, ktol, dtol,
-                                     want_V, want_PK, bool(opts["replicate_dynare_bugs"]))
+                                     want_V, want_PK, compat, a_pred, a_zero)
         if out is None:
             kalman_algo += 1                        # Dynare: switch to the univariate filter
     if out is None:
+        if not np.all(np.abs(Hme - np.diag(np.diag(Hme))) < 1e-14):
+            raise NotImplementedError("the univariate smoother with correlated measurement errors is not "
+                                      "implemented (Dynare augments the state vector)")
         out = _smoother_univariate(G, Z, Hs, Q, np.diag(Hme).copy(), Pinf, Pstar, Yd, di_list, nk,
-                                   ktol, dtol, want_V, want_PK, bool(opts["replicate_dynare_bugs"]))
+                                   ktol, dtol, want_V, want_PK, compat, a_pred, a_zero)
     alphahat, updated, aK = out["alphahat"], out["updated"], out["aK"]
     eps = Yd.T - alphahat[:, mf]                      # NaN where the observation is missing
 
     # ---- Dynare's store_smoother_results
-    is_obs = np.zeros(n, bool)
-    is_obs[mf] = True
     const = np.tile(const_all, (smpl, 1))
     const[:, mf] = obs_const
-    sv, uv = alphahat + const, updated + const
-    fv = aK[0, :, 1:smpl + 1].T + const
+    full_trend = np.zeros((smpl, n))
+    full_trend[:, mf] = trend
+    step = np.zeros(n)
+    step[mf] = trend_coeff
+    sv, uv = alphahat + const + full_trend, updated + const + full_trend
+    fv = aK[0, :, 1:smpl + 1].T + const + full_trend + step
     kstep = kvar = None
     fsa = opts["filter_step_ahead"]
     if fsa:
         idx = np.array(fsa) - 1
         kstep = aK[idx] + const_all[None, :, None]
         mx = max(fsa)
-        for j, step in enumerate(fsa):                # observed variables: constant of the data
-            hi = kstep.shape[2] - (mx - step)
-            kstep[j, mf, step:hi] = aK[step - 1][mf, step:hi] + obs_const[:, None]
+        for j, k in enumerate(fsa):                   # observed variables: constant and trend of the data
+            hi = kstep.shape[2] - (mx - k)
+            kstep[j, mf, k:hi] = aK[k - 1][mf, k:hi] + obs_const[:, None] + (trend + k * trend_coeff).T
         if want_PK:
             kvar = out["PK"][idx]
     res = SmootherResult(
@@ -908,11 +1166,53 @@ def smooth(model, data=None, sol=None, **options) -> SmootherResult:
         smoothed=alphahat, updated=updated, init_state=out["alphahat0"], shocks=out["etahat"],
         measurement_errors=eps, data=Yd.T, obs_constant=obs_const, me_variance=np.diag(Hme).copy(), G=G, H=Hs, obs_index=mf,
         kalman_algo=kalman_algo, diffuse_periods=out["d"], options=opts,
+        Trend={v: full_trend[:, i] for i, v in enumerate(names)}, TrendCoeffs=step,
+        parameter_set=pset, theta=None if theta is None else np.array(theta, float), params=params,
+        Sigma_e=Q, me_cov=Hme, solution=sol, raw=loaded, first_obs=first,
     )
     return res
 
 
 # --------------------------------------------------------------------------------- public: decompositions
+#: options of the decomposition statements that only concern Dynare's figure files and menus
+_DECOMP_COSMETIC = {"colormap", "fig_name", "graph_format", "nodisplay", "interactive", "nograph",
+                    "shock_decomposition", "plot_shock_decomposition"}
+_SMOOTH_ARGS = ("estimation", "theta", "mode", "mcmc", "sol")
+
+
+def _short(key):
+    return key.split(".")[-1]
+
+
+def _decomp_statement_options(model, kind, which=None):
+    """Options of the statements of one kind with the ``shock_decomp.`` / ``plot_shock_decomp.`` /
+    ``initial_condition_decomp.`` prefixes removed. ``which=None`` merges them in file order;
+    an integer picks one statement (Dynare resets the plot options before every plot statement).
+    Returns ``(options, symbol_list)``."""
+    sts = _statements(model, kind)
+    if which is not None:
+        sts = sts[which:][:1] if sts and -len(sts) <= which < len(sts) else []
+    out, symbols = {}, []
+    for st in sts:
+        for k, v in (st.get("options") or {}).items():
+            out[_short(k)] = v
+        symbols = list(st.get("symbol_list", []) or [])
+    return out, symbols
+
+
+def _report_unused(model, kind, honoured, what, options=None):
+    """Warn once (``pydyn.options``) about options of a statement that ``what`` does not act on."""
+    from . import options as _opt
+    if options is None:
+        options, _ = _decomp_statement_options(model, kind)
+    known = set(honoured) | _opt.COSMETIC | _DECOMP_COSMETIC
+    unused = sorted(k for k in options if k not in known and f"no_graph.{k}" not in known)
+    if unused and model is not None:
+        _opt.warn_once(model, f"{what} does not act on these {kind} options from the .mod file: "
+                              f"{', '.join(unused)}", stacklevel=4)
+    return unused
+
+
 def _as_result(model, res_or_data, options):
     if isinstance(res_or_data, SmootherResult):
         if options:
@@ -921,25 +1221,37 @@ def _as_result(model, res_or_data, options):
     return smooth(model, res_or_data, **options)
 
 
+def _with_file_options(model, kind, options):
+    """Smoother options of a decomposition statement as defaults under the keyword arguments."""
+    file_opts, _ = _decomp_statement_options(model, kind)
+    merged = {k: v for k, v in file_opts.items() if k in _DEFAULTS}
+    merged.update(options)
+    return file_opts, merged
+
+
 def shock_decomposition(model, res_or_data=None, init_state=None, **options) -> ShockDecomposition:
-    """Historical shock decomposition (Dynare's ``shock_decomposition``, ``parameter_set=calibration``).
+    """Historical shock decomposition (Dynare's ``shock_decomposition``).
 
     ``res_or_data``: a ``SmootherResult``, or data / nothing, in which case the smoother is run
-    with ``options`` (defaults also read from the file's ``shock_decomposition`` statement).
+    with ``options`` (defaults also read from the file's ``shock_decomposition`` statement,
+    including ``parameter_set``). The parameter set is chosen as in ``smooth``:
+    ``estimation=est, theta=vector`` or ``estimation=est, parameter_set="posterior_mode", mode=...``.
     ``init_state``: Dynare's option; shocks of periods ``1..init_state`` are attributed to the
     initial conditions (0: condition on the smoothed state of period 0).
 
     Returns ``z`` of shape ``(n_endo, n_exo + 2, T)``: shocks in declaration order, then initial
     conditions, then the smoothed deviation from the steady state (in logs with ``loglinear``).
     Observed variables under ``prefilter`` are measured from the model's steady state, not from
-    the data mean, as in Dynare.
+    the data mean, and observation trends are not part of the decomposition, as in Dynare.
+    Shocks are never grouped here: ``use_shock_groups`` acts when plotting (``group_shocks``,
+    ``decomposition_plot_data``), as in Dynare where ``oo_.shock_decomposition`` is ungrouped.
     """
-    file_opts = _statement_options(model, ("shock_decomposition",))
+    file_opts, merged = _with_file_options(model, "shock_decomposition", options)
+    _report_unused(model, "shock_decomposition", set(_DEFAULTS) | {"init_state", "use_shock_groups", "max_nrows"},
+                   "shock_decomposition", file_opts)
     if init_state is None:
         init_state = int(file_opts.get("init_state", 0))
     if not isinstance(res_or_data, SmootherResult):
-        merged = {k: v for k, v in file_opts.items() if k in _DEFAULTS}
-        merged.update(options)
         options = merged
     res = _as_result(model, res_or_data, options)
     T, n = res.smoothed.shape
@@ -954,14 +1266,19 @@ def shock_decomposition(model, res_or_data=None, init_state=None, **options) -> 
         z[:, nx, t] = z[:, nx + 1, t] - z[:, :nx, t].sum(axis=1)
     return ShockDecomposition(z=z, endo_names=list(res.endo_names),
                               columns=list(res.exo_names) + ["initial_conditions", "smoothed"],
-                              kind="shocks", init_state=int(init_state))
+                              kind="shocks", init_state=int(init_state), steady_state=res.SteadyState.copy(),
+                              parameter_set=res.parameter_set)
 
 
 def initial_condition_decomposition(model, res_or_data=None, **options) -> ShockDecomposition:
     """Dynare's ``initial_condition_decomposition``: contribution of each variable's smoothed
     value in period 1 to the later path. ``z`` is ``(n_endo, n_endo + 2, T)``; column ``n_endo``
     (0-based) is the remainder, i.e. the contribution of all shocks from period 2 on, and the
-    last column is the smoothed deviation."""
+    last column is the smoothed deviation. Parameter sets as in ``smooth``."""
+    file_opts, _ = _decomp_statement_options(model, "initial_condition_decomposition")
+    _report_unused(model, "initial_condition_decomposition",
+                   {"type", "steadystate", "diff", "flip", "detail_plot", "max_nrows"},
+                   "initial_condition_decomposition", file_opts)
     res = _as_result(model, res_or_data, options)
     T, n = res.smoothed.shape
     z = np.zeros((n, n + 2, T))
@@ -973,24 +1290,43 @@ def initial_condition_decomposition(model, res_or_data=None, **options) -> Shock
         z[:, n, t] = z[:, n + 1, t] - z[:, :n, t].sum(axis=1)
     return ShockDecomposition(z=z, endo_names=list(res.endo_names),
                               columns=list(res.endo_names) + ["shocks", "smoothed"],
-                              kind="initial_conditions")
+                              kind="initial_conditions", steady_state=res.SteadyState.copy(),
+                              parameter_set=res.parameter_set)
 
 
-def group_shocks(decomp: ShockDecomposition, groups=None, model=None, name=None) -> ShockDecomposition:
-    """Sum shock contributions by group, as Dynare does when plotting with ``use_shock_groups``.
+def shock_groups(model, name=None) -> dict:
+    """Groups of a ``shock_groups`` block as ``{label: [shock, ...]}`` (the last block, or the one
+    called ``name``; a block without a name is called ``default``)."""
+    blocks = _statements(model, "shock_groups")
+    if name is not None:
+        blocks = [b for b in blocks if b.get("name", "default") == name]
+    if not blocks:
+        raise SmootherError("no shock_groups block found" + (f" with name {name!r}" if name else ""))
+    return {g["group_name"]: list(g["shocks"]) for g in blocks[-1]["groups"]}
+
+
+def group_shocks(decomp: ShockDecomposition, groups=None, model=None, name=None, expand=None) -> ShockDecomposition:
+    """Sum shock contributions by group, as Dynare does when plotting with ``use_shock_groups``
+    (``make_the_groups`` in ``plot_shock_decomposition.m``).
 
     ``groups`` maps a label to a list of shock names; or pass ``model`` (and optionally the
     ``name`` of a ``shock_groups`` block) to use the groups of the ``.mod`` file. The result has
-    one column per group, then ``"Others + Initial Values"`` (shocks in no group plus the initial
-    conditions), then the smoothed deviation.
+    one column per group, then one column holding the shocks in no group plus the initial
+    conditions, then the smoothed deviation. That column is labelled ``"Others + Initial Values"``
+    when some shock outside the groups contributes and ``"Initial values"`` otherwise (Dynare's
+    labels). A shock listed in two groups counts in the first only.
+
+    ``expand="label"`` reproduces Dynare's "expand group" menu entry: the shocks of that group
+    one by one, everything else in ``"Others + Initial Values"``.
     """
+    if decomp.kind != "shocks":
+        raise SmootherError("group_shocks needs an ungrouped shock decomposition")
     if groups is None:
-        blocks = [st for st in getattr(model, "statements", []) if st.get("statementName") == "shock_groups"]
-        if name is not None:
-            blocks = [b for b in blocks if b.get("name") == name]
-        if not blocks:
-            raise SmootherError("no shock_groups block found")
-        groups = {g["group_name"]: list(g["shocks"]) for g in blocks[-1]["groups"]}
+        groups = shock_groups(model, name)
+    if expand is not None:
+        if expand not in groups:
+            raise SmootherError(f"no group {expand!r} to expand; groups are {list(groups)}")
+        groups = {s: [s] for s in groups[expand]}
     nshocks = len(decomp.columns) - 2
     z = decomp.z.copy()
     out = np.zeros((z.shape[0], len(groups) + 2, z.shape[2]))
@@ -1001,11 +1337,440 @@ def group_shocks(decomp: ShockDecomposition, groups=None, model=None, name=None)
             k = decomp.columns.index(s)
             out[:, i, :] += z[:, k, :]
             z[:, k, :] = 0                              # a shock listed twice counts once, as in Dynare
+    others = np.any(np.nan_to_num(z[:, :nshocks, :].sum(axis=1)) != 0)
     out[:, -2, :] = z[:, :nshocks + 1, :].sum(axis=1)
     out[:, -1, :] = z[:, nshocks + 1, :]
     return ShockDecomposition(z=out, endo_names=list(decomp.endo_names),
-                              columns=list(groups) + ["Others + Initial Values", "smoothed"],
-                              kind="groups", init_state=decomp.init_state)
+                              columns=list(groups) + ["Others + Initial Values" if others else "Initial values",
+                                                      "smoothed"],
+                              kind="groups", init_state=decomp.init_state, steady_state=decomp.steady_state,
+                              parameter_set=decomp.parameter_set, first_period=decomp.first_period)
+
+
+def init2shocks(model, name=None) -> list:
+    """Pairs ``(endogenous, exogenous)`` of an ``init2shocks`` block (the last one, or ``name``)."""
+    blocks = _statements(model, "init2shocks")
+    if name is not None:
+        blocks = [b for b in blocks if b.get("name", "default") == name]
+    if not blocks:
+        raise SmootherError("no init2shocks block found" + (f" with name {name!r}" if name else ""))
+    return [(g["endogenous"], g.get("exogenous") or None) for g in blocks[-1]["groups"]]
+
+
+def apply_init2shocks(decomp: ShockDecomposition, icd: ShockDecomposition, pairs, rename=True) -> ShockDecomposition:
+    """Attribute the effect of the initial condition of some endogenous variables to shocks
+    (Dynare's ``init2shocks`` option of ``plot_shock_decomposition``).
+
+    ``pairs``: ``(endogenous, exogenous)`` tuples; ``icd`` the initial-condition decomposition of
+    the same smoother run. For a shock decomposition the contribution of the variable's period-1
+    value moves from the initial conditions to the shock, whose label becomes
+    ``"shock + variable"`` (unless ``rename`` is false). For an initial-condition decomposition (pass it as ``decomp``; ``icd``
+    is ignored) the listed variables are merged into the remainder (all shocks), as Dynare does
+    in ``initial_condition_decomposition.m``.
+    """
+    z = decomp.z.copy()
+    cols = list(decomp.columns)
+    if decomp.kind == "initial_conditions":
+        for endo, _ in pairs:
+            j = decomp.endo_names.index(endo)
+            z[:, -2, :] += z[:, j, :]
+            z[:, j, :] = 0
+    elif decomp.kind == "shocks":
+        if icd is None or icd.kind != "initial_conditions":
+            raise SmootherError("init2shocks needs the initial-condition decomposition (icd=...)")
+        if icd.endo_names != decomp.endo_names:
+            raise SmootherError("init2shocks: the initial-condition decomposition holds other variables "
+                                "(apply init2shocks before squeezing)")
+        T = z.shape[2]
+        for endo, exo in pairs:
+            j = icd.columns.index(endo)
+            if exo is not None:
+                jj = decomp.columns.index(exo)
+                if rename:
+                    cols[jj] = f"{cols[jj]} + {endo}"
+                z[:, jj, :] += icd.z[:, j, :T]
+            else:
+                z[:, -1, :] -= icd.z[:, j, :T]
+            z[:, -2, :] -= icd.z[:, j, :T]
+    else:
+        raise SmootherError("init2shocks applies before the shocks are grouped")
+    return ShockDecomposition(z=z, endo_names=list(decomp.endo_names), columns=cols, kind=decomp.kind,
+                              init_state=decomp.init_state, steady_state=decomp.steady_state,
+                              parameter_set=decomp.parameter_set, first_period=decomp.first_period)
+
+
+def squeeze_shock_decomposition(obj, var_list):
+    """Dynare's ``squeeze_shock_decomposition``: keep the decomposition of the listed variables
+    only (in the order given). Works on a ``ShockDecomposition`` or a ``RealtimeDecomposition``."""
+    def pick(names):
+        missing = [v for v in var_list if v not in names]
+        if missing:
+            raise SmootherError(f"variable(s) {missing} not in the decomposition")
+        return [names.index(v) for v in var_list]
+
+    if isinstance(obj, RealtimeDecomposition):
+        k = pick(obj.endo_names)
+        sq = lambda d: {key: v[k] for key, v in d.items()}   # noqa: E731
+        return RealtimeDecomposition(
+            endo_names=list(var_list), columns=list(obj.columns), nobs=obj.nobs, forecast=obj.forecast,
+            presample=obj.presample, realtime=sq(obj.realtime), conditional=sq(obj.conditional),
+            realtime_forecast=sq(obj.realtime_forecast), realtime_conditional=sq(obj.realtime_conditional),
+            steady_state=None if obj.steady_state is None else obj.steady_state[k], parameter_set=obj.parameter_set)
+    k = pick(obj.endo_names)
+    return ShockDecomposition(z=obj.z[k], endo_names=list(var_list), columns=list(obj.columns), kind=obj.kind,
+                              init_state=obj.init_state,
+                              steady_state=None if obj.steady_state is None else np.asarray(obj.steady_state)[k],
+                              parameter_set=obj.parameter_set, first_period=obj.first_period)
+
+
+# --------------------------------------------------------------------------------- realtime decomposition
+@dataclass
+class RealtimeDecomposition:
+    """Output of ``realtime_shock_decomposition``; the four dicts mirror Dynare's ``oo_`` fields
+    and hold arrays ``(n_endo, n_exo + 2, periods)`` with the columns of a shock decomposition.
+
+    * ``realtime`` (``oo_.realtime_shock_decomposition``): ``"pool"`` (``nobs + forecast`` periods:
+      period ``t`` as decomposed with the data up to ``t``; the periods up to ``presample + 1`` come
+      from the first vintage, the forecast periods from the last) and ``"time_j"`` for the saved
+      vintages (data up to ``j``, ``j + forecast`` periods);
+    * ``conditional`` (``oo_.conditional_shock_decomposition``): ``"pool"`` (one-step: period ``t``
+      given the smoothed state of ``t - 1``, vintage ``t``) and ``"time_j"`` (``forecast + 1``
+      periods starting at ``j``, conditional on the state at ``j``, from vintage ``j + forecast``);
+    * ``realtime_forecast``: ``"pool"`` (``nobs + 1`` periods: the one-step forecast of ``t`` made
+      with the data up to ``t - 1``) and ``"time_j"`` (period ``j`` and the ``forecast`` periods
+      after it, as forecast in vintage ``j``);
+    * ``realtime_conditional``: ``"time_j"``: realtime pool minus the forecast made at ``j``
+      (the forecast itself is added to the initial-condition column).
+    """
+    endo_names: list
+    columns: list
+    nobs: int
+    forecast: int
+    presample: int
+    realtime: dict
+    conditional: dict
+    realtime_forecast: dict
+    realtime_conditional: dict
+    steady_state: np.ndarray = None
+    parameter_set: str = "calibration"
+
+    def select(self, realtime=1, vintage=0) -> ShockDecomposition:
+        """The decomposition Dynare's ``plot_shock_decomposition(realtime=..., vintage=...)`` draws:
+        ``realtime`` 1 (realtime), 2 (conditional), 3 (forecast); ``vintage`` 0 for the pooled one."""
+        if realtime not in (1, 2, 3):
+            raise ValueError("realtime must be 1 (realtime), 2 (conditional) or 3 (forecast)")
+        key = f"time_{int(vintage)}" if vintage else "pool"
+        if realtime == 1:
+            store, first = self.realtime, 1
+        elif realtime == 2:
+            store, first = (self.realtime_conditional, int(vintage)) if vintage else (self.conditional, 1)
+        else:
+            store, first = self.realtime_forecast, (int(vintage) if vintage else 1)
+        if key not in store:
+            raise SmootherError(f"vintage {vintage} was not stored (save_realtime); available: {sorted(store)}")
+        return ShockDecomposition(z=store[key], endo_names=list(self.endo_names), columns=list(self.columns),
+                                  kind="shocks", steady_state=self.steady_state, parameter_set=self.parameter_set,
+                                  first_period=first)
+
+
+def realtime_shock_decomposition(model, data=None, forecast=None, presample=None, save_realtime=None,
+                                 fast_realtime=None, **options) -> RealtimeDecomposition:
+    """Dynare's ``realtime_shock_decomposition``: the smoother is re-run on the samples
+    ``1..j`` for ``j = presample + 1, ..., nobs`` and each period is decomposed with the data
+    available then. ``forecast`` (periods ahead, shocks set to zero), ``presample``,
+    ``save_realtime`` (vintages to keep) and ``fast_realtime`` (vintages at which the smoother is
+    really re-run; other vintages reuse the next such run truncated to ``j`` periods) default to
+    the statement in the ``.mod`` file. Other keyword arguments are those of ``smooth``
+    (parameter sets included; the parameters are the same for all vintages).
+
+    Conventions of Dynare 7.2 kept here:
+
+    * ``presample`` is ``max(1, P - 1)`` with ``P`` the ``presample`` option of the *estimation*,
+      and the option given here can only lower it (``min`` of the two), so with the default
+      estimation ``presample=0`` the recursion always starts at ``j = 2`` whatever is asked;
+    * the shocks of period 1 are attributed to the initial conditions (in
+      ``shock_decomposition`` they are not), so the pooled result differs from the full-sample
+      decomposition even in the last vintage.
+    """
+    file_opts, merged = _with_file_options(model, "realtime_shock_decomposition", options)
+    _report_unused(model, "realtime_shock_decomposition",
+                   set(_DEFAULTS) | {"forecast", "presample", "save_realtime", "fast_realtime"},
+                   "realtime_shock_decomposition", file_opts)
+    forecast = int(_scalar(file_opts.get("forecast", 0)) if forecast is None else forecast)
+    my_presample = file_opts.get("presample") if presample is None else presample
+    if "presample" in file_opts and "presample" not in options:
+        merged.pop("presample", None)                 # the statement's presample is not the estimation's
+    save = [int(v) for v in np.atleast_1d(file_opts.get("save_realtime", []) if save_realtime is None else save_realtime)]
+    fast = [int(v) for v in np.atleast_1d(file_opts.get("fast_realtime", 0) if fast_realtime is None else fast_realtime)]
+    fast = [v for v in fast if v > 0]
+
+    full = smooth(model, data, **merged)
+    nobs, n, nx = full.nobs, full.smoothed.shape[1], full.shocks.shape[1]
+    pres = max(1, int(full.options["presample"]) - 1)
+    if my_presample is not None:
+        pres = min(pres, max(1, int(_scalar(my_presample))))
+    G, H = full.G, full.H
+    again = {k: v for k, v in merged.items() if k not in _SMOOTH_ARGS and k not in ("nobs", "datafile", "parameter_set")}
+
+    def run(j):
+        return full if j == nobs else smooth(model, full.raw, _reuse=full, estimation=merged.get("estimation"),
+                                             nobs=j, **again)
+
+    zreal = np.zeros((n, nx + 2, nobs + forecast))
+    zcond = np.zeros((n, nx + 2, nobs))
+    zfrcst = np.zeros((n, nx + 2, nobs + 1))
+    rt, cond, fc, rtc, fc_all = {}, {}, {}, {}, {}
+    init, gend0, res0 = True, 0, None
+    for j in range(pres + 1, nobs + 1):
+        if not fast:
+            res = run(j)
+        else:
+            if j < min(fast) and gend0 < j:
+                res0, gend0 = run(min(fast)), min(fast)
+            if j in fast and gend0 < j:
+                res = res0 = run(j)
+                gend0 = j
+            else:
+                if j > gend0:
+                    gend0 = nobs if j > max(fast) else min(f for f in fast if f > j)
+                    res0 = run(gend0)
+                res = res0
+        gend = j
+        sm = res.smoothed[:gend].T                                  # (n, gend)
+        eps = np.hstack([res.shocks[:gend].T, np.zeros((nx, forecast))])
+        z = np.zeros((n, nx + 2, gend + forecast))
+        z[:, -1, :gend] = sm
+        for i in range(gend + forecast):
+            if i > 0:
+                if i >= gend:
+                    z[:, -1, i] = G @ z[:, -1, i - 1]
+                z[:, :nx, i] = G @ z[:, :nx, i - 1] + H * eps[:, i][None, :]
+            z[:, nx, i] = z[:, -1, i] - z[:, :nx, i].sum(axis=1)
+        # conditional decomposition one step ahead
+        z1 = np.zeros((n, nx + 2))
+        z1[:, -1] = sm[:, gend - 1]
+        z1[:, :nx] = H * eps[:, gend - 1][None, :]
+        z1[:, nx] = z1[:, -1] - z1[:, :nx].sum(axis=1)
+        # conditional decomposition k steps ahead
+        if forecast and forecast < j:
+            zn = np.zeros((n, nx + 2, forecast + 1))
+            zn[:, -1, :] = sm[:, gend - forecast - 1:gend]
+            for i in range(forecast + 1):
+                if i > 0:
+                    zn[:, :nx, i] = G @ zn[:, :nx, i - 1] + H * eps[:, i + gend - forecast - 1][None, :]
+                zn[:, nx, i] = zn[:, -1, i] - zn[:, :nx, i].sum(axis=1)
+            if j - forecast in save:
+                cond[f"time_{j - forecast}"] = zn
+        if init:
+            zreal[:, :, :j] = z[:, :, :j]
+        elif j < nobs:
+            zreal[:, :, j - 1] = z[:, :, gend - 1]
+        else:
+            zreal[:, :, j - 1:] = z[:, :, gend - 1:]
+        zcond[:, :, j - 1] = z1
+        if j in save:
+            rt[f"time_{j}"] = z
+        if forecast:
+            zfrcst[:, :, j] = z[:, :, gend]
+            fc_all[j] = z[:, :, gend - 1:]
+            if j in save:
+                fc[f"time_{j}"] = fc_all[j]
+            if j > forecast + pres:
+                for back in ([forecast] + (list(range(forecast - 1, 0, -1)) if j == nobs else [])):
+                    o = j - back
+                    x = zreal[:, :, o - 1:j] - fc_all[o][:, :, :back + 1]
+                    x[:, -2, :] += fc_all[o][:, -1, :back + 1]
+                    x[:, -1, :] = zreal[:, -1, o - 1:j]
+                    if o in save:
+                        rtc[f"time_{o}"] = x
+        init = False
+    rt["pool"] = zreal
+    cond["pool"] = zcond
+    if forecast:
+        fc["pool"] = zfrcst
+    return RealtimeDecomposition(
+        endo_names=list(full.endo_names), columns=list(full.exo_names) + ["initial_conditions", "smoothed"],
+        nobs=nobs, forecast=forecast, presample=pres, realtime=rt, conditional=cond, realtime_forecast=fc,
+        realtime_conditional=rtc, steady_state=full.SteadyState.copy(), parameter_set=full.parameter_set)
+
+
+# --------------------------------------------------------------------------------- numbers behind the figures
+@dataclass
+class DecompositionPlotData:
+    """What ``plot_shock_decomposition`` draws.
+
+    ``z`` is ``(n_variables, n_components + 1, T)``: Dynare's ``z(i_var,:,:)`` after grouping,
+    ``diff``, ``type`` and ``flip`` and before cropping; the rows are the components named in
+    ``labels`` (the last one is the initial conditions, with the ungrouped shocks when groups are
+    used) and then the line (the smoothed deviation). ``periods`` numbers the columns (sample
+    periods from 1; years for ``type="aoa"``); ``steady_state`` is the value Dynare adds to the axis
+    labels with the ``steadystate`` option (after the same transformations).
+
+    ``panels`` holds one dict per figure, after cropping and screening: ``name``, ``labels``,
+    ``contributions`` ``(n_components, T)``, ``total`` ``(T,)``, ``periods``, ``steady_state``.
+    Variables whose bars span less than 1e-6 are skipped, as in Dynare.
+    """
+    var_list: list
+    z: np.ndarray
+    labels: list
+    periods: np.ndarray
+    steady_state: np.ndarray
+    panels: list
+    kind: str = "shocks"
+    type: str = ""
+    steadystate: bool = False
+    title: str = ""
+    parameter_set: str = "calibration"
+
+
+def stack_bars(contributions):
+    """Bottom and top of every bar of a stacked decomposition: positive contributions pile up
+    from zero in component order, negative ones pile down (``graph_decomp.m``). Returns
+    ``(bottom, top)`` with the shape of ``contributions`` (components, periods); NaN stays NaN."""
+    c = np.asarray(contributions, float)
+    pos = np.where(c > 0, c, 0.0)
+    neg = np.where(c > 0, 0.0, np.nan_to_num(c))
+    base_p = np.cumsum(pos, axis=0) - pos
+    base_n = np.cumsum(neg, axis=0) - neg
+    bottom = np.where(c > 0, base_p, base_n)
+    return bottom, bottom + c
+
+
+def decomposition_plot_data(decomp, var_list=None, model=None, use_shock_groups=None, groups=None, expand=None,
+                            init2shocks=None, icd=None, type="", diff=False, flip=False, steadystate=False,
+                            plot_init_date=None, plot_end_date=None, screen_shocks=False, first_quarter=1,
+                            steady_state=None) -> DecompositionPlotData:
+    """The numbers of Dynare's ``plot_shock_decomposition`` (and of the figure of
+    ``initial_condition_decomposition`` when ``decomp`` is one).
+
+    ``decomp``: a ``ShockDecomposition`` (ungrouped shocks, already grouped, or initial
+    conditions); for realtime results pass ``rt.select(realtime, vintage)``.
+    ``var_list``: variables to show (default: the model's original variables, else all).
+    ``use_shock_groups`` (name of a ``shock_groups`` block of ``model``) or ``groups``
+    (``{label: [shocks]}``); ``expand``: label of a group to show shock by shock.
+    ``init2shocks``: name of an ``init2shocks`` block or a list of ``(endogenous, shock)`` pairs,
+    with ``icd`` the initial-condition decomposition of the same smoother run.
+    ``diff``: first difference (first period NaN, steady state 0). ``type``: ``""``/``"qoq"``
+    (as is), ``"yoy"`` (sum of four consecutive periods, steady state times 4) or ``"aoa"``
+    (every fourth period, for variables that are already annualised in the model; the sample is
+    taken to start in quarter ``first_quarter``). ``flip``: change the sign.
+    ``steadystate``: show the steady state on the axis. ``plot_init_date`` / ``plot_end_date``:
+    first and last period shown, as integers in the numbering of ``periods``.
+    ``screen_shocks``: with more than 18 components and no groups, keep the 16 shocks with the
+    largest mean absolute contribution for each variable and sum the rest in ``"Others"``.
+    ``steady_state``: overrides the steady state stored in ``decomp`` (see the note on Dynare in
+    ``plotting.plot_shock_decomposition``).
+    """
+    if type not in ("", None, "qoq", "yoy", "aoa"):
+        raise ValueError("plot_shock_decomposition: wrong type (use '', 'qoq', 'yoy' or 'aoa')")
+    type = type or ""
+    is_icd = decomp.kind == "initial_conditions"
+    title = "Initial condition decomposition" if is_icd else "Historical shock decomposition"
+    pairs = None
+    if init2shocks:
+        pairs = init2shocks if not isinstance(init2shocks, str) else globals()["init2shocks"](model, init2shocks)
+        will_group = bool(use_shock_groups or groups or expand) and decomp.kind == "shocks"
+        decomp = apply_init2shocks(decomp, icd, pairs, rename=not will_group)
+    grouped = False
+    if (use_shock_groups or groups or expand) and not is_icd:
+        if decomp.kind != "shocks":
+            raise SmootherError("the decomposition is grouped already")
+        decomp = group_shocks(decomp, groups, model=model, name=use_shock_groups or None, expand=expand)
+        grouped = True
+        if use_shock_groups:
+            title += f" group {use_shock_groups}"
+    elif decomp.kind == "groups":
+        grouped = True
+    if is_icd:
+        screen_shocks = True                          # forced by Dynare's initial_condition_decomposition
+        labels = list(decomp.columns[:-2]) + ["Shocks"]
+    elif grouped:
+        labels = list(decomp.columns[:-1])
+    else:
+        labels = list(decomp.columns[:-2]) + ["Initial values"]
+
+    names = list(decomp.endo_names)
+    if var_list is None:
+        orig = list(getattr(model, "orig_endo_names", [])) if model is not None else []
+        var_list = [v for v in orig if v in names] or names
+    var_list = list(dict.fromkeys(var_list))
+    missing = [v for v in var_list if v not in names]
+    if missing:
+        raise SmootherError(f"variable(s) {missing} not in the decomposition")
+    iv = [names.index(v) for v in var_list]
+    z = decomp.z[iv].astype(float)
+    ss = decomp.steady_state if steady_state is None else steady_state
+    ss = np.zeros(len(names)) if ss is None else np.asarray(ss, float)
+    ss = ss[iv].copy() if ss.shape[0] == len(names) else ss.copy()
+    periods = decomp.first_period + np.arange(z.shape[2])
+
+    if flip:
+        title += " flip"
+    if pairs:
+        title += " init2shocks"
+    if diff:
+        title += " diff"
+        z[:, :, 1:] = z[:, :, 1:] - z[:, :, :-1]
+        z[:, :, 0] = np.nan
+        ss = ss * 0
+    if type == "yoy":
+        if z.shape[2] < 4:
+            raise SmootherError("type='yoy' needs at least four periods")
+        z = z[:, :, :-3] + z[:, :, 1:-2] + z[:, :, 2:-1] + z[:, :, 3:]
+        periods = periods[3:]
+        ss = 4 * ss
+    elif type == "aoa":
+        if first_quarter not in (1, 2, 3, 4):
+            raise ValueError("first_quarter must be 1, 2, 3 or 4")
+        z = z[:, :, 4 - first_quarter::4]
+        periods = 1 + np.arange(z.shape[2])           # years
+    if flip:
+        z = -z
+        ss = -ss
+
+    a, b = 0, z.shape[2]
+    if plot_init_date is not None:
+        hit = np.flatnonzero(periods == int(plot_init_date))
+        if hit.size == 0:
+            raise SmootherError(f"plot_init_date={plot_init_date} is outside the periods "
+                                f"{periods[0]}..{periods[-1]} of the decomposition")
+        a = int(hit[0])
+    if plot_end_date is not None:
+        if int(plot_end_date) <= periods[-1]:
+            hit = np.flatnonzero(periods == int(plot_end_date))
+            if hit.size == 0:
+                raise SmootherError(f"plot_end_date={plot_end_date} is before the first period {periods[0]}")
+            b = int(hit[0]) + 1
+        else:
+            warnings.warn(f"plot_end_date={plot_end_date} is after the last period {periods[-1]}: "
+                          "the last period is used")
+    zc, pc = z[:, :, a:b], periods[a:b]
+
+    ncomp = z.shape[1] - 1
+    screen = bool(screen_shocks) and not grouped and ncomp > 18
+    panels = []
+    for k, v in enumerate(var_list):
+        z1 = zc[k]
+        lab = list(labels)
+        if screen:
+            with np.errstate(invalid="ignore"):
+                size = np.mean(np.abs(z1[:-2]), axis=1)
+            order = np.argsort(-size, kind="stable")  # NaN (diff shown from its first period) keeps the order
+            z1 = np.vstack([z1[order[:16]], z1[order[16:]].sum(axis=0), z1[ncomp - 1:]])
+            lab = [labels[i] for i in order[:16]] + ["Others", labels[-1]]
+        contrib = z1[:-1]
+        clean = np.nan_to_num(contrib)
+        ymax = np.max(np.sum(np.where(clean > 0, clean, 0), axis=0)) * 1.1
+        ymin = np.min(np.sum(np.where(clean < 0, clean, 0), axis=0)) * 1.1
+        if ymax - ymin < 1e-6:
+            continue
+        panels.append(dict(name=v, labels=lab, contributions=contrib, total=z1[-1], periods=pc,
+                           steady_state=float(ss[k])))
+    if screen:
+        title += " SCREEN"
+    return DecompositionPlotData(var_list=var_list, z=z, labels=labels, periods=periods, steady_state=ss,
+                                 panels=panels, kind=decomp.kind, type=type, steadystate=bool(steadystate),
+                                 title=title, parameter_set=decomp.parameter_set)
 
 
 # --------------------------------------------------------------------------------- public: checks

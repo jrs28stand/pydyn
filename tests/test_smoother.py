@@ -265,11 +265,12 @@ def test_group_shocks(get):
     m = model("smo_me", 1)
     dec = smoother.shock_decomposition(m, run("smo_me", 1, False))
     g = smoother.group_shocks(dec, {"supply": ["e_a"], "demand": ["e_g", "e_v"]})
-    assert g.columns == ["supply", "demand", "Others + Initial Values", "smoothed"]
+    assert g.columns == ["supply", "demand", "Initial values", "smoothed"]   # Dynare's label: no shock left over
     close(g.z[:, 0], dec.z[:, 0])
     close(g.z[:, 1], dec.z[:, 1] + dec.z[:, 2])
     close(g.z[:, 2], dec.z[:, 3])
     g = smoother.group_shocks(dec, {"policy": ["e_v"]})   # shocks in no group join the initial values
+    assert g.columns == ["policy", "Others + Initial Values", "smoothed"]
     close(g.z[:, 1], dec.z[:, 0] + dec.z[:, 2] + dec.z[:, 3])
     close(g.z[:, :-1].sum(axis=1), g.z[:, -1], atol=1e-13)
     with pytest.raises(smoother.SmootherError):
@@ -353,7 +354,7 @@ def test_errors(get):
     with pytest.raises(TypeError):
         smoother.smooth(m, no_such_option=1)
     with pytest.raises(NotImplementedError):
-        smoother.smooth(m, lik_init=2, diffuse_filter=False)
+        smoother.smooth(m, lik_init=4, diffuse_filter=False)
     with pytest.raises(smoother.SmootherError):
         smoother.smooth(m, first_obs=80, nobs=20)
     with pytest.raises(smoother.SmootherError, match="prefilter"):
