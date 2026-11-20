@@ -1,51 +1,33 @@
 """Load every Dynare example with pydyn and compare with saved Dynare results where they exist.
 
 Usage: python tools/sweep_examples.py <dir with one sub-folder per example group, containing the
-.mod files and ref_<name>.mat files written by Dynare> 
+.mod files and ref_<name>.mat files written by Dynare>
+
+The references for the examples this package supports are kept in reference/examples and checked by
+tests/test_examples.py.
 """
-import importlib.util
 import sys
 import warnings
 from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat
-from scipy.optimize import fsolve
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import pydyn  # noqa: E402
 
 
-def nk_fn():
-    spec = importlib.util.spec_from_file_location("nk_ss", ROOT / "examples" / "nk_baseline_steadystate.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.steady_state
-
-
-def collard_helper(alpha, beta, delta, psi, theta):
-    kh = ((1 / beta - (1 - delta)) / alpha) ** (1 / (alpha - 1))
-    f = lambda h: 1 - (((kh * h) ** (alpha - 1)) * h ** (1 - alpha)  # noqa: E731
-                       - ((1 - alpha) * kh ** alpha / (theta * h ** psi)) / (kh * h) + (1 - delta))
-    return float(fsolve(f, 0.2, xtol=1e-14)[0])
-
-
-EXTRA = {"nk_baseline": dict(steady_state_fn=nk_fn()),
-         "collard_2001_analytical_steady_state":
-             dict(functions={"collard_2001_analytical_steady_state_helper": collard_helper})}
-
-
-def check(mod: Path):
+def check(mod: Path, ref_file: Path | None = None):
     name = mod.stem
     out = {"name": f"{mod.parent.name}/{name}"}
-    ref_file = mod.parent / f"ref_{name}.mat"
+    ref_file = mod.parent / f"ref_{name}.mat" if ref_file is None else ref_file
     ref = loadmat(ref_file, squeeze_me=True) if ref_file.exists() else {}
     out["dynare"] = "ok" if ref.get("ok") else ("partial" if "ys" in ref else "no reference")
     try:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            m = pydyn.Model(pydyn.run_preprocessor(mod), **EXTRA.get(name, {}))
+            m = pydyn.Model(pydyn.run_preprocessor(mod))
         out["skipped"] = "; ".join(sorted({str(x.message)[:140] for x in w if "not handled" in str(x.message)}))
     except Exception as e:  # noqa: BLE001
         pac = "dseries" in str(e) or "pac" in mod.stem

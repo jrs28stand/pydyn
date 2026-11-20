@@ -39,7 +39,8 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 - Order 2 rules against Dynare's default second-order solver, order 3 against `k_order_solver`:
   about 1e-14.
 - Simulation at orders 1, 2 and 3 against `simult_` with the same shock draws, pruned and
-  unpruned: about 1e-15. Order-2 IRFs against the `irf.m` algorithm with the same random draws.
+  unpruned: about 1e-15. IRFs at orders 2 and 3 against the `irf.m` algorithm with saved draws, and
+  against Dynare's own `irf.m` run with a fixed seed whose draws are regenerated.
 - Parameter loop: six (alp, rho) combinations on the Schorfheide model against
   `set_param_value` + `resol` in Dynare: steady state, rules and IRFs agree.
 - Steady-state function: `nk_baseline` with a Python port of `nk_baseline_steadystate.m`
@@ -49,7 +50,9 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 - Numerical steady states agree to Dynare's own solver tolerance (Dynare's steady state for the
   Collard model carries a residual of roughly 1e-6; ours is solved to 1e-14).
 
-Run: `DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
+Run: `PYDYN_REQUIRE_KORDER=1 DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
+(without `PYDYN_REQUIRE_KORDER=1` the order-2 and order-3 tests are skipped when the compiled k-order
+library has not been built; the test header says which applies)
 (set `PYDYN_EXAMPLES` to Dynare's `examples` folder).
 
 ## Working after the model is loaded
@@ -93,13 +96,12 @@ are outside this package for unrelated reasons, none load with a different calib
 
 ## Dynare's shipped examples
 
-`tools/sweep_examples.py` loads each of the 23 example `.mod` files in Dynare 7.2 and compares with
-Dynare's own results. Twelve match (decision rules, second order where the example asks for it,
-and the perfect-foresight path); `rbc_irf_matching` loads and solves but has no reference; ten
-are outside the scope of this package: the six heterogeneous-agent examples, the two Ramsey
-examples, perfect foresight with expectation errors, and the PAC model. No `.mod` file needed
-editing; `nk_baseline` and `collard_2001_analytical_steady_state` use their MATLAB steady-state
-code directly.
+`tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's
+own results (stored in `reference/examples`). Twelve match (decision rules, second order where the
+example asks for it, and the perfect-foresight path); `rbc_irf_matching` loads and solves but has
+no reference; ten are outside the scope of this package: the six heterogeneous-agent examples, the
+two Ramsey examples, perfect foresight with expectation errors, and the PAC model. `nk_baseline`
+and `collard_2001_analytical_steady_state` use their MATLAB steady-state code directly.
 
 ## The C++ k-order library
 
