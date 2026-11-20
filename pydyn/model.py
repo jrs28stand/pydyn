@@ -1,8 +1,12 @@
 """Model object built from the Dynare preprocessor's JSON output."""
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
+import marshal
 import os
+import pickle
 import re
 import warnings
 from pathlib import Path
@@ -17,6 +21,18 @@ from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name,
 CODEGEN = os.environ.get("PYDYN_CODEGEN", "fast")
 #: evaluate each exp(y[i]) / log(y[i]) once per generated function
 HOIST = os.environ.get("PYDYN_HOIST", "1") != "0"
+#: keep compiled model functions on disk (see Model); PYDYN_CACHE=0 turns it off
+CACHE = os.environ.get("PYDYN_CACHE", "1") != "0"
+#: part of the cache key: bump the number when the generated code changes
+_CACHE_TAG = b"pydyn-codegen-1:" + importlib.util.MAGIC_NUMBER
+
+
+_CACHE_MAX_FILES = 200
+
+
+def cache_dir() -> Path:
+    """Folder for compiled model functions: ``$PYDYN_CACHE_DIR``, else ``~/.cache/pydyn``."""
+    return Path(os.environ.get("PYDYN_CACHE_DIR") or (Path.home() / ".cache" / "pydyn"))
 
 
 def _pairs(items, key_a, key_b):
@@ -34,11 +50,15 @@ class Model:
     ``yy = [y(-1); y; y(+1)]`` of length ``3 * n_endo``.
     """
 
-    def __init__(self, json_dir: str | Path, functions: dict | None = None, steady_state_fn=None):
+    def __init__(self, json_dir: str | Path, functions: dict | None = None, steady_state_fn=None,
+                 cache: bool | None = None):
         """``functions`` maps names of external functions used in the model or in the
         ``steady_state_model`` block to Python callables. ``steady_state_fn`` is the Python
         counterpart of a Dynare ``_steadystate.m`` file: ``fn(model, params, exo) -> ys`` or
-        ``(ys, params)``; it may raise ``SteadyStateError``."""
+        ``(ys, params)``; it may raise ``SteadyStateError``. ``cache`` (default: on unless the
+        environment variable PYDYN_CACHE is 0) keeps the compiled model functions in
+        the user cache folder (``~/.cache/pydyn`` or ``$PYDYN_CACHE_DIR``), keyed by a hash of the JSON files,
+        so that loading the same model again skips translation and compilation."""
         json_dir = Path(json_dir)
         self.functions = dict(functions or {})
         self.steady_state_fn = steady_state_fn
@@ -60,8 +80,7 @@ class Model:
             text = re.sub(r'("period2":\s*)\}(\d+)', r"\1\2", text)
             text = re.sub(r'"(lower_bound|upper_bound)":\s*\((-[^)"]*)\)', r'"\1": "\2"', text)
             mf = json.loads(text)
-        dyn = json.loads((json_dir / "dynamic.json").read_text())["dynamic_model"]
-        sta = json.loads((json_dir / "static.json").read_text())["static_model"]
+        self._cache = CACHE if cache is None else bool(cache)
         self.raw = mf
 
         self.endo_names = [d["name"] for d in mf["endogenous"]]
@@ -90,7 +109,7 @@ class Model:
         self._deriv_keys = [k for k in mf if k.startswith("dynamic_g") and k.endswith("_sparse_indices")]
         self.unhandled_statements: list[str] = []
 
-        self._compile(dyn, sta)
+        self._compile()
         self._load_steady_state_model()
         mod_dir, name = json_dir.parents[2], json_dir.parents[1].name
         self.steady_state_file = mod_dir / f"{name}_steadystate.m"
@@ -204,14 +223,47 @@ class Model:
                                              dtype=np.int32).reshape(len(entries), order))
         return "\n".join(lines), meta
 
-    def _compile(self, dyn, sta):
-        src_d, meta = self._build(self._tr_dynamic(), dyn, "dynamic")
-        src_s, meta_s = self._build(self._tr_static(), sta, "static")
-        meta.update(meta_s)
-        src = src_d + "\n" + src_s
-        code = compile(src, f"<pydyn:{self.json_dir}>", "exec")
-        self.source = src
-        self._meta = meta
+    def _compile(self):
+        dyn_b = (self.json_dir / "dynamic.json").read_bytes()
+        sta_b = (self.json_dir / "static.json").read_bytes()
+        cached, cache_file = None, None
+        if self._cache:
+            h = hashlib.sha256()
+            for part in (_CACHE_TAG, repr((self.endo_names, self.exo_names, self.param_names, HOIST)).encode(),
+                         dyn_b, sta_b):
+                h.update(len(part).to_bytes(8, "little"))
+                h.update(part)
+            # The cache holds executable code, so it lives in the user's own cache folder and never
+            # next to the model: a folder received from someone else must not be able to supply it.
+            cache_file = cache_dir() / f"{h.hexdigest()[:40]}.pkl"
+            try:
+                with open(cache_file, "rb") as fh:
+                    cached = pickle.load(fh)  # noqa: S301 - written by this package in the user's cache folder
+                code = marshal.loads(cached["code"])
+            except Exception:  # noqa: BLE001 - missing or unreadable cache: regenerate
+                cached = None
+        if cached is None:
+            dyn, sta = json.loads(dyn_b)["dynamic_model"], json.loads(sta_b)["static_model"]
+            src_d, meta = self._build(self._tr_dynamic(), dyn, "dynamic")
+            src_s, meta_s = self._build(self._tr_static(), sta, "static")
+            meta.update(meta_s)
+            src = src_d + "\n" + src_s
+            code = compile(src, f"<pydyn:{self.json_dir}>", "exec")
+            cached = {"source": src, "meta": meta}
+            if cache_file is not None:
+                try:
+                    cache_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    old = sorted(cache_file.parent.glob("*.pkl"), key=lambda f: f.stat().st_mtime)
+                    for stale in old[:max(0, len(old) - _CACHE_MAX_FILES + 1)]:      # keep the folder bounded
+                        stale.unlink()
+                    tmp = cache_file.with_suffix(f".{os.getpid()}.tmp")
+                    with open(tmp, "wb") as fh:
+                        pickle.dump({**cached, "code": marshal.dumps(code)}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                    os.replace(tmp, cache_file)
+                except OSError:
+                    pass                                             # read-only location: work without a cache
+        self.source = cached["source"]
+        self._meta = meta = cached["meta"]
         self._exec(code)
         self.jac_dims, self.jac_rows, self.jac_cols = meta["dynamic_jac"]
         self._jac_entries = list(zip(self.jac_rows.tolist(), self.jac_cols.tolist()))
@@ -236,15 +288,22 @@ class Model:
             return None
         return Translator(resolve)
 
+    _LEADING_ZERO = re.compile(r"(?<![\w.])0\d")
+
     def eval_expr(self, s: str, local=None) -> float:
-        s = re.sub(r"(?<![\w.])0+(\d+\.?\d*)", r"\1", str(s)) if re.search(r"(?<![\w.])0\d", str(s)) else str(s)
-        ns = dict(NAMESPACE)
-        ns.update(self.functions)
-        ns.update({safe_name(k): v for k, v in getattr(self, "workspace", {}).items()})
-        ns["params"] = self.params
+        s = str(s)
+        if self._LEADING_ZERO.search(s):
+            s = re.sub(r"(?<![\w.])0+(\d+\.?\d*)", r"\1", s)
+        ns = self.__dict__.get("_eval_ns")
+        if ns is None:              # built once: copying NAMESPACE for every expression is the slow part
+            ns = self._eval_ns = dict(NAMESPACE)
+            ns.update(self.functions)
+            self._eval_tr = self._param_translator()
+        loc = {safe_name(k): v for k, v in getattr(self, "workspace", {}).items()}
+        loc["params"] = self.params
         if local:
-            ns.update(local)
-        return float(eval(self._param_translator()(str(s)), ns))  # noqa: S307 - model expression
+            loc.update(local)
+        return float(eval(self._eval_tr(s), ns, loc))  # noqa: S307 - model expression
 
     def _load_steady_state_model(self):
         p = self.json_dir / "steady_state_model.json"

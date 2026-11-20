@@ -174,6 +174,10 @@ def temp_name(name: str) -> str:
 
 
 def tokenize(s: str):
+    # one pass in C; the length check catches characters the pattern skipped
+    out = [("num", a) if a else ("id", b) if b else ("op", c) for a, b, c in _TOKEN.findall(s)]
+    if sum(len(t[1]) for t in out) == len("".join(s.split())):
+        return out
     pos, out = 0, []
     s = s.strip()
     while pos < len(s):

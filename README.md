@@ -135,10 +135,22 @@ path = pydyn.simulate(dr2, shocks, pruning=True)
 girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, drop=100)
 ```
 
+## Performance
+
+- The first-order solver is a port of Dynare's reduced algorithm (static variables removed by QR, QZ
+  on the dynamic block). `PYDYN_FIRST_ORDER=full` selects the original full-size solver.
+- Generated model functions run on Python floats and fall back to numpy where plain floats would
+  raise or turn complex, so results are numpy's in every case (`PYDYN_CODEGEN=numpy` disables this).
+- A `steady_state_model` block is compiled once per model (`PYDYN_SS_COMPILE=0` disables this).
+- Compiled model functions are cached in `~/.cache/pydyn` (or `$PYDYN_CACHE_DIR`), keyed by a hash
+  of the preprocessor output; `PYDYN_CACHE=0` or `Model(..., cache=False)` turns the cache off. The
+  cache is never read from the model's own folder.
+
+Time for one `set_param` + steady state + first-order solve (CPU, one thread): about 0.3 ms for a
+15-variable model and 0.8-1.1 ms at 28-40 variables.
+
 ## Known limits
 
-- The first-order solver uses a full-size QZ decomposition (2n x 2n). Correct, but slower than
-  Dynare's reduced algorithm for large models.
 - MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
   dates), random numbers and file-system functions are not supported; see the section above.
 - Not handled: `loglinear`, external functions inside the model block, deterministic exogenous

@@ -1,24 +1,29 @@
 """Steady-state computation."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy import optimize
 
 from . import matlab
-from .expr import NAMESPACE, Translator, safe_name
+from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name
 
 
 class SteadyStateError(ValueError):
     pass
 
 
-def _from_steady_state_model(model, params, x=None):
-    """Evaluate a ``steady_state_model`` block. May update parameters (returns a copy)."""
-    params = np.array(params, float)
-    # as in Dynare, variables the block does not set keep their initval (default 0)
-    y = np.array([model.initval.get(v, 0.0) for v in model.endo_names])
-    x = model.exo_steady() if x is None else x
+#: compile the steady_state_model block once per model instead of translating and eval-ing every
+#: assignment at each call (PYDYN_SS_COMPILE=0 restores the interpreted version)
+COMPILE_BLOCK = os.environ.get("PYDYN_SS_COMPILE", "1") != "0"
+#: numerical steady states: start Newton from the previous solution of the same model when no
+#: guess is given, falling back to the search from initval. Off by default because with several
+#: steady states the result could then depend on the order of a parameter loop.
+WARM_START = os.environ.get("PYDYN_SS_WARMSTART", "0") == "1"
 
+
+def _resolver(model):
     def resolve(name, shift):
         if name in model._ie:
             return f"y[{model._ie[name]}]"
@@ -27,8 +32,75 @@ def _from_steady_state_model(model, params, x=None):
         if name in model._ip:
             return f"params[{model._ip[name]}]"
         return None
+    return resolve
 
-    tr = Translator(resolve)
+
+def _compiled_block(model):
+    """The steady_state_model block as one function ``f(y, x, params)`` working in place, bound
+    to Python-float and to numpy functions (see expr.FAST_NAMESPACE)."""
+    key = id(model.steady_state_model)
+    cached = model.__dict__.get("_ssm_compiled")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if getattr(model, "matlab_functions", None):
+        raise NotImplementedError("blocks that call MATLAB helper functions are interpreted")
+    tr = Translator(_resolver(model))
+    lines, assigned = ["def _ssm(y, x, params):"], set()
+    for lhs, rhs in model.steady_state_model:
+        if not isinstance(lhs, str) or not lhs.isidentifier():
+            raise NotImplementedError(f"multiple-output steady-state assignment: {lhs}")
+        if lhs in model._ie:
+            target = f"y[{model._ie[lhs]}]"
+        elif lhs in model._ip:
+            target = f"params[{model._ip[lhs]}]"
+        else:
+            target = safe_name(lhs)
+            assigned.add(target)
+        lines.append(f"    {target} = {tr(rhs)}")
+    code = compile("\n".join(lines) + "\n", f"<pydyn steady_state_model:{model.json_dir}>", "exec")
+    fns = []
+    for base in (FAST_NAMESPACE, NAMESPACE):
+        ns = dict(base)
+        ns.update(model.functions)
+        exec(code, ns)  # noqa: S102 - generated from the model
+        fns.append(ns["_ssm"])
+    # a name assigned in the block is local to the generated function for all of it; the
+    # interpreted version is kept for blocks that read such a name before assigning it
+    model._ssm_compiled = (key, tuple(fns))
+    return model._ssm_compiled[1]
+
+
+def _from_steady_state_model(model, params, x=None):
+    """Evaluate a ``steady_state_model`` block. May update parameters (returns a copy)."""
+    params = np.array(params, float)
+    # as in Dynare, variables the block does not set keep their initval (default 0)
+    y = np.array([model.initval.get(v, 0.0) for v in model.endo_names])
+    x = model.exo_steady() if x is None else x
+    if COMPILE_BLOCK:
+        try:
+            fast, slow = _compiled_block(model)
+        except (SyntaxError, NotImplementedError):      # several outputs, MATLAB helpers: interpreted
+            fast = slow = None
+        if fast is not None:
+            try:
+                yl, pl = y.tolist(), params.tolist()
+                fast(yl, np.asarray(x, float).tolist(), pl)
+                return np.array(yl, dtype=float), np.array(pl, dtype=float)
+            except UnboundLocalError:
+                return _from_steady_state_model_interpreted(model, params, x, y)
+            except FAST_ERRORS:
+                pass
+            try:
+                y2, p2 = y.copy(), params.copy()
+                slow(y2, x, p2)
+                return y2, p2
+            except UnboundLocalError:
+                pass
+    return _from_steady_state_model_interpreted(model, params, x, y)
+
+
+def _from_steady_state_model_interpreted(model, params, x, y):
+    tr = Translator(_resolver(model))
     ns = dict(NAMESPACE)
     ns.update(model.functions)
     ns.update(y=y, x=x, params=params)
@@ -131,6 +203,13 @@ def _steady_state(model, params, guess, x):
             bad = [v for v, ok in zip(model.endo_names, np.isfinite(ys)) if not ok]
             raise SteadyStateError(f"steady_state_model gives non-finite values for: {bad}")
     else:
+        if guess is None and WARM_START:
+            prev = model.__dict__.get("_ss_prev")
+            if prev is not None and np.array_equal(prev[0], x):
+                ys = _newton(model, prev[1], x, params)
+                if ys is not None:
+                    model._ss_prev = (np.array(x, float), ys.copy())
+                    return ys, params
         if guess is None:
             y0 = np.array([model.initval.get(v, 0.0) for v in model.endo_names])
             y0 = fill_auxiliary(model, y0, x, params)      # as Dynare does before solving
@@ -153,4 +232,23 @@ def _steady_state(model, params, guess, x):
                 ys = ys - np.linalg.solve(model.static_jac(ys, x, params), r)
             except np.linalg.LinAlgError:
                 ys = ys - np.linalg.lstsq(model.static_jac(ys, x, params), r, rcond=None)[0]
+        if WARM_START and guess is None:
+            model._ss_prev = (np.array(x, float), ys.copy())
     return ys, params
+
+
+def _newton(model, ys, x, params, maxit=8, tol=1e-14):
+    """A few Newton steps from a nearby solution; None unless they converge."""
+    for _ in range(maxit):
+        r = model.static_resid(ys, x, params)
+        if not np.all(np.isfinite(r)):
+            return None
+        if np.max(np.abs(r)) < tol:
+            return ys
+        try:
+            ys = ys - np.linalg.solve(model.static_jac(ys, x, params), r)
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(ys)):
+            return None
+    return None

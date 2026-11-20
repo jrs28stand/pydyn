@@ -106,3 +106,49 @@ def test_solutions_do_not_depend_on_the_code_path(tmp_path, monkeypatch):
         np.testing.assert_allclose(a.ys, b.ys, rtol=1e-12, atol=1e-13)
         np.testing.assert_allclose(a.G, b.G, rtol=1e-9, atol=1e-11)
         np.testing.assert_allclose(a.H, b.H, rtol=1e-9, atol=1e-11)
+
+
+def test_cache_gives_identical_models_and_lives_in_the_user_cache_folder(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("PYDYN_CACHE_DIR", str(cache))
+    src = REF / "aux_a.mod"
+    shutil.copy(src, tmp_path)
+    jd = pydyn.run_preprocessor(tmp_path / src.name)
+    cold = pydyn.Model(jd, cache=True)
+    files = list(cache.glob("*.pkl"))
+    assert len(files) == 1
+    assert not list(tmp_path.glob("aux_a/**/*.pkl"))            # nothing executable next to the model
+    warm = pydyn.Model(jd, cache=True)
+    off = pydyn.Model(jd, cache=False)
+    assert cold.source == warm.source == off.source
+    for m in (warm, off):
+        a, b = pydyn.first_order(cold), pydyn.first_order(m)
+        np.testing.assert_array_equal(a.G, b.G)
+        np.testing.assert_array_equal(a.ys, b.ys)
+    # a change to the model changes the key
+    (tmp_path / "aux_a.mod").write_text(src.read_text().replace("theta*e(-1)", "0.9*theta*e(-1)"))
+    changed = pydyn.Model(pydyn.run_preprocessor(tmp_path / "aux_a.mod"), cache=True)
+    assert len(list(cache.glob("*.pkl"))) == 2 and changed.source != cold.source
+
+
+def test_steady_state_block_compiled_once_matches_interpreted(tmp_path, monkeypatch):
+    import pydyn.steady as steady_module
+    for name, m in models(tmp_path).items():
+        if m.steady_state_model is None:
+            continue
+        res = []
+        for flag in (True, False):
+            monkeypatch.setattr(steady_module, "COMPILE_BLOCK", flag)
+            res.append(pydyn.steady_state(m))
+        np.testing.assert_allclose(res[0][0], res[1][0], rtol=1e-14, atol=0)
+        np.testing.assert_allclose(res[0][1], res[1][1], rtol=1e-14, atol=0)
+        # and after a parameter change (no stale compiled values)
+        saved = m.params.copy()
+        m.params[:] = saved * 1.01
+        try:
+            a = pydyn.steady_state(m, check=False)
+            monkeypatch.setattr(steady_module, "COMPILE_BLOCK", True)
+            b = pydyn.steady_state(m, check=False)
+            np.testing.assert_allclose(a[0], b[0], rtol=1e-14, atol=0, equal_nan=True)
+        finally:
+            m.params[:] = saved
