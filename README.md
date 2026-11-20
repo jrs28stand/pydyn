@@ -21,7 +21,8 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data) | done, validated |
-| Estimation, piecewise Kalman filter | in progress / not started |
+| Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
+| OccBin estimation (piecewise Kalman filter, inversion filter) | not started |
 
 ## Validation
 

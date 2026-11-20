@@ -1,0 +1,556 @@
+"""Estimation (data handling, priors, Kalman-filter likelihood, posterior mode, Laplace approximation,
+Metropolis-Hastings, smoother) against Dynare 7.2 under Octave 8.4; see reference/r_estimation.m.
+
+Models: est_schorfheide (Dynare's examples/estimation/schorfheide_2000.mod: loglinear, logdata,
+steady_state_model, an auxiliary variable), est_nk (linear New Keynesian model: measurement
+errors, shock correlation, all prior families, a parameter overwritten by the steady state) and
+est_ur (unit root: diffuse filter, lik_init=2, maximum likelihood, observation trends).
+"""
+import os
+import shutil
+from pathlib import Path
+
+import numpy as np
+import pytest
+from scipy.io import loadmat
+
+import pydyn
+from pydyn import estimation, kalman
+from pydyn.priors import Prior, PriorError
+
+ROOT = Path(__file__).resolve().parent.parent
+REF = Path(os.environ.get("PYDYN_REF", str(ROOT / "reference")))
+
+# pydyn.Model warns about statements it does not interpret itself; estimation.py reads them
+pytestmark = pytest.mark.filterwarnings("ignore:statements not handled")
+
+_models = {}
+
+
+@pytest.fixture(scope="module")
+def workdir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("est")
+    for f in REF.glob("est_*"):
+        if f.suffix in (".mod", ".m", ".csv"):
+            shutil.copy(f, d)
+    return d
+
+
+@pytest.fixture(scope="module")
+def load(workdir):
+    """load(mod, variant) -> Model, preprocessed once per (mod, variant)."""
+    def _load(mod, variant=0):
+        key = (mod, variant)
+        if key not in _models:
+            sub = workdir / f"{mod}_{variant}"
+            sub.mkdir()
+            for f in workdir.iterdir():
+                if f.is_file():
+                    shutil.copy(f, sub)
+            args = (f"-D{variant}",) if isinstance(variant, str) else (f"-DVARIANT={variant}",)
+            _models[key] = pydyn.Model(pydyn.run_preprocessor(sub / f"{mod}.mod", extra_args=args))
+        return _models[key]
+    return _load
+
+
+def ref(name):
+    return loadmat(REF / name, squeeze_me=True)
+
+
+# ------------------------------------------------------------------ data files
+def test_m_file_reader():
+    text = """
+    % a comment
+    a = [1 2 3
+         4 5 6];            # another comment
+    b = a(:,2)';  c = a(2:end, 1) + a(1,3)*2;
+    d = diff(log(a(:,3)));
+    e = [1 -2, 3 - 4; a(1,:)] ...
+        * 2;
+    f = 1e2*[0.5; NaN; -.25]./a(1:3)';
+    g = a(end, end) - 2^3 + 4/8;
+    """
+    v = estimation._MFile(text).run()
+    np.testing.assert_array_equal(v["a"], [[1, 2, 3], [4, 5, 6]])
+    np.testing.assert_array_equal(v["b"], [[2, 5]])
+    np.testing.assert_array_equal(v["c"], [[10]])
+    np.testing.assert_allclose(v["d"], [[np.log(6) - np.log(3)]])
+    np.testing.assert_array_equal(v["e"], [[2, -4, -2], [2, 4, 6]])
+    np.testing.assert_array_equal(v["f"], [[50.0], [np.nan], [-12.5]])      # a(1:3) is [1 4 2] (column-major)
+    assert v["g"].item() == 6 - 8 + 0.5
+    with pytest.raises(estimation.EstimationError):
+        estimation._MFile("x = load('file.txt');").run()
+    with pytest.raises(estimation.EstimationError):
+        estimation._MFile("for i=1:3, x = i; end").run()
+
+
+def test_data_sources_agree(load, workdir):
+    """.m file, CSV file, dict and array give the same data and the same likelihood."""
+    m = load("est_nk")
+    est = estimation.Estimation(m)
+    r = ref("est_nk_v0.mat")
+    np.testing.assert_array_equal(est.data, r["data"])
+    table = estimation.read_m_data(workdir / "est_nk_data.m")
+    alt = [estimation.Estimation(m, data=str(workdir / "est_nk_csv.csv")),
+           estimation.Estimation(m, data=table),
+           estimation.Estimation(m, data=np.column_stack([table[v] for v in m.varobs]))]
+    ll = est.log_likelihood(est.x0)
+    for e in alt:
+        np.testing.assert_allclose(e.data, est.data, rtol=0, atol=1e-12)
+        assert abs(e.log_likelihood(e.x0) - ll) < 1e-9
+    with pytest.raises(estimation.EstimationError):
+        estimation.Estimation(m, data={"yobs": table["yobs"]})
+    with pytest.raises(estimation.EstimationError):
+        estimation.Estimation(m, first_obs=100, nobs=80)
+
+
+def test_schorfheide_data_transformations(load):
+    """The data file computes growth rates with diff(log(.)); logdata stops a second log."""
+    r = ref("est_schorfheide_v0.mat")
+    est = estimation.Estimation(load("est_schorfheide"))
+    assert est.data.shape == (192, 2)
+    np.testing.assert_array_equal(est.data, r["data"])
+    unlogged = estimation.Estimation(load("est_schorfheide"), data=np.exp(est.rawdata), logdata=False)
+    np.testing.assert_allclose(unlogged.data, r["data"], rtol=0, atol=1e-15)
+
+
+# ------------------------------------------------------------------ likelihood and prior
+CASES = [("est_schorfheide", 0), ("est_nk", 0), ("est_nk", 1), ("est_nk", 2), ("est_nk", 3), ("est_nk", 4),
+         ("est_nk", 8), ("est_nk", 9), ("est_ur", 0), ("est_ur", 1), ("est_ur", 2), ("est_ur", 5), ("est_ur", 6)]
+# what each case exercises (for the reader; the options come from the .mod files)
+CASE_NOTES = {
+    ("est_schorfheide", 0): "loglinear, logdata, stationary initialisation",
+    ("est_nk", 0): "measurement error, estimated shock correlation, steady state updates a parameter",
+    ("est_nk", 1): "first_obs=11, nobs=80, presample=4",
+    ("est_nk", 2): "missing observations",
+    ("est_nk", 3): "prefilter=1",
+    ("est_nk", 4): "lik_init=2",
+    ("est_nk", 8): "kalman_algo=2 (univariate filter), missing observations",
+    ("est_nk", 9): "two measurement errors with an estimated correlation, missing observations",
+    ("est_ur", 0): "diffuse_filter; Dynare falls back to the univariate diffuse stage",
+    ("est_ur", 1): "lik_init=2 with a unit root",
+    ("est_ur", 2): "diffuse_filter, missing observations, presample=3",
+    ("est_ur", 5): "diffuse_filter, observation_trends with an estimated slope, first_obs=5",
+    ("est_ur", 6): "kalman_algo=4 (univariate diffuse filter), missing observations, presample=2",
+}
+
+
+@pytest.mark.parametrize("mod,variant", CASES)
+def test_likelihood_and_prior_match_dynare(load, mod, variant):
+    r = ref(f"est_{mod[4:]}_v{variant}.mat")
+    m = load(mod, variant)
+    params_before, sigma_before = m.params.copy(), m.Sigma_e.copy()
+    est = estimation.Estimation(m)
+    # setup: ordering, initial values, bounds, hyper-parameters, data
+    assert est.names == r["names"].split(";")
+    np.testing.assert_allclose(est.x0, r["x0"], rtol=1e-14)
+    np.testing.assert_array_equal(est.lb, r["lb"])
+    np.testing.assert_array_equal(est.ub, r["ub"])
+    np.testing.assert_array_equal(est.prior.shape, r["pshape"])
+    for key in ("p6", "p7"):
+        np.testing.assert_allclose(getattr(est.prior, key), r[key], rtol=1e-12)
+    np.testing.assert_array_equal(est.data, np.atleast_2d(r["data"]))
+    assert est.options["lik_init"] == int(r["lik_init"])
+    assert est.options["qz_criterium"] == float(r["qz_criterium"])
+    # values
+    X = r["X"]
+    n_finite = 0
+    for k in range(X.shape[1]):
+        x = X[:, k]
+        post = est.log_posterior(x)
+        if np.isfinite(r["fval"][k]):
+            n_finite += 1
+            np.testing.assert_allclose(est.log_likelihood(x), r["loglik"][k], rtol=1e-10)
+            np.testing.assert_allclose(est.log_prior(x), r["lnprior"][k], rtol=1e-10, atol=1e-10)
+            np.testing.assert_allclose(post, -r["fval"][k], rtol=1e-10)
+            contrib = est.log_likelihood_contributions(x)
+            assert contrib.shape == (est.nobs - est.options["presample"],)
+            np.testing.assert_allclose(contrib.sum(), r["loglik"][k], rtol=1e-10)
+        else:
+            assert post == -np.inf, (k, int(r["info"][k]))
+            info = int(r["info"][k])
+            if info == 41:
+                assert "lower bound" in est.last_info
+            elif info == 42:
+                assert "upper bound" in est.last_info
+    assert n_finite >= 4
+    # the model object is left untouched
+    np.testing.assert_array_equal(m.params, params_before)
+    np.testing.assert_array_equal(m.Sigma_e, sigma_before)
+
+
+def test_rejections_match_dynare(load):
+    """Blanchard-Kahn failure (Dynare info 3), a steady state that cannot be computed (info 22)
+    and bound violations give a log posterior of -inf; the log prior is still Dynare's."""
+    r = ref("est_schorfheide_v0.mat")
+    est = estimation.Estimation(load("est_schorfheide"))
+    infos = [int(i) for i in r["info"]]
+    k = infos.index(3)                                   # rho = 0.999999: root above 1 - 1e-6
+    assert est.log_likelihood(r["X"][:, k]) == -np.inf
+    assert "Blanchard-Kahn" in est.last_info
+    np.testing.assert_allclose(est.log_prior(r["X"][:, k]), r["lnprior"][k], rtol=1e-10)
+    assert est.log_posterior(r["X"][:, k]) == -np.inf
+    assert sorted(set(infos)) == [0, 3, 41, 42]
+
+    r = ref("est_nk_v0.mat")
+    est = estimation.Estimation(load("est_nk"))
+    infos = [int(i) for i in r["info"]]
+    k = infos.index(22)                                  # sig = 0: 1/sig in the model
+    assert est.log_posterior(r["X"][:, k]) == -np.inf
+    assert "steady state" in est.last_info
+    assert all(est.log_posterior(r["X"][:, j]) == -np.inf for j, i in enumerate(infos) if i != 0)
+
+
+def test_steady_state_parameter_update_is_used(load):
+    """est_nk: the steady_state_model block overwrites the parameter rbar = 100*(1/beta - 1), and
+    beta is estimated. The constant of the robs measurement equation depends on rbar."""
+    m = load("est_nk")
+    r = ref("est_nk_v0.mat")
+    est = estimation.Estimation(m)
+    ib, irbar = est.names.index("beta"), m.param_names.index("rbar")
+    assert m.params[irbar] == 0.0                        # calibrated value in the .mod file
+    finite = [k for k in range(r["X"].shape[1]) if np.isfinite(r["fval"][k])]
+    betas = {round(float(r["X"][ib, k]), 12) for k in finite}
+    assert len(betas) >= 3                               # the reference points differ in beta
+    for k in finite:
+        x = r["X"][:, k]
+        ss = est.state_space(x)
+        rbar = 100 * (1 / x[ib] - 1)
+        np.testing.assert_allclose(ss["params"][irbar], rbar, rtol=1e-14)
+        np.testing.assert_allclose(ss["constant"][m.varobs.index("robs")], rbar + x[est.names.index("pibar")], rtol=1e-13)
+        np.testing.assert_allclose(est.log_likelihood(x), r["loglik"][k], rtol=1e-10)
+    assert m.params[irbar] == 0.0                        # and the model is not modified
+    # with the stale value of rbar the likelihood would be very different
+    x = r["X"][:, finite[0]]
+    ss = est.state_space(x)
+    stale = est.data.T - (ss["constant"] - np.array([0, 0, 100 * (1 / x[ib] - 1)]))[:, None]
+    QQ = ss["R"] @ ss["Q"] @ ss["R"].T
+    P = kalman.lyapunov_symm(ss["T"], QQ)
+    bad = -kalman.kalman_filter(stale, np.zeros(len(P)), P, ss["T"], QQ, ss["H"], ss["z"])
+    assert abs(bad - r["loglik"][finite[0]]) > 10
+
+
+def test_covariances_from_theta(load):
+    """stderr of shocks and measurement errors, and corr, map into Q and H as set_all_parameters.m."""
+    est = estimation.Estimation(load("est_nk"))
+    x = est.x0.copy()
+    d = dict(zip(est.names, x))
+    Q, H = est.covariances(x)
+    assert est.names[:5] == ["stderr ea", "stderr eu", "stderr er", "stderr yobs", "corr ea, eu"]
+    np.testing.assert_allclose(np.sqrt(np.diag(Q)), [d["stderr ea"], d["stderr eu"], d["stderr er"]])
+    np.testing.assert_allclose(Q[0, 1], d["corr ea, eu"] * d["stderr ea"] * d["stderr eu"])
+    assert Q[0, 2] == 0 and Q[1, 2] == 0
+    np.testing.assert_allclose(H, np.diag([d["stderr yobs"] ** 2, 0, 0]))
+
+
+def test_kalman_algo_choices_agree(load):
+    """Multivariate and univariate filters compute the same likelihood. With Dynare's default
+    riccati_tol=1e-6 both switch to a steady-state gain at slightly different points, which moves
+    the value by about 1e-8; with riccati_tol=0 they agree to rounding."""
+    m = load("est_nk")
+    a, b = estimation.Estimation(m, riccati_tol=0), estimation.Estimation(m, kalman_algo=2, riccati_tol=0)
+    assert abs(a.log_likelihood(a.x0) - b.log_likelihood(b.x0)) < 1e-9
+    assert (a.last_filter, b.last_filter) == ("multivariate", "univariate")
+    default = estimation.Estimation(m)
+    assert 0 < abs(default.log_likelihood(a.x0) - a.log_likelihood(a.x0)) < 1e-5
+    m = load("est_ur", 2)
+    a, b = estimation.Estimation(m, riccati_tol=0), estimation.Estimation(m, kalman_algo=4, riccati_tol=0)
+    assert abs(a.log_likelihood(a.x0) - b.log_likelihood(b.x0)) < 1e-9
+    assert (a.last_filter, b.last_filter) == ("multivariate (diffuse)", "univariate (diffuse)")
+
+
+# ------------------------------------------------------------------ priors
+def test_prior_families_match_dynare():
+    """Hyper-parameters (set_prior.m and helpers) and log densities (priordens.m) on a grid, for
+    beta, gamma, normal, inverse gamma 1 and 2, uniform and Weibull, with and without p3/p4."""
+    q = ref("est_priors.mat")
+    shapes_seen = set()
+    for i, row in enumerate(q["spec"]):
+        pr = Prior([int(row[0])], [row[1]], [row[2]], [row[3]], [row[4]])
+        shapes_seen.add(int(row[0]))
+        np.testing.assert_allclose([pr.p6[0], pr.p7[0]], [q["p6"][i], q["p7"][i]], rtol=1e-12)
+        assert (pr.p3[0], pr.p4[0]) == (q["p3"][i], q["p4"][i])
+        lp = np.array([pr.logpdf([x]) for x in q["grid"]])
+        expected = q["lpdf"][i]
+        finite = np.isfinite(expected)
+        assert finite.sum() >= 20
+        np.testing.assert_array_equal(lp[~finite], expected[~finite])       # -inf outside the support
+        np.testing.assert_allclose(lp[finite], expected[finite], rtol=1e-11, atol=1e-11)
+    assert shapes_seen == {1, 2, 3, 4, 5, 6, 8}
+
+
+def test_prior_errors_and_bounds():
+    with pytest.raises(PriorError):
+        Prior([1], [0.5], [0.6])                         # beta: std too large for the mean
+    with pytest.raises(PriorError):
+        Prior([4], [-1.0], [1.0])                        # inverse gamma: mean below the lower bound
+    with pytest.raises(PriorError):
+        Prior([5], [0.5], [0.1], [0.0], [1.0])           # uniform: bounds and moments together
+    pr = Prior([1, 2, 3, 4, 5, 6, 8], [0.5, 1, 0, 1, np.nan, 1, 1], [0.1, 0.5, 1, 1, np.nan, 1, 0.5],
+               [np.nan] * 4 + [-1] + [np.nan] * 2, [np.nan] * 4 + [2] + [np.nan] * 2)
+    lb, ub = pr.bounds()
+    np.testing.assert_array_equal(lb, [0, 0, -np.inf, 0, -1, 0, 0])
+    np.testing.assert_array_equal(ub, [1, np.inf, np.inf, np.inf, 2, np.inf, np.inf])
+    lb, ub = pr.bounds(1e-3)                             # prior_trunc: quantiles
+    assert np.all(lb > [0, 0, -4, 0, -1, 0, 0]) and np.all(np.isfinite(ub)) and np.all(lb < ub)
+    np.testing.assert_allclose([lb[2], ub[2]], [-3.090232306167813, 3.090232306167813], rtol=1e-10)
+    np.testing.assert_allclose([lb[4], ub[4]], [-1 + 3e-3, 2 - 3e-3], rtol=1e-12)
+
+
+# ------------------------------------------------------------------ Hessian, Laplace, mode
+def test_hessian_and_laplace_at_dynare_mode(load):
+    """At the mode Dynare found for the Schorfheide example (shipped settings, mode_compute=4)."""
+    r = ref("est_schorfheide_full.mat")
+    est = estimation.Estimation(load("est_schorfheide"))
+    assert est.names == r["names"].split(";")
+    x = r["xparam1"]
+    assert abs(r["logpost"] - 1343.6795) < 1e-4 and abs(r["laplace"] - 1299.02) < 1e-2
+    np.testing.assert_allclose(est.log_posterior(x), r["logpost"], rtol=0, atol=1e-8)
+    hh = est.hessian(x)
+    # finite differences of the same function with the same steps: rounding noise only
+    np.testing.assert_allclose(hh, r["hh"], rtol=1e-4)
+    inv = est.inverse_hessian(hh)
+    np.testing.assert_allclose(inv, r["Vmode"], rtol=1e-4)
+    np.testing.assert_allclose(est.laplace(x, inv), r["laplace"], rtol=0, atol=1e-5)
+    np.testing.assert_allclose(est.laplace(x, r["Vmode"]), r["laplace"], rtol=0, atol=1e-8)
+
+
+def test_log_posterior_at_dynare_mcmc_draws(load):
+    """40 draws of Dynare's own Metropolis chains (shipped settings, 2 x 20000) with the log
+    posterior Dynare stored for them: the target density is the same across the posterior."""
+    d = ref("est_schorfheide_draws.mat")
+    est = estimation.Estimation(load("est_schorfheide"))
+    lp = np.array([est.log_posterior(x) for x in d["X"]])
+    assert d["X"].shape == (40, 9) and np.ptp(d["LP"]) > 5
+    np.testing.assert_allclose(lp, d["LP"], rtol=0, atol=1e-6)
+
+
+def test_posterior_mode_schorfheide(load):
+    """Mode search from the initial values (prior means), as Dynare's run starts."""
+    r = ref("est_schorfheide_full.mat")
+    est = estimation.Estimation(load("est_schorfheide"))
+    np.testing.assert_allclose(est.x0, [0.035449, 0.008862, 0.356, 0.993, 0.0085, 0.0002, 0.129, 0.65, 0.01])
+    assert (est.options["mh_nblck"], est.options["mh_jscale"], est.options["loglinear"]) == (2, 0.8, True)
+    np.testing.assert_array_equal(est.jscale()[0], 0.8)
+    mode = est.mode()
+    # the optimum is flat: Dynare's csminwel stops 6.5e-6 below the value found here
+    assert -1e-7 < mode.log_posterior - r["logpost"] < 1e-4
+    dyn_std = np.sqrt(np.diag(r["Vmode"]))
+    assert np.max(np.abs(mode.x - r["xparam1"]) / dyn_std) < 0.01      # within 1% of a posterior std
+    np.testing.assert_allclose(mode.x, r["xparam1"], rtol=2e-3)
+    np.testing.assert_allclose(mode.std, dyn_std, rtol=5e-3)
+    assert abs(mode.laplace - r["laplace"]) < 0.01
+
+
+@pytest.mark.parametrize("variant,bayesian", [(3, True), (4, False)])
+def test_mode_unit_root_model(load, variant, bayesian):
+    """Posterior mode (variant 3) and maximum likelihood (variant 4) with the diffuse filter."""
+    r = ref(f"est_ur_mode_v{variant}.mat")
+    est = estimation.Estimation(load("est_ur", variant))
+    assert est.prior.is_bayesian == bayesian
+    np.testing.assert_allclose(est.log_posterior(r["xparam1"]), r["logpost"], rtol=1e-10)
+    mode = est.mode()
+    assert abs(mode.log_posterior - r["logpost"]) < 1e-6
+    dyn_std = np.sqrt(np.diag(r["Vmode"]))
+    assert np.max(np.abs(mode.x - r["xparam1"]) / dyn_std) < 0.01
+    np.testing.assert_allclose(mode.std, dyn_std, rtol=1e-3)
+    if bayesian:
+        assert abs(mode.laplace - r["laplace"]) < 1e-3
+    else:
+        assert np.isnan(mode.laplace) and est.log_prior(mode.x) == 0.0
+        with pytest.raises(estimation.EstimationError):
+            est.sample(replic=10, mode=mode)
+
+
+def test_hessian_function():
+    A = np.array([[2.0, 0.3, 0.0], [0.3, 1.0, -0.2], [0.0, -0.2, 0.5]])
+    x0 = np.array([0.3, -1.2, 2.0])
+    hh = estimation.hessian(lambda x: 0.5 * x @ A @ x + np.sum(x), x0)
+    np.testing.assert_allclose(hh, A, rtol=1e-6, atol=1e-8)
+
+
+# ------------------------------------------------------------------ Metropolis-Hastings
+def test_metropolis_accept_reject_path():
+    """Fixed innovations and uniforms: the chain equals an independent implementation of Dynare's
+    rule (posterior_sampler_iteration.m), including proposals outside the bounds."""
+    rng = np.random.default_rng(5)
+    n, n_draws = 3, 400
+    S = np.array([[1.0, 0.5, 0.0], [0.5, 2.0, -0.3], [0.0, -0.3, 0.5]])
+    Sinv = np.linalg.inv(S)
+    calls = []
+
+    def log_post(x):
+        calls.append(x.copy())
+        if x[2] > 1.2:                                   # region where the model "cannot be solved"
+            return -np.inf
+        return -0.5 * x @ Sinv @ x
+
+    lb, ub = np.array([-1.0, -np.inf, -np.inf]), np.array([np.inf, 2.5, np.inf])
+    d = np.linalg.cholesky(S).T * np.array([0.9, 1.1, 1.0])      # d * diag(jscale)
+    eps, u = rng.standard_normal((n_draws, n)), rng.random(n_draws)
+    x0 = np.zeros(n)
+    draws, logpo, acc = estimation.metropolis_hastings(log_post, x0, log_post(x0), d, lb, ub, eps, u)
+    n_calls = len(calls) - 1
+
+    # independent check, written out step by step
+    def target(x):
+        return -np.inf if x[2] > 1.2 else float(-0.5 * x @ Sinv @ x)
+
+    last, last_lp, n_inside, n_out, n_unsolved = x0.copy(), target(x0), 0, 0, 0
+    for i in range(n_draws):
+        prop = last + d.T @ eps[i]                       # row vector times upper factor
+        inside = bool(np.all(prop > lb) and np.all(prop < ub))
+        lp = target(prop) if inside else -np.inf
+        n_inside += inside
+        n_out += not inside
+        n_unsolved += inside and lp == -np.inf
+        accept = lp > -np.inf and np.log(u[i]) < lp - last_lp
+        if accept:
+            last, last_lp = prop, lp
+        assert bool(acc[i]) == bool(accept), i
+        np.testing.assert_allclose(draws[i], last, rtol=0, atol=1e-13)
+        np.testing.assert_allclose(logpo[i], last_lp, rtol=0, atol=1e-12)
+    assert n_calls == n_inside                           # proposals outside the bounds are not evaluated
+    assert n_out > 10 and n_unsolved > 5 and 0.1 < acc.mean() < 0.7
+    assert np.all(draws > lb) and np.all(draws < ub) and np.all(draws[:, 2] <= 1.2)
+
+
+def test_sampler_on_model_with_fixed_random_numbers(load):
+    """est.sample with given innovations: proposal covariance jscale^2 * inverse Hessian and the
+    accept/reject path, checked against a loop written directly on log_posterior."""
+    r = ref("est_ur_mode_v3.mat")
+    est = estimation.Estimation(load("est_ur", 3))
+    V, xm = r["Vmode"], r["xparam1"]
+    rng = np.random.default_rng(11)
+    replic, js = 60, 0.7
+    eps, u = rng.standard_normal((2, replic, est.n)), rng.random((2, replic))
+    start = np.vstack([xm, xm * 1.02])
+    mc = est.sample(replic=replic, nblocks=2, mode=xm, cov=V, jscale=js, x0=start, innovations=eps, uniforms=u)
+    assert mc.draws.shape == (2, replic, est.n) and mc.names == est.names
+    L = np.linalg.cholesky(V)
+    for j in range(2):
+        last, last_lp = start[j], est.log_posterior(start[j])
+        for i in range(replic):
+            prop = last + js * (L @ eps[j, i])
+            lp = est.log_posterior(prop)
+            if np.isfinite(lp) and np.log(u[j, i]) < lp - last_lp:
+                last, last_lp = prop, lp
+            np.testing.assert_allclose(mc.draws[j, i], last, rtol=0, atol=1e-12)
+            np.testing.assert_allclose(mc.log_posterior[j, i], last_lp, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(mc.acceptance_rate, mc.accepted.mean(axis=1))
+    # proposals really have covariance jscale^2 * V: implied by the identity above for every draw
+    np.testing.assert_allclose(js ** 2 * (L @ L.T), js ** 2 * V, rtol=1e-12)
+
+
+def test_sampler_uses_prior_support_not_estimated_params_bounds(load):
+    """Dynare's sampler evaluates the posterior with the prior bounds only (set_mcmc_prior_bounds.m);
+    the bounds of the estimated_params block apply to the mode search. est_nk: phipi has a normal
+    prior and the bounds [1.01, 4]."""
+    est = estimation.Estimation(load("est_nk"))
+    i = est.names.index("phipi")
+    assert (est.lb[i], est.ub[i]) == (1.01, 4.0)
+    plb, pub = est.prior.bounds()
+    assert (plb[i], pub[i]) == (-np.inf, np.inf)
+    x = est.x0.copy()
+    x[i] = 1.012
+    below = x.copy()
+    below[i] = 1.007
+    assert est.log_posterior(below) == -np.inf and "lower bound" in est.last_info
+    lp = est.log_posterior(below, bounds=(plb, pub))
+    assert np.isfinite(lp) and lp == est.log_likelihood(below) + est.log_prior(below)
+    # one proposal that moves phipi from 1.012 to 1.007 is accepted by the sampler
+    V = np.diag((0.01 * np.abs(est.x0)) ** 2)
+    eps = np.linalg.solve(np.linalg.cholesky(V), below - x)[None, None, :]
+    mc = est.sample(replic=1, nblocks=1, mode=x, cov=V, jscale=1.0, x0=x[None, :], innovations=eps,
+                    uniforms=np.array([[1e-300]]))
+    assert mc.accepted[0, 0] and abs(mc.draws[0, 0, i] - 1.007) < 1e-12
+    assert mc.log_posterior[0, 0] == pytest.approx(lp, abs=1e-9)
+
+
+def test_sampler_smoke(load):
+    r = ref("est_ur_mode_v3.mat")
+    est = estimation.Estimation(load("est_ur", 3))
+    kw = dict(replic=150, nblocks=2, mode=r["xparam1"], cov=r["Vmode"])
+    mc = est.sample(seed=3, **kw)
+    again = est.sample(seed=3, **kw)
+    other = est.sample(seed=4, **kw)
+    np.testing.assert_array_equal(mc.draws, again.draws)             # reproducible
+    assert not np.array_equal(mc.draws, other.draws)
+    assert not np.array_equal(mc.draws[0], mc.draws[1])              # chains have their own streams
+    assert not np.array_equal(mc.x0[0], mc.x0[1])                    # over-dispersed starting points
+    assert np.all((mc.acceptance_rate > 0.1) & (mc.acceptance_rate < 0.6))   # default jscale 2.38/sqrt(n)
+    lb, ub = est.prior.bounds()
+    assert np.all(mc.draws > lb) and np.all(mc.draws < ub) and np.all(np.isfinite(mc.log_posterior))
+    assert mc.kept().shape == (150, est.n) and mc.kept(0.0).shape == (300, est.n)
+    std = np.sqrt(np.diag(r["Vmode"]))
+    assert np.all(np.abs(mc.mean() - r["xparam1"]) < 2 * std)        # loose: 150 kept draws
+    hpd = mc.hpd_interval(0.9)
+    assert np.all(hpd[:, 0] < mc.mean()) and np.all(mc.mean() < hpd[:, 1])
+    one = est.sample(replic=5, nblocks=1, mode=r["xparam1"], cov=r["Vmode"])
+    np.testing.assert_array_equal(one.x0[0], r["xparam1"])           # a single chain starts at the mode
+
+
+# ------------------------------------------------------------------ smoother
+@pytest.mark.parametrize("mod,variant,name", [("est_nk", 5, "est_nk_smoother.mat"),
+                                              ("est_nk", 7, "est_nk_smoother_miss.mat"),
+                                              ("est_schorfheide", "SMOOTHER", "est_schorfheide_smoother.mat")])
+def test_smoother_matches_dynare(load, mod, variant, name):
+    """Smoothed and updated variables, smoothed shocks and measurement errors at the initial
+    parameter values: complete data, missing observations, loglinear model."""
+    s = ref(name)
+    est = estimation.Estimation(load(mod, variant))
+    res = est.smoother(est.x0)
+    for i, v in enumerate(s["endo_names"].split(";")):
+        np.testing.assert_allclose(res["variables"][v], s["smoothed"][:, i], rtol=1e-9, atol=1e-10)
+        np.testing.assert_allclose(res["updated"][v], s["updated"][:, i], rtol=1e-9, atol=1e-10)
+    for i, v in enumerate(s["exo_names"].split(";")):
+        np.testing.assert_allclose(res["shocks"][v], s["shocks"][:, i], rtol=1e-9, atol=1e-10)
+        assert np.max(np.abs(s["shocks"][:, i])) > 1e-3
+    if "me_yobs" in s:
+        np.testing.assert_allclose(res["measurement_errors"]["yobs"], s["me_yobs"], rtol=1e-9, atol=1e-10)
+        assert np.nanmax(np.abs(s["me_yobs"])) > 1e-2
+        assert np.isnan(s["me_yobs"]).sum() == np.isnan(est.data[:, 0]).sum()   # NaN where yobs is missing
+
+
+# ------------------------------------------------------------------ building blocks
+def test_lyapunov_and_option_checks(load):
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((6, 6))
+    A *= 0.9 / np.max(np.abs(np.linalg.eigvals(A)))
+    B = rng.standard_normal((6, 6))
+    B = B @ B.T
+    X = kalman.lyapunov_symm(A, B)
+    np.testing.assert_allclose(X, A @ X @ A.T + B, rtol=1e-10, atol=1e-10)
+    m = load("est_ur")
+    with pytest.raises(estimation.EstimationError):
+        estimation.Estimation(m, diffuse_filter=True, lik_init=2)
+    with pytest.raises(NotImplementedError):
+        estimation.Estimation(m, order=2)
+    with pytest.raises(estimation.EstimationError, match="prefilter"):
+        estimation.Estimation(load("est_nk"), prefilter=1)      # non-zero steady state of piobs, robs
+    assert estimation.Estimation(load("est_nk", 3)).check_prefilter()
+    assert estimation.Estimation(m, noconstant=True).ignored_options == ["nodisplay", "noconstant"]
+    # the unit root is rejected under the stationary initialisation, as in Dynare (qz_criterium = 1 - 1e-6)
+    est = estimation.Estimation(m, diffuse_filter=False, lik_init=1)
+    assert est.log_posterior(est.x0) == -np.inf and "Blanchard-Kahn" in est.last_info
+
+
+def test_estimated_params_init_and_unsupported_blocks(workdir):
+    """estimated_params_init sets starting values; blocks that cannot be honoured raise.
+    (Python-side behaviour only: no Dynare reference for this test.)"""
+    base = (workdir / "est_ur.mod").read_text()
+    d = workdir / "init"
+    d.mkdir()
+    shutil.copy(workdir / "est_ur_data.m", d)
+
+    def model(extra):
+        (d / "est_init.mod").write_text(base.replace("varobs yobs xobs;", extra + "\nvarobs yobs xobs;", 1))
+        return pydyn.Model(pydyn.run_preprocessor(d / "est_init.mod"))
+
+    est = estimation.Estimation(model("estimated_params_init;\nrho, 0.55;\nstderr eg, 0.33;\nend;"))
+    x0 = dict(zip(est.names, est.x0))
+    assert (x0["rho"], x0["stderr eg"], x0["phi"], x0["lam"]) == (0.55, 0.33, 0.4, 0.2)
+    with pytest.raises(NotImplementedError, match="several estimated_params"):
+        estimation.Estimation(model("estimated_params;\nrho, beta_pdf, 0.5, 0.2;\nend;"))
+    with pytest.raises(NotImplementedError, match="estimated_params_bounds"):
+        estimation.Estimation(model("estimated_params_bounds;\nlam, 0, 1;\nend;"))
