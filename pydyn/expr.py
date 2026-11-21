@@ -247,6 +247,28 @@ class Translator:
                     out.append(self.steady(toks[i + 2][1]))
                     i += 4
                     continue
+                if val in ("STEADY_STATE", "steady_state") and i + 1 < n and toks[i + 1][1] == "(":
+                    # STEADY_STATE(expression): the expression with every variable at its steady state
+                    if self.steady is None:
+                        raise ValueError("STEADY_STATE not allowed here")
+                    depth, k = 0, i + 1
+                    while k < n:
+                        depth += {"(": 1, ")": -1}.get(toks[k][1], 0) if toks[k][0] == "op" else 0
+                        if depth == 0:
+                            break
+                        k += 1
+                    if k >= n:
+                        raise ValueError(f"unbalanced parentheses in {s!r}")
+
+                    def at_steady(name, shift, _steady=self.steady, _resolve=self.resolve):
+                        try:
+                            return _steady(name)
+                        except Exception:  # noqa: BLE001 - not an endogenous variable or a parameter
+                            return _resolve(name, 0)
+                    sub = Translator(at_steady, self.steady, self.shiftable, self.temps)
+                    out.append("(" + sub(" ".join(v for _, v in toks[i + 2:k])) + ")")
+                    i = k + 1
+                    continue
                 if val in ("STEADY_STATE", "steady_state"):
                     raise NotImplementedError("steady_state() of an expression is not supported")
                 if val in self.temps:

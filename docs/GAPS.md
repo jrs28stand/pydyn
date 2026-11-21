@@ -59,7 +59,7 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | model_remove, model_replace | S | preprocessor | probe cmds2/h18: loads, equation set updated | not validated |
 | write_latex_original_model, _dynamic_, _static_, _steady_state_model | IS | Model._exec_statement (pass) | probe: no warning, no file | no LaTeX output |
 | write_latex_definitions / parameter_table / prior_table / collect_latex_files | IS | skipped (native / pass) | probe: accepted, nothing written | no LaTeX output |
-| Auxiliary variables (AUX_ENDO_LEAD/LAG, AUX_EXO_*, MULT_*, LOG_*) | V | Model.aux_names, steady.fill_auxiliary | test_auxiliary | Lagrange-multiplier aux (Ramsey) mishandled: fill_auxiliary gives non-finite start (see Ramsey) |
+| Auxiliary variables (AUX_ENDO_LEAD/LAG, AUX_EXO_*, MULT_*, LOG_*) | V | Model.aux_names, steady.fill_auxiliary | test_auxiliary | Lagrange multipliers (Ramsey) have no defining equation and are skipped by fill_auxiliary (test_optimal_policy) |
 
 #### Initial and terminal conditions
 
@@ -163,7 +163,7 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | unit_root_vars | n/a | - | not in the 7.2 manual or preprocessor (removed) |  |
 | bvar_density, bvar_forecast, bvar_irf, data | PW | - | probe: warned | Dynare: matlab/+bvar |
 | dsge_var (estimation option), dsge_prior_weight | IS | - | probe h3/h12: ignored silently; likelihood equals plain DSGE | Dynare: dsge_var_likelihood.m |
-| evaluate_planner_objective | PW | - | probe: warned |  |
+| evaluate_planner_objective | V | pydyn.optimal_policy.evaluate_planner_objective, evaluate_planner_objective_perfect_foresight | test_optimal_policy (orders 1 and 2, Ramsey, discretion, histval and period-1 shocks, perfect foresight) | order > 2 refused (k_order_welfare MEX); the first simulated shock of stoch_simul(periods>0) must be passed as u= |
 | mh options, generate_trace_plots, internals | IS | - | see estimation option table | MATLAB utilities; no diagnostics |
 | method_of_moments, matched_moments, matched_irfs, matched_irfs_weights | PW | - | probe: warned; rbc_irf_matching example loads | Dynare: matlab/+mom |
 | dynare_sensitivity / sensitivity | PW | - | sensitivity warned; "dynare_sensitivity" is not a 7.2 command | Dynare: matlab/+gsa |
@@ -183,9 +183,9 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 
 | Dynare command | Status | pydyn function | Evidence | Missing / note |
 |---|---|---|---|---|
-| planner_objective, ramsey_model, ramsey_constraints, ramsey_policy | PW | (Model loads the preprocessor FOC model) | probe t_ramsey: warned; steady_state() default raises "initial guess ... not finite" (fill_auxiliary on MULT_*); with explicit guess=zeros first_order returns eigenvalues (unvalidated); nk_ramsey_osr example: SteadyStateError | Ramsey steady state, multipliers initialisation, planner objective evaluation; Dynare: matlab/optimal_policy/* |
-| discretionary_policy | PW | - | probe: warned | Dynare: matlab/discretionary_policy/ |
-| osr, osr_params, optim_weights, osr_params_bounds | PW | - | probe: warned | Dynare: matlab/+osr/ |
+| planner_objective, ramsey_model, ramsey_constraints, ramsey_policy | V | pydyn.optimal_policy (ramsey_steady_state via steady_state, PlannerObjective); first_order/k_order on the FOC model | tests/test_optimal_policy.py: 19 Ramsey cases from tests/optimal_policy and examples/optimal_policy (incl. two instruments, ramsey_policy) (rules, steady state, welfare ~1e-12); ramsey_constraints with perfect_foresight(lmmcp=True); test_examples nk_ramsey_osr, nk_ramsey_steady_file | ramsey_policy acts as ramsey_model + stoch_simul options; options_.solve_algo=10/stack_solve_algo=7 set by MATLAB lines are not acted on (pass lmmcp=True); several instruments with a steady-state file and a non-square problem refused unless the initial instruments solve it |
+| discretionary_policy | V | pydyn.optimal_policy.discretionary_policy | test_optimal_policy: 5 models of tests/discretionary_policy (rules, moments, welfare ~1e-14) | Sylvester fallback solved directly (Kronecker) instead of Hessenberg-Schur |
+| osr, osr_params, optim_weights, osr_params_bounds | P | pydyn.optimal_policy.osr, osr_objective; pydyn.estimation.csminwel | test_optimal_policy: loss at Dynare optimum 1e-14 (5 tests incl. non-stationary variables, covariance weights, planner objective at order 2); same csminwel path for the planner-objective case | only opt_algo=4 (csminwel); bounds (need opt_algo 1/2/9) and analytic_derivation refused; csminwel paths diverge near flat optima from rounding differences |
 
 #### Markov-switching SBVAR
 
@@ -687,7 +687,7 @@ Size: small < 1 day, medium = days, large = weeks. Dynare paths are under `/home
 | 10 | `forecast` and `conditional_forecast` (+ plots), including forecasts from `estimation(forecast=)` and from smoothed states | medium | `matlab/+forecasts/*.m`, `matlab/+conditional_forecasts/*.m`, `matlab/+occbin/forecast.m` |
 | 11 | Honour solver options: `qz_criterium`/`qz_zero_threshold` in `first_order`/`k_order`, `dr=cycle_reduction|logarithmic_reduction`, steady-state `solve_algo`/block decomposition/tolerances/homotopy stepping, `steady(nocheck)` and Dynare-size tolerance (6e-6) instead of 1e-10 | small-medium | `matlab/stochastic_solver/{dyn_first_order_solver,select_qz_criterium_value}.m`, `matlab/matrix_solver/`, `matlab/steady.m`, `matlab/evaluate_steady_state.m`, `matlab/optimization/dynare_solve.m` |
 | 12 | Estimation model features: `heteroskedastic_shocks`/`heteroskedastic_filter`, `filter_initial_state`, `estimated_params_bounds/remove`, several `estimated_params` blocks and `(overwrite)`, `use_calibration`, measurement-error covariances, `conditional_likelihood`, `endogenous_prior`, recursive estimation (`nobs=[a:b]`), `dsge_var`, second-order estimation with nonlinear filters, calibrated covariances | medium-large | `matlab/estimation/{dsge_likelihood,dsge_var_likelihood,get_init_state,endogenous_prior,set_prior,non_linear_dsge_likelihood}.m`, `matlab/kalman/get_Qvec_heteroskedastic_filter.m`, `matlab/nonlinear-filters/` |
-| 13 | Optimal policy: `ramsey_model`/`ramsey_policy`/`planner_objective`/`ramsey_constraints` (multiplier initialisation in `steady`, `fill_auxiliary` mishandles `MULT_*`), `evaluate_planner_objective`, `discretionary_policy`, `osr` | medium-large | `matlab/optimal_policy/{dyn_ramsey_static,mult_elimination,evaluate_planner_objective}.m`, `matlab/discretionary_policy/`, `matlab/+osr/` |
+| 13 | Optimal policy: done (2026-11-21, pydyn.optimal_policy). Remaining: `osr` optimisers other than csminwel (and hence `osr_params_bounds`), `osr(analytic_derivation)`, welfare at order > 2 (`k_order_welfare`), `mult_elimination` | small-medium | `matlab/optimization/{cmaes,simulated_annealing}.m`, `mex/sources/k_order_welfare`, `matlab/optimal_policy/mult_elimination.m` |
 | 14 | Model-file coverage: `varexo_det`, external functions in the model block, `epilogue`, `mshocks`, `skew`/`coskewness`, `histval`; JSON repair for `shock_paths`, `model_comparison`, `colormap`; `model_info`, `resid`, `model_diagnostics`, `write_latex_*` | small-medium | `preprocessor/src/{ParsingDriver,ModelEquationBlock,Shocks}.cc` (JSON writers), `matlab/{model_diagnostics,display_static_residuals}.m` |
 | 15 | Stochastic extended path (`extended_path`) and higher-order theoretical moments / third-order estimation filters; method of moments (`method_of_moments`, GMM/SMM/IRF matching); `identification`/`sensitivity`; `bvar_*`; SBVAR; PAC/VAR-expectation; heterogeneity (lowest priority for this profile) | large each | `matlab/ep/`, `matlab/+mom/`, `matlab/+identification/`, `matlab/+gsa/`, `matlab/+bvar/`, `matlab/ms-sbvar/`, `matlab/+pac/`, `matlab/+heterogeneity/` |
 

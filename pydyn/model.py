@@ -88,6 +88,9 @@ class Model:
             text = re.sub(r'("exo\d":\s*)([A-Za-z_]\w*")', r'\1"\2', text)
             # ... an unquoted MATLAB variable as the colormap option of plot_shock_decomposition ...
             text = re.sub(r'("[\w.]*colormap":\s*)([A-Za-z_]\w*)(?=\s*[,}])', r'\1"\2"', text)
+            # ... evaluate_planner_objective(options) written with its options before the statement ...
+            text = re.sub(r'\n\s*,\s*"options":\s*(\{[^{}]*\})\s*\{"statementName":\s*"evaluate_planner_objective"\}',
+                          r'\n{"statementName": "evaluate_planner_objective", "options": \1}', text)
             # ... and numbers written as .8 or 006 in option lists
             text = re.sub(r'([:\[,]\s*)\.(\d)', r"\g<1>0.\2", text)
             text = re.sub(r'([:\[,]\s*)0+(\d+)(?=\s*[,\]}])', r"\1\2", text)
@@ -471,6 +474,30 @@ class Model:
                 for i, path in enumerate(st.get("paths", [])):
                     for k, v in enumerate(path.get("values", [])):
                         stored[(i, k)] = self._value(v["value"])
+        elif kind in ("ramsey_model", "ramsey_policy", "discretionary_policy", "osr", "evaluate_planner_objective",
+                      "planner_objective", "osr_params", "optim_weights", "osr_params_bounds"):
+            # optimal policy: read by pydyn.optimal_policy (ramsey_policy and discretionary_policy also act
+            # as stoch_simul, whose options they take)
+            self.options[kind] = st.get("options", {}) if kind not in ("osr_params", "optim_weights", "osr_params_bounds") else st
+            if kind == "osr_params_bounds":
+                self.options[kind] = {"bounds": [(d["parameter"], self._value(d["bounds"][0]), self._value(d["bounds"][1]))
+                                                 for d in st.get("bounds", [])]}
+            elif kind == "optim_weights":
+                self.options[kind] = {"weights": [(d.get("name", d.get("name1")), d.get("name2"), self._value(d["value"]))
+                                                  for d in st.get("weights", [])]}
+            if kind in ("ramsey_model", "ramsey_policy", "discretionary_policy"):
+                ins = st.get("options", {}).get("instruments") or {}
+                names = list(ins.get("symbol_list", []) if isinstance(ins, dict) else ins)
+                if names or "instruments" not in self.matlab_options:   # options_.instruments, read by steady-state files
+                    self.matlab_options["instruments"] = matlab.Cell(names, (len(names), 1) if names else (0, 0))
+            if kind in ("ramsey_policy", "discretionary_policy", "osr"):
+                # these commands write their options into options_ (kept by later commands) and run stoch_simul
+                self.options["stoch_simul"] = {**self.options.get("stoch_simul", {}),
+                                               **{k: v for k, v in st.get("options", {}).items()
+                                                  if k not in ("instruments", "osr.opt_algo", "planner_discount", "analytic_derivation",
+                                                                "optim_opt", "osr.maxit", "osr.tolf", "discretionary_tol",
+                                                                "dp.maxit", "planner_discount_latex_name")}}
+                self.options.setdefault(kind + "_all", []).append(st)
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
         elif kind in ("write_latex_dynamic_model", "write_latex_static_model",

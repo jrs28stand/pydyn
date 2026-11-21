@@ -169,13 +169,18 @@ def steady_state_file_fn(model):
 def fill_auxiliary(model, ys, x, params):
     """Set auxiliary variables (added by the preprocessor for leads/lags > 1 etc.) from their
     defining equations, which are linear in the auxiliary variable itself."""
-    aux = [d["endo_index"] - 1 for d in model.raw.get("aux_vars", [])]
+    # Lagrange multipliers of Ramsey models (type 6) have no defining equation
+    aux = [d["endo_index"] - 1 for d in model.raw.get("aux_vars", []) if d.get("type") != 6]
+    rows = aux
+    if len(aux) < len(model.raw.get("aux_vars", [])):
+        from .optimal_policy import _aux_rows
+        rows = _aux_rows(model, aux).tolist()
     ys = ys.copy()
     for _ in range(2 if aux else 0):
-        for i in aux:
+        for i, row in zip(aux, rows):
             ys[i] = 0.0 if not np.isfinite(ys[i]) else ys[i]
-            r = model.static_resid(ys, x, params)[i]
-            ys[i] -= r / model.static_jac(ys, x, params)[i, i]
+            r = model.static_resid(ys, x, params)[row]
+            ys[i] -= r / model.static_jac(ys, x, params)[row, i]
     return ys
 
 
@@ -233,6 +238,9 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
                      "steady_state")
     params = model.params if params is None else np.asarray(params, float)
     x = model.exo_steady() if exo is None else np.asarray(exo, float)
+    from . import optimal_policy
+    if optimal_policy.is_ramsey(model):          # dyn_ramsey_static.m (multipliers by least squares)
+        return optimal_policy.ramsey_steady_state(model, params, guess, x, tol=tol, tolx=tolx, solve_algo=solve_algo)
     with np.errstate(all="ignore"):
         ys, params = _steady_state(model, params, guess, x, tol=tol, maxit=maxit, solve_algo=solve_algo, tolx=tolx)
     if check:

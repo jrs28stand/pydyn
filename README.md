@@ -31,6 +31,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
 | Posterior analysis (`pydyn.posterior`, `pydyn.posterior_plots`): posterior statistics and HPD intervals, modified harmonic mean, model comparison, convergence diagnostics (inefficiency factors, Geweke, Brooks-Gelman, Raftery-Lewis), jscale tuning, jumping covariances, posterior IRFs, mode_check, prior and posterior densities; csminwel ported (default optimiser when the .mod file gives no `mode_compute`; Dynare's default newrat is not ported) | done, validated (sampler reproduces Dynare's chains exactly given Dynare's random numbers) |
 | OccBin likelihood (piecewise Kalman filter, inversion filter), OccBin smoother and shock decomposition, estimation (`OccbinEstimation`: mode, Laplace, MH) | done, validated on Dynare's OccBin filter tests |
+| Optimal policy (`pydyn.optimal_policy`): Ramsey (`ramsey_model`, old `ramsey_policy`, `planner_objective`, `planner_discount`, `instruments`, `ramsey_constraints` with perfect foresight), its steady state as `dyn_ramsey_static.m` (with or without a steady-state block/file conditional on the instruments), `evaluate_planner_objective` at orders 1 and 2 (Ramsey, discretion, simple rules, perfect foresight), `discretionary_policy`, `osr` with `optim_weights` or a planner objective (csminwel) | done, validated on Dynare's tests/optimal_policy, tests/discretionary_policy and examples/optimal_policy (see below) |
 
 ## Validation
 
@@ -56,6 +57,13 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 - Helper function inside `steady_state_model`: `collard_2001_analytical_steady_state`.
 - Numerical steady states agree to Dynare's own solver tolerance (Dynare's steady state for the
   Collard model carries a residual of roughly 1e-6; ours is solved to 1e-14).
+- Optimal policy (`tests/test_optimal_policy.py`, `reference/r_policy.sh`): 19 Ramsey cases from
+  Dynare's tests and examples (no steady-state file, `steady_state_model` and `_steadystate.m` given
+  the instruments, auxiliary variables, histval, linear models, orders 1 and 2): steady state, rules
+  and the three welfare values agree to about 1e-12 or better; 5 discretionary-policy tests: rules,
+  moments and welfare to about 1e-14; OSR: the loss at Dynare's optimum to 1e-14 on 5 tests and, for
+  the welfare-maximising rule at order 2, the same csminwel iterations; Ramsey constraints with
+  perfect foresight to Dynare's solver tolerance.
 
 Run: `PYDYN_REQUIRE_KORDER=1 DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
 (without `PYDYN_REQUIRE_KORDER=1` the order-2 and order-3 tests are skipped when the compiled k-order
@@ -76,6 +84,23 @@ for rho in (0.5, 0.7, 0.9):
 ```
 
 `sol.params` holds the parameters actually used, including any the steady state updated.
+
+### Optimal policy
+
+```python
+from pydyn import optimal_policy as op
+m = pydyn.Model(pydyn.run_preprocessor("ramsey.mod"))    # ramsey_model(...), planner_objective ...
+sol = pydyn.first_order(m)                               # Ramsey steady state (dyn_ramsey_static), rules
+w = op.evaluate_planner_objective(m, sol)                # w.unconditional, w.zero_initial_multiplier, ...
+dp = op.discretionary_policy(m2)                         # discretionary_policy(instruments=...)
+res = op.osr(m3)                                         # osr_params, optim_weights or planner_objective
+```
+
+Dynare's conditional welfare starts from the shock in `oo_.exo_simul(1,:)`: after
+`stoch_simul(periods=...)` that is the first simulated shock, which pydyn does not draw (pass it as
+`u=`). OSR minimises with a port of csminwel; near the optimum its numerical gradients are dominated
+by rounding, so pydyn's iterations can stop at a different point of a flat region than Dynare's
+(`op.osr_objective` evaluates the loss at given parameters).
 
 ### MATLAB code in `.mod` files and steady-state files
 
@@ -113,10 +138,10 @@ computed steady state after `steady`).
 ## Dynare's shipped examples
 
 `tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's
-own results (stored in `reference/examples`). Thirteen match (decision rules, second order where the
-example asks for it, and the perfect-foresight path); `rbc_irf_matching` loads and solves but has
-no reference; the expectation-errors example matches too; nine are outside the scope of this package: the six
-heterogeneous-agent examples, the two Ramsey examples and the PAC model. `nk_baseline`
+own results (stored in `reference/examples`). Fifteen match (decision rules, second order where the
+example asks for it, the perfect-foresight path, and the welfare of the two Ramsey examples);
+`rbc_irf_matching` loads and solves but has no reference; the expectation-errors example matches
+too; seven are outside the scope of this package: the six heterogeneous-agent examples and the PAC model. `nk_baseline`
 and `collard_2001_analytical_steady_state` use their MATLAB steady-state code directly.
 
 ## The C++ k-order library
@@ -183,8 +208,11 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 - MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
   dates), random numbers and file-system functions are not supported; see the section above.
 - Not handled: external
-  functions inside the model block, deterministic exogenous variables, Ramsey/optimal policy,
-  heterogeneous-agent models, measurement-error covariances, `steady_state()` of an expression.
+  functions inside the model block, deterministic exogenous variables, heterogeneous-agent models,
+  measurement-error covariances.
+- Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other
+  optimisers (and therefore `osr_params_bounds`, which need a constrained one), `analytic_derivation`,
+  welfare beyond order 2 (Dynare's `k_order_welfare` MEX) and `mult_elimination` are refused.
 - Linear estimation and the smoother refuse models with `occbin_constraints`; use
   `pydyn.OccbinEstimation` and `pydyn.occbin_filter.occbin_smoother`. Not implemented for OccBin:
   particle filters, the diffuse filter, OccBin forecasts; missing data in the OccBin filters is

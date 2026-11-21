@@ -31,7 +31,8 @@ EXPECTED = {
     "stochastic_simulations/nk_baseline": MATCH,                              # uses its _steadystate.m file
     "stochastic_simulations/schorfheide_2000_nonstationary": MATCH,
     "heterogeneity/hank_one_asset": "not supported",
-    "optimal_policy/nk_ramsey_osr": "not supported",
+    "optimal_policy/nk_ramsey_osr": MATCH,                                    # Ramsey, conditional steady_state_model
+    "optimal_policy/nk_ramsey_steady_file": MATCH,                            # Ramsey, _steadystate.m reading options_
     "perfect_foresight/perfect_foresight_expectation_errors": MATCH,
     "semistructural/pac_model": "not supported",
 }

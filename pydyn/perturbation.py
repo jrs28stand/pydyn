@@ -189,15 +189,25 @@ def _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium=QZ_CRITERIUM):
         eig, sdim = np.zeros(0), 0
     if sdim != nspred:
         kind = "indeterminacy" if sdim > nspred else "no stable solution"
-        raise BlanchardKahnError(
+        err = BlanchardKahnError(
             f"Blanchard-Kahn conditions not satisfied ({kind}): {nd - sdim} unstable roots for "
             f"{nsfwrd} forward-looking variables")
+        # Dynare's info vector (dyn_first_order_solver.m): code 3 (no stable solution) or 4
+        # (indeterminacy), and a measure of the distance to the Blanchard-Kahn conditions
+        nba = nd - sdim
+        with np.errstate(all="ignore"):
+            temp = np.sort(np.abs(eig))
+        temp = (temp[nd - nba:nd - nsfwrd] if nba > nsfwrd else temp[nd - nsfwrd:nd - nba]) - 1 - qz_criterium
+        err.info = (3 if nba > nsfwrd else 4, float(temp @ temp))
+        raise err
     w11, w12, w22 = w[:nspred, :nspred], w[:nspred, nspred:], w[nspred:, nspred:]
     if nsfwrd:
         lu, piv, info = lapack.dgetrf(w22.T)
         rc = lapack.dgecon(lu, np.abs(w22).sum(axis=1).max())[0] if info == 0 else 0.0
         if rc < 1e-9:
-            raise BlanchardKahnError("rank condition not satisfied")
+            err = BlanchardKahnError("rank condition not satisfied")
+            err.info = (5, float(-np.log(rc)) if rc > 0 else np.inf)
+            raise err
         gx = -lapack.dgetrs(lu, piv, w12.T)[0]                     # jumpers on states
     else:
         gx = np.zeros((0, nspred))

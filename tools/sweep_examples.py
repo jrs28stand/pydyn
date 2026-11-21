@@ -35,8 +35,8 @@ def check(mod: Path, ref_file: Path | None = None):
         out["detail"] = "PAC / semi-structural models (dseries)" if pac else f"{type(e).__name__}: {str(e)[:110]}"
         return out
     kinds = {s["statementName"] for s in m.statements}
-    if kinds & {"ramsey_model", "ramsey_policy", "discretionary_policy", "osr"}:
-        out["status"], out["detail"] = "not supported", "optimal policy"
+    if "osr" in kinds:
+        out["status"], out["detail"] = "not supported", "osr (optimiser paths are not reproduced; see pydyn.optimal_policy.osr)"
         return out
     if any(k.startswith("heterogeneity") for k in kinds) or "heterogeneity" in str(mod.parent):
         out["status"], out["detail"] = "not supported", "heterogeneous agents"
@@ -73,10 +73,24 @@ def check(mod: Path, ref_file: Path | None = None):
             out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
     try:
-        sol = pydyn.first_order(m, ys=ys, params=p, loglinear=False)    # scaled to logs below
+        if "discretionary_policy" in kinds:
+            from pydyn import optimal_policy
+            sol = optimal_policy.discretionary_policy(m)
+        else:
+            sol = pydyn.first_order(m, ys=ys, params=p, loglinear=False)    # scaled to logs below
     except Exception as e:  # noqa: BLE001
         out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
+    if "W_unc" in ref:                     # evaluate_planner_objective (first period shock from oo_.exo_simul)
+        from pydyn import optimal_policy
+        v = optimal_policy.evaluate_planner_objective(m, sol.as_dr(), order=1, u=np.atleast_1d(ref["exo_simul1"]))
+        dw = abs(v.unconditional - ref["W_unc"])
+        if "W_cond_L0" in ref:
+            dw = max(dw, abs(v.zero_initial_multiplier - ref["W_cond_L0"]), abs(v.steady_initial_multiplier - ref["W_cond_LSS"]))
+        notes.append(f"welfare {dw:.1e}")
+        if dw > 1e-8:
+            out["status"], out["detail"] = "MISMATCH", ", ".join(notes)
+            return out
     if "ghx" in ref:
         ghx, ghu = sol.ghx, sol.ghu
         if opts.get("loglinear"):

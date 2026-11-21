@@ -472,7 +472,9 @@ def _histval(model, ws, st, stored=None):
         return                                    # M_.endo_histval has no column: ignored by Dynare
     if L < 1:
         return
-    series = {v: np.zeros(L) for v in model.orig_endo_names + model.exo_names}      # dates -L+1 .. 0
+    # the dseries also has a column of zeros for each Lagrange multiplier of a Ramsey model
+    mults = [model.endo_names[a["endo_index"] - 1] for a in model.raw.get("aux_vars", []) if a.get("type") == 6]
+    series = {v: np.zeros(L) for v in model.orig_endo_names + mults + model.exo_names}      # dates -L+1 .. 0
     for d in st.get("vals", []):
         lag = int(d["lag"])
         if not -L < lag <= 0:
@@ -483,6 +485,8 @@ def _histval(model, ws, st, stored=None):
     defs = {eq.get("lhs"): eq.get("rhs") for eq in model.raw.get("model", []) if isinstance(eq, dict)}
     for a in model.raw.get("aux_vars", []):
         name = model.endo_names[a["endo_index"] - 1]
+        if a.get("type") == 6:
+            continue
         mo = _SIMPLE_AUX.fullmatch(str(defs.get(name, "")))
         if a.get("type") not in (0, 1, 2, 3) or mo is None or mo.group(1) not in series:
             raise NotImplementedError(f"histval with the auxiliary variable {name} = {defs.get(name)} is not supported")
@@ -560,6 +564,8 @@ def _aux_series(model, series, nobs):
     defs = {eq.get("lhs"): eq.get("rhs") for eq in model.raw.get("model", []) if isinstance(eq, dict)}
     for a in model.raw.get("aux_vars", []):
         name = model.endo_names[a["endo_index"] - 1]
+        if a.get("type") == 6:
+            continue
         mo = _SIMPLE_AUX.fullmatch(str(defs.get(name, "")))
         if a.get("type") not in (0, 1, 2, 3) or mo is None or mo.group(1) not in series:
             raise NotImplementedError(f"initval_file/histval_file with the auxiliary variable {name} = {defs.get(name)} "
