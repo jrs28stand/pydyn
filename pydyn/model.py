@@ -13,7 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import matlab
+from . import dates as _dates
+from . import external, matlab
 from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name, temp_name
 
 #: "fast": generated model functions run on Python floats with a numpy fallback; "numpy": numpy
@@ -88,6 +89,8 @@ class Model:
             text = re.sub(r'("exo\d":\s*)([A-Za-z_]\w*")', r'\1"\2', text)
             # ... an unquoted MATLAB variable as the colormap option of plot_shock_decomposition ...
             text = re.sub(r'("[\w.]*colormap":\s*)([A-Za-z_]\w*)(?=\s*[,}])', r'\1"\2"', text)
+            # ... an unquoted Inf as a numeric option value (estimation(dsge_var=Inf)) ...
+            text = re.sub(r'(":\s*)(-?Inf)(?=\s*[,}\]])', r'\1"\2"', text)
             # ... evaluate_planner_objective(options) written with its options before the statement ...
             text = re.sub(r'\n\s*,\s*"options":\s*(\{[^{}]*\})\s*\{"statementName":\s*"evaluate_planner_objective"\}',
                           r'\n{"statementName": "evaluate_planner_objective", "options": \1}', text)
@@ -105,8 +108,11 @@ class Model:
         self._ie = {v: i for i, v in enumerate(self.endo_names)}
         self._ix = {v: i for i, v in enumerate(self.exo_names)}
         self._ip = {v: i for i, v in enumerate(self.param_names)}
-        if mf.get("exogenous_deterministic"):
-            raise NotImplementedError("deterministic exogenous variables are not supported")
+        # varexo_det: appended to the exogenous vector of the generated functions (x[n_exo + i]); the
+        # stochastic solvers see them fixed at their steady-state values (see pydyn.varexo_det)
+        self.exo_det_names = [d["name"] for d in mf.get("exogenous_deterministic", [])]
+        self.n_exo_det = len(self.exo_det_names)
+        self._ixd = {v: i for i, v in enumerate(self.exo_det_names)}
 
         info = mf["model_info"]
         lli = np.array(info["lead_lag_incidence"], dtype=int).reshape(self.n_endo, -1)
@@ -145,12 +151,16 @@ class Model:
                 if shift != 0:
                     raise ValueError("lagged exogenous should have been removed by the preprocessor")
                 return f"x[{self._ix[name]}]"
+            if name in self._ixd:
+                if shift != 0:
+                    raise ValueError("lagged exogenous should have been removed by the preprocessor")
+                return f"x[{self.n_exo + self._ixd[name]}]"
             if name in self._ip:
                 return f"params[{self._ip[name]}]"
             return None
 
         return Translator(resolve, steady=self._steady_ref("ss[{}]"),
-                          shiftable=set(self._ie) | set(self._ix))
+                          shiftable=set(self._ie) | set(self._ix) | set(self._ixd))
 
     def _steady_ref(self, fmt):
         def steady(v):
@@ -167,13 +177,15 @@ class Model:
                 return f"y[{self._ie[name]}]"
             if name in self._ix:
                 return f"x[{self._ix[name]}]"
+            if name in self._ixd:
+                return f"x[{self.n_exo + self._ixd[name]}]"
             if name in self._ip:
                 return f"params[{self._ip[name]}]"
             return None
 
         # in the static model STEADY_STATE(v) is v itself
         return Translator(resolve, steady=self._steady_ref("y[{}]"),
-                          shiftable=set(self._ie) | set(self._ix))
+                          shiftable=set(self._ie) | set(self._ix) | set(self._ixd))
 
     @staticmethod
     def _locals(block):
@@ -193,13 +205,16 @@ class Model:
         structural non-zeros of a derivative in the order of the preprocessor's JSON. The same
         source runs with Python floats (expr.FAST_NAMESPACE) and with numpy (expr.NAMESPACE)."""
         tr.temps = {d["temporary_term"] for k, v in block.items() if k.startswith("temporary_terms_") for d in v}
-        for key in ("external_functions_temporary_terms_", "external_functions_temporary_terms_jacobian"):
-            if block.get(key):
-                raise NotImplementedError("external functions are not supported")
+        tr.temps |= external.term_names(block)
         assign = [f"    {safe_name(k)} = {tr(v)}" for k, v in self._locals(block)]
 
         def temps(key):
-            return [f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}" for d in block.get(key, [])]
+            lines = [(d["temporary_term"], f"    {temp_name(d['temporary_term'])} = {tr(d['value'])}")
+                     for d in block.get(key, [])]
+            ext = block.get("external_functions_" + key, [])
+            if not ext:
+                return [ln for _, ln in lines]
+            return external.order_lines(external.section_lines(ext, tr, self._ext_names), lines)
 
         def function(fn, body, values):
             hoisted = {}
@@ -244,7 +259,8 @@ class Model:
         cached, cache_file = None, None
         if self._cache:
             h = hashlib.sha256()
-            for part in (_CACHE_TAG, repr((self.endo_names, self.exo_names, self.param_names, HOIST)).encode(),
+            for part in (_CACHE_TAG, repr((self.endo_names, self.exo_names, self.param_names, HOIST,
+                                           self.exo_det_names)).encode(),
                          dyn_b, sta_b):
                 h.update(len(part).to_bytes(8, "little"))
                 h.update(part)
@@ -258,12 +274,21 @@ class Model:
             except Exception:  # noqa: BLE001 - missing or unreadable cache: regenerate
                 cached = None
         if cached is None:
-            dyn, sta = json.loads(dyn_b)["dynamic_model"], json.loads(sta_b)["static_model"]
+            dyn_t, sta_t = dyn_b.decode(), sta_b.decode()
+            self._ext_names = external.function_names([dyn_t, sta_t])
+            if self._ext_names:
+                dyn_t, sta_t = (external.substitute(t, self._ext_names) for t in (dyn_t, sta_t))
+            try:
+                dyn, sta = json.loads(dyn_t)["dynamic_model"], json.loads(sta_t)["static_model"]
+            except json.JSONDecodeError:
+                dyn = json.loads(external.repair_json(dyn_t))["dynamic_model"]
+                sta = json.loads(external.repair_json(sta_t))["static_model"]
             src_d, meta = self._build(self._tr_dynamic(), dyn, "dynamic")
             src_s, meta_s = self._build(self._tr_static(), sta, "static")
             meta.update(meta_s)
             src = src_d + "\n" + src_s
             code = compile(src, f"<pydyn:{self.json_dir}>", "exec")
+            meta["external_functions"] = self._ext_names
             cached = {"source": src, "meta": meta}
             if cache_file is not None:
                 try:
@@ -279,8 +304,24 @@ class Model:
                     pass                                             # read-only location: work without a cache
         self.source = cached["source"]
         self._meta = meta = cached["meta"]
+        self._ext_names = meta.get("external_functions", [])
         self._exec(code)
         self.jac_dims, self.jac_rows, self.jac_cols = meta["dynamic_jac"]
+        # with varexo_det: full derivatives (columns [y(-1), y, y(+1), x, x_det]) are kept in
+        # _det_view; the attributes and methods below give the stochastic view without the x_det columns
+        self._det_view = None
+        if self.n_exo_det:
+            nx = 3 * self.n_endo + self.n_exo
+            full = {"dynamic_jac": (self.jac_dims, self.jac_rows, self.jac_cols)}
+            keep = {"dynamic_jac": self.jac_cols < nx}
+            for fn in ("dynamic_hess", "dynamic_third"):
+                rows, cols = meta[fn]
+                full[fn] = (rows, cols)
+                keep[fn] = np.all(cols < nx, axis=1) if len(rows) else np.zeros(0, bool)
+            self._det_view = {"full": full, "keep": keep}
+            k = keep["dynamic_jac"]
+            self.jac_dims = (self.jac_dims[0], nx)
+            self.jac_rows, self.jac_cols = self.jac_rows[k], self.jac_cols[k]
         self._jac_entries = list(zip(self.jac_rows.tolist(), self.jac_cols.tolist()))
         # highest derivative order the preprocessor computed (a linear model has an empty Hessian)
         self.max_deriv_order = 1 + sum(f"dynamic_g{o}_sparse_indices" in self._deriv_keys for o in (2, 3))
@@ -293,7 +334,17 @@ class Model:
         for ns in (self._fn, self._ff):
             ns.update(self.functions)
             ns["np"] = np
+            self._bind_external(ns)
             exec(code, ns)  # noqa: S102 - generated from the model
+
+    def _bind_external(self, ns):
+        """Names the generated code uses for external functions (see pydyn.external)."""
+        if self._ext_names:
+            table = self.__dict__.get("_ext_table")
+            if table is None:
+                mod_dir = self.json_dir.parents[2] if len(self.json_dir.parents) > 2 else None
+                table = self._ext_table = external.ExternalFunctions(self.functions, mod_dir)
+            external.bind(ns, self._ext_names, table)
 
     # ------------------------------------------------------------------ statements
     def _param_translator(self, extra=None):
@@ -370,6 +421,7 @@ class Model:
         self.initval: dict[str, float] = {}
         self.endval: dict[str, float] = {}
         self.det_shocks: list = []                 # (exo index, first period, last period, value), 1-based
+        self.det_shocks_exo_det: list = []         # the same for varexo_det variables (index in exo_det_names)
         self.Sigma_e = np.zeros((self.n_exo, self.n_exo))
         self.measurement_errors: dict[str, float] = {}
         self.occbin_constraints = []
@@ -500,10 +552,18 @@ class Model:
                 self.options.setdefault(kind + "_all", []).append(st)
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
+        elif kind == "heteroskedastic_shocks":
+            pass                                   # read by pydyn.heteroskedastic (heteroskedastic_filter)
+        elif kind == "estimation_data":
+            self.options[kind] = st.get("options", {})          # the data command: read by pydyn.dates / Estimation
         elif kind in ("write_latex_dynamic_model", "write_latex_static_model",
                       "write_latex_original_model", "write_latex_steady_state_model",
-                      "collect_latex_files", "write_latex_definitions"):
-            pass
+                      "collect_latex_files", "write_latex_definitions", "write_latex_parameter_table",
+                      "write_latex_prior_table"):
+            # no .tex file is written: say so once instead of ignoring the statement silently
+            from .options import warn_once
+            warn_once(self, f"{kind}: LaTeX output is not implemented in pydyn; the statement writes no file "
+                            "(the model, parameters and priors are available as Python objects)", stacklevel=2)
         else:
             self.unhandled_statements.append(kind)
 
@@ -529,8 +589,11 @@ class Model:
             for v in d["values"]:
                 try:
                     n = int(v["period2"]) - int(v["period1"]) + 1
-                except (TypeError, ValueError):            # dates: refused by perfect_foresight
-                    n = 1
+                except (TypeError, ValueError):            # dates (pydyn.dates)
+                    try:
+                        n = (_dates.Date.parse(v["period2"]) - _dates.Date.parse(v["period1"])) + 1
+                    except (ValueError, TypeError):
+                        n = 1
                 vals.append(self._det_value(v["value"], n))
 
     def _histval_values(self, st):
@@ -569,7 +632,11 @@ class Model:
         self._det_values(st)
         for d in st.get("deterministic_shocks", []):
             for v, val in zip(d["values"], self._stmt_values[id(st)][d["var"]]):
-                self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), val))
+                p1, p2 = (_dates.Date.parse(x) if _dates.is_date_value(x) else int(x) for x in (v["period1"], v["period2"]))
+                if d["var"] in self._ixd:        # shocks on varexo_det (M_.det_shocks with exo_det = true)
+                    self.det_shocks_exo_det.append((self._ixd[d["var"]], p1, p2, val))
+                    continue
+                self.det_shocks.append((ix[d["var"]], p1, p2, val))
         for key in ("skewness", "coskewness"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")
@@ -633,6 +700,8 @@ class Model:
         is used, which gives nan/inf exactly as before."""
         y = np.asarray(y, float)
         x = np.zeros(self.n_exo) if x is None else np.asarray(x, float)
+        if self.n_exo_det and x.shape[0] == self.n_exo:
+            x = np.concatenate([x, self.exo_det_steady()])
         params = self.params if params is None else np.asarray(params, float)
         if CODEGEN == "fast":
             try:
@@ -659,11 +728,25 @@ class Model:
 
     def dynamic_jac(self, yy, x=None, params=None, ss=None):
         """Dense Jacobian, columns ordered [y(-1), y, y(+1), exogenous]."""
-        return self._dense("dynamic_jac", self._values("dynamic_jac", yy, x, params, ss))
+        g = np.zeros(self.jac_dims)
+        g[self.jac_rows, self.jac_cols] = self.dynamic_jac_values(yy, x, params, ss)
+        return g
 
     def dynamic_jac_values(self, yy, x=None, params=None, ss=None):
         """Structural non-zeros of the dynamic Jacobian, at ``(jac_rows, jac_cols)``."""
-        return self._values("dynamic_jac", yy, x, params, ss)
+        v = self._values("dynamic_jac", yy, x, params, ss)
+        return v if self._det_view is None else v[self._det_view["keep"]["dynamic_jac"]]
+
+    def dynamic_full_derivs(self, order, yy, x=None, params=None, ss=None):
+        """``(rows, cols, vals)`` of the order-``order`` derivatives including the varexo_det columns
+        (columns ordered [y(-1), y, y(+1), exogenous, deterministic exogenous], 0-based)."""
+        fn = {1: "dynamic_jac", 2: "dynamic_hess", 3: "dynamic_third"}[order]
+        vals = self._values(fn, yy, x, params, ss)
+        if order == 1:
+            _, rows, cols = self._meta["dynamic_jac"]
+            return rows.astype(np.int32), cols.astype(np.int32)[:, None], vals
+        rows, cols = self._meta[fn]
+        return rows, cols, vals
 
     def dynamic_sparse_derivs(self, order, yy, x=None, params=None, ss=None):
         """Order-``order`` derivatives of the dynamic model as (rows, cols, vals).
@@ -673,12 +756,20 @@ class Model:
         """
         if order == 1:
             return (self.jac_rows.astype(np.int32), self.jac_cols.astype(np.int32)[:, None],
-                    self._values("dynamic_jac", yy, x, params, ss))
+                    self.dynamic_jac_values(yy, x, params, ss))
         fn = {2: "dynamic_hess", 3: "dynamic_third"}.get(order)
         if fn is None:
             raise NotImplementedError("derivatives above third order")
         rows, cols = self._meta[fn]
-        return rows, cols, self._values(fn, yy, x, params, ss)
+        vals = self._values(fn, yy, x, params, ss)
+        if self._det_view is not None:
+            k = self._det_view["keep"][fn]
+            rows, cols, vals = rows[k], cols[k], vals[k]
+        return rows, cols, vals
+
+    def exo_det_steady(self):
+        """Steady-state values of the varexo_det variables (initval, else 0), as oo_.exo_det_steady_state."""
+        return np.array([self.initval.get(v, 0.0) for v in self.exo_det_names], float)
 
     def exo_steady(self, terminal=False):
         src = {**self.initval, **self.endval} if terminal else self.initval

@@ -6,7 +6,7 @@
 # display_*_variance_decomposition, get_filtered_time_series, add_filter_subtitle,
 # check_measurement_error_requested_vars, compute_variance_decomposition}.m,
 # matlab/matrix_solver/lyapunov_symm.m, matlab/get_lower_cholesky_covariance.m,
-# matlab/+pruned_SS/pruned_state_space_system.m (order 2), matlab/sample_hp_filter.m,
+# matlab/+pruned_SS/{pruned_state_space_system, commutation, prodmom}.m (orders 2 and 3), matlab/sample_hp_filter.m,
 # matlab/one_sided_hp_filter.m, the Baxter-King filter of dseries and mex/sources/disclyap_fast.
 #
 # This program is free software: you can redistribute it and/or modify it under the terms of the
@@ -20,7 +20,8 @@
   the frequency domain, unconditional and conditional variance decompositions, optional
   measurement errors;
 * second order: the plain ``order=2`` moments (first-order covariances plus the ``ghs2`` mean
-  correction) and the pruned-state-space moments (``pruning``);
+  correction) and the pruned-state-space moments (``pruning``); third order: pruned-state-space
+  moments only (``order=3, pruning``), as in Dynare, without variance decompositions;
 * moments of a simulated path (``disp_moments``), with the HP, one-sided HP and Baxter-King filters;
 * ``stoch_simul_moments``: everything ``stoch_simul`` prints for a variable list, and
   ``Moments.format()`` to print it in a layout similar to Dynare's.
@@ -693,6 +694,280 @@ def _pruned_order2(R, Sigma, ivar, o):
     return E_y, Var_y, Corr_y, Corr_yi
 
 
+def _commutation_nm(n, m):
+    """``pruned_SS.commutation(n, m)``: reshape(kron(vec(eye(n)), eye(m)), n*m, n*m) (column-major)."""
+    return np.kron(np.eye(n).ravel(order="F")[:, None], np.eye(m)).reshape(n * m, n * m, order="F")
+
+
+def _gaussian_moment_tensor(S, k):
+    """E[u_{i1} ... u_{ik}] for u ~ N(0, S) (Isserlis), as a k-dimensional array (k even)."""
+    letters = "abcdefghij"[:k]
+
+    def matchings(idx):
+        if not idx:
+            yield []
+            return
+        a = idx[0]
+        for j in range(1, len(idx)):
+            rest = idx[1:j] + idx[j + 1:]
+            for mt in matchings(rest):
+                yield [(a, idx[j])] + mt
+
+    out = np.zeros((S.shape[0],) * k)
+    for mt in matchings(list(range(k))):
+        spec = ",".join(letters[p] + letters[q] for p, q in mt) + "->" + letters
+        out += np.einsum(spec, *([S] * len(mt)))
+    return out
+
+
+def _resF(a, r, c):
+    return np.reshape(a, (r, c), order="F")
+
+
+def _pruned_order3(R, Sigma, ivar, o):
+    """Order-3 pruned-state-space moments (``pruned_state_space_system.m`` with order 3, no derivatives).
+
+    Returns ``(E_y, Var_y, Corr_y, Corr_yi)`` for the variables ``ivar``. Literal port: vec/reshape are
+    column-major as in MATLAB."""
+    nar = o["ar"]
+    dr = R.dr
+    need = ("ghxx", "ghxu", "ghuu", "ghs2", "ghxxx", "ghxxu", "ghxuu", "ghuuu", "ghxss", "ghuss")
+    if not all(k in dr for k in need):
+        raise ValueError("third-order decision rules (ghxxx, ghxxu, ghxuu, ghuuu, ghxss, ghuss) are needed")
+    x, u = R.nspred, R.nexo
+    indx = R.index_states
+    indy = R.inv_order_var[ivar]
+    ny = len(indy)
+    Yss = R.ys[R.order_var]
+    g = {k: np.asarray(dr[k], float) for k in need}
+    g["ghs2"] = g["ghs2"].ravel()
+    hx, gx = R.ghx[indx], R.ghx[indy]
+    hu, gu = R.ghu[indx], R.ghu[indy]
+    hxx, gxx = g["ghxx"][indx], g["ghxx"][indy]
+    hxu, gxu = g["ghxu"][indx], g["ghxu"][indy]
+    huu, guu = g["ghuu"][indx], g["ghuu"][indy]
+    hss, gss = g["ghs2"][indx], g["ghs2"][indy]
+    hxxx, gxxx = g["ghxxx"][indx], g["ghxxx"][indy]
+    hxxu, gxxu = g["ghxxu"][indx], g["ghxxu"][indy]
+    hxuu, gxuu = g["ghxuu"][indx], g["ghxuu"][indy]
+    huuu, guuu = g["ghuuu"][indx], g["ghuuu"][indy]
+    hxss, gxss = g["ghxss"][indx], g["ghxss"][indy]
+    huss, guss = g["ghuss"][indx], g["ghuss"][indy]
+    E_uu = np.asarray(Sigma, float)
+    vE_uu = _vecF(E_uu)
+
+    # first order
+    Var_z1, Schur_u = lyapunov_symm(hx, hu @ E_uu @ hu.T, o["qz_criterium"], o["lyapunov_complex_threshold"])
+    if Schur_u.shape[1] > 0:
+        raise NotImplementedError("pruned_state_space_system: the pruned state space currently does not "
+                                  "support unit roots at higher order.")
+    E_xfxf = Var_z1
+    vE_xfxf = _vecF(E_xfxf)
+    hx_hx, hx_hu, hu_hu = np.kron(hx, hx), np.kron(hx, hu), np.kron(hu, hu)
+    I_xx = np.eye(x * x)
+    K_x_x = _commutation_nm(x, x)
+    invIx_hx = np.linalg.inv(np.eye(x) - hx)
+    QPuE4 = _gaussian_moment_tensor(E_uu, 4).ravel()          # E[kron(kron(kron(u,u),u),u)]
+    E_xfxf_uu = np.kron(E_xfxf, E_uu.T)
+
+    # second-order system: z = [xf; xs; kron(xf,xf)], inov = [u; kron(u,u)-E_uu(:); kron(xf,u)]
+    i1 = np.arange(x)
+    i2 = x + np.arange(x)
+    i3 = 2 * x + np.arange(x * x)
+    j1 = np.arange(u)
+    j2 = u + np.arange(u * u)
+    j3 = u + u * u + np.arange(x * u)
+    nz2, ni2 = 2 * x + x * x, u + u * u + x * u
+    A = np.zeros((nz2, nz2))
+    A[np.ix_(i1, i1)] = hx
+    A[np.ix_(i2, i2)] = hx
+    A[np.ix_(i2, i3)] = 0.5 * hxx
+    A[np.ix_(i3, i3)] = hx_hx
+    B = np.zeros((nz2, ni2))
+    B[np.ix_(i1, j1)] = hu
+    B[np.ix_(i2, j2)] = 0.5 * huu
+    B[np.ix_(i2, j3)] = hxu
+    B[np.ix_(i3, j2)] = hu_hu
+    B[np.ix_(i3, j3)] = (I_xx + K_x_x) @ hx_hu
+    c_xs = 0.5 * hss + 0.5 * huu @ vE_uu
+    Varinov = np.zeros((ni2, ni2))
+    Varinov[np.ix_(j1, j1)] = E_uu
+    Varinov[np.ix_(j2, j2)] = _resF(QPuE4, u * u, u * u) - np.outer(vE_uu, vE_uu)
+    Varinov[np.ix_(j3, j3)] = E_xfxf_uu
+    E_xs = invIx_hx @ (0.5 * hxx @ vE_xfxf + c_xs)
+    Om_z = B @ Varinov @ B.T
+    Var_z, err = disclyap_fast(A, Om_z, o["lyapunov_doubling_tol"])
+    if err:
+        print("PRUNED_STATE_SPACE_SYSTEM: error flag in disclyap_fast at order=2, use lyapunov_symm")
+        Var_z, _ = lyapunov_symm(A, Om_z, 1.0, o["lyapunov_complex_threshold"])
+    Var_z[np.ix_(i1, i2)] = 0
+    Var_z[np.ix_(i1, i3)] = 0
+    Var_z[np.ix_(i2, i1)] = 0
+    Var_z[np.ix_(i3, i1)] = 0
+
+    # objects for order 3
+    K_u_xx = _commutation_nm(u, x * x)
+    K_u_ux = _commutation_nm(u, u * x)
+    K_xx_x = _commutation_nm(x * x, x)
+    hx_hss2 = np.kron(hx, 0.5 * hss[:, None])
+    hu_hss2 = np.kron(hu, 0.5 * hss[:, None])
+    hx_hxx2 = np.kron(hx, 0.5 * hxx)
+    hxx2_hu = np.kron(0.5 * hxx, hu)
+    hx_hxu = np.kron(hx, hxu)
+    hxu_hu = np.kron(hxu, hu)
+    hx_huu2 = np.kron(hx, 0.5 * huu)
+    hu_huu2 = np.kron(hu, 0.5 * huu)
+    hx_hx_hx = np.kron(hx, hx_hx)
+    hx_hx_hu = np.kron(hx_hx, hu)
+    hu_hx_hx = np.kron(hu, hx_hx)
+    hu_hu_hu = np.kron(hu_hu, hu)
+    hx_hu_hu = np.kron(hx, hu_hu)
+    hu_hx_hu = np.kron(hu, hx_hu)
+    invIxx_hx_hx = np.linalg.inv(np.eye(x * x) - hx_hx)
+
+    E_xsxs = Var_z[np.ix_(i2, i2)] + np.outer(E_xs, E_xs)
+    E_xsxf_xf = Var_z[np.ix_(i2, i3)] + np.outer(E_xs, vE_xfxf)
+    E_xf_xfxs = Var_z[np.ix_(i3, i2)] + np.outer(vE_xfxf, E_xs)
+    E_xf_xfxf_xf = Var_z[np.ix_(i3, i3)] + np.outer(vE_xfxf, vE_xfxf)
+    M = (hxx @ _resF(K_xx_x @ _vecF(E_xf_xfxs), x * x, x) @ hx.T
+         + hxu @ np.kron(E_xs[:, None], E_uu) @ hu.T
+         + 1 / 6 * hxxx @ _resF(E_xf_xfxf_xf, x ** 3, x) @ hx.T
+         + 1 / 6 * huuu @ _resF(QPuE4, u ** 3, u) @ hu.T
+         + 3 / 6 * hxxu @ np.kron(vE_xfxf[:, None], E_uu) @ hu.T
+         + 3 / 6 * hxuu @ np.kron(E_xfxf, vE_uu[:, None]) @ hx.T
+         + 3 / 6 * hxss @ E_xfxf @ hx.T
+         + 3 / 6 * huss @ E_uu @ hu.T)
+    E_xrdxf = _resF(invIxx_hx_hx @ _vecF(M), x, x)
+    QPuE6 = _gaussian_moment_tensor(E_uu, 6).ravel()
+
+    # third-order system
+    # z = [xf; xs; kron(xf,xf); xrd; kron(xf,xs); kron(kron(xf,xf),xf)]
+    # inov = [u; kron(u,u)-E_uu(:); kron(xf,u); kron(xs,u); kron(kron(xf,xf),u); kron(kron(xf,u),u); kron(kron(u,u),u)]
+    i4 = nz2 + np.arange(x)
+    i5 = i4[-1] + 1 + np.arange(x * x)
+    i6 = i5[-1] + 1 + np.arange(x ** 3)
+    j4 = ni2 + np.arange(x * u)
+    j5 = j4[-1] + 1 + np.arange(x * x * u)
+    j6 = j5[-1] + 1 + np.arange(x * u * u)
+    j7 = j6[-1] + 1 + np.arange(u ** 3)
+    nz = i6[-1] + 1
+    ni = j7[-1] + 1
+    A = np.zeros((nz, nz))
+    A[np.ix_(i1, i1)] = hx
+    A[np.ix_(i2, i2)] = hx
+    A[np.ix_(i2, i3)] = 0.5 * hxx
+    A[np.ix_(i3, i3)] = hx_hx
+    A[np.ix_(i4, i1)] = 3 / 6 * hxss
+    A[np.ix_(i4, i4)] = hx
+    A[np.ix_(i4, i5)] = hxx
+    A[np.ix_(i4, i6)] = 1 / 6 * hxxx
+    A[np.ix_(i5, i1)] = hx_hss2
+    A[np.ix_(i5, i5)] = hx_hx
+    A[np.ix_(i5, i6)] = hx_hxx2
+    A[np.ix_(i6, i6)] = hx_hx_hx
+    B = np.zeros((nz, ni))
+    B[np.ix_(i1, j1)] = hu
+    B[np.ix_(i2, j2)] = 0.5 * huu
+    B[np.ix_(i2, j3)] = hxu
+    B[np.ix_(i3, j2)] = hu_hu
+    B[np.ix_(i3, j3)] = (I_xx + K_x_x) @ hx_hu
+    B[np.ix_(i4, j1)] = 3 / 6 * huss
+    B[np.ix_(i4, j4)] = hxu
+    B[np.ix_(i4, j5)] = 3 / 6 * hxxu
+    B[np.ix_(i4, j6)] = 3 / 6 * hxuu
+    B[np.ix_(i4, j7)] = 1 / 6 * huuu
+    B[np.ix_(i5, j1)] = hu_hss2
+    B[np.ix_(i5, j4)] = K_x_x @ hx_hu
+    B[np.ix_(i5, j5)] = hx_hxu + K_x_x @ hxx2_hu
+    B[np.ix_(i5, j6)] = hx_huu2 + K_x_x @ hxu_hu
+    B[np.ix_(i5, j7)] = hu_huu2
+    B[np.ix_(i6, j5)] = hx_hx_hu + np.kron(hx, K_x_x @ hx_hu) + hu_hx_hx @ K_u_xx
+    B[np.ix_(i6, j6)] = hx_hu_hu + hu_hx_hu @ K_u_ux + np.kron(hu, K_x_x @ hx_hu) @ K_u_ux
+    B[np.ix_(i6, j7)] = hu_hu_hu
+    C = np.zeros((ny, nz))
+    C[:, i1] = gx + 3 / 6 * gxss
+    C[:, i2] = gx
+    C[:, i3] = 0.5 * gxx
+    C[:, i4] = gx
+    C[:, i5] = gxx
+    C[:, i6] = 1 / 6 * gxxx
+    D = np.zeros((ny, ni))
+    D[:, j1] = gu + 3 / 6 * guss
+    D[:, j2] = 0.5 * guu
+    D[:, j3] = gxu
+    D[:, j4] = gxu
+    D[:, j5] = 3 / 6 * gxxu
+    D[:, j6] = 3 / 6 * gxuu
+    D[:, j7] = 1 / 6 * guuu
+    d = 0.5 * gss + 0.5 * guu @ vE_uu
+
+    E4_u_uuu = _resF(QPuE4, u, u ** 3)
+    E4_uuu_u = _resF(QPuE4, u ** 3, u)
+    Vi = np.zeros((ni, ni))
+    Vi[np.ix_(j1, j1)] = E_uu
+    Vi[np.ix_(j1, j4)] = np.kron(E_xs[None, :], E_uu)
+    Vi[np.ix_(j1, j5)] = np.kron(vE_xfxf[None, :], E_uu)
+    Vi[np.ix_(j1, j7)] = E4_u_uuu
+    Vi[np.ix_(j2, j2)] = _resF(QPuE4, u * u, u * u) - np.outer(vE_uu, vE_uu)
+    Vi[np.ix_(j3, j3)] = E_xfxf_uu
+    Vi[np.ix_(j4, j1)] = np.kron(E_xs[:, None], E_uu)
+    Vi[np.ix_(j4, j4)] = np.kron(E_xsxs, E_uu)
+    Vi[np.ix_(j4, j5)] = np.kron(E_xsxf_xf, E_uu)
+    Vi[np.ix_(j4, j7)] = np.kron(E_xs[:, None], E4_u_uuu)
+    Vi[np.ix_(j5, j1)] = np.kron(vE_xfxf[:, None], E_uu)
+    Vi[np.ix_(j5, j4)] = np.kron(E_xf_xfxs, E_uu)
+    Vi[np.ix_(j5, j5)] = np.kron(E_xf_xfxf_xf, E_uu)
+    Vi[np.ix_(j5, j7)] = np.kron(vE_xfxf[:, None], E4_u_uuu)
+    Vi[np.ix_(j6, j6)] = np.kron(E_xfxf, _resF(QPuE4, u * u, u * u))
+    Vi[np.ix_(j7, j1)] = E4_uuu_u
+    Vi[np.ix_(j7, j4)] = np.kron(E_xs[None, :], E4_uuu_u)
+    Vi[np.ix_(j7, j5)] = np.kron(vE_xfxf[None, :], E4_uuu_u)
+    Vi[np.ix_(j7, j7)] = _resF(QPuE6, u ** 3, u ** 3)
+    Varinov = Vi
+
+    def inovzlag(hxi):
+        E = np.zeros((ni, nz))
+        E[np.ix_(j6, i1)] = np.kron(hxi @ E_xfxf, vE_uu[:, None])
+        E[np.ix_(j6, i4)] = np.kron(hxi @ E_xrdxf.T, vE_uu[:, None])
+        E[np.ix_(j6, i5)] = np.kron(hxi @ _resF(K_xx_x @ _vecF(E_xsxf_xf), x, x * x), vE_uu[:, None])
+        E[np.ix_(j6, i6)] = np.kron(hxi @ _resF(E_xf_xfxf_xf, x, x ** 3), vE_uu[:, None])
+        return E
+
+    E_inovzlag1 = inovzlag(np.eye(x))
+    BinA = B @ E_inovzlag1 @ A.T
+    Om_z = B @ Varinov @ B.T + BinA + BinA.T
+    Var_z, err = disclyap_fast(A, Om_z, o["lyapunov_doubling_tol"])
+    if err:
+        print("PRUNED_STATE_SPACE_SYSTEM: error flag in disclyap_fast at order=3, use lyapunov_symm")
+        Var_z, _ = lyapunov_symm(A, Om_z, 1.0, o["lyapunov_complex_threshold"])
+    for a_, b_ in ((i1, i2), (i1, i3), (i2, i1), (i2, i4), (i2, i5), (i2, i6), (i3, i1), (i3, i4), (i3, i5),
+                   (i3, i6), (i4, i2), (i4, i3), (i5, i2), (i5, i3), (i6, i2), (i6, i3)):
+        Var_z[np.ix_(a_, b_)] = 0
+
+    Var_y = (C @ Var_z @ C.T + D @ E_inovzlag1 @ C.T + C @ E_inovzlag1.T @ D.T + D @ Varinov @ D.T)
+    Var_y = np.where(np.abs(Var_y) < 1e-12, 0.0, Var_y)
+    sd = np.sqrt(np.diag(Var_y))
+    sy = np.outer(sd, sd)
+    Corr_yi = []
+    with np.errstate(all="ignore"):
+        Corr_y = Var_y / sy
+        tmp = A @ E_inovzlag1.T @ D.T + B @ Varinov @ D.T
+        Ai = np.eye(nz)
+        hxi = np.eye(x)
+        E_inovzlagi = E_inovzlag1
+        Var_zi = Var_z
+        for _ in range(nar):
+            Var_zi = A @ Var_zi + B @ E_inovzlagi
+            hxi = hx @ hxi
+            E_inovzlagi = inovzlag(hxi)
+            Var_yi = C @ Var_zi @ C.T + C @ Ai @ tmp + D @ E_inovzlagi @ C.T
+            Corr_yi.append(Var_yi / sy)
+            Ai = Ai @ A
+    E_z = np.concatenate([np.zeros(x), E_xs, vE_xfxf, np.zeros(x), np.zeros(x * x), np.zeros(x ** 3)])
+    E_y = Yss[indy] + C @ E_z + d
+    return E_y, Var_y, Corr_y, Corr_yi
+
+
 def _corr_from_var(var, sd):
     s2 = np.diag(var)
     i1 = np.nonzero(np.abs(s2) > 1e-12)[0]
@@ -718,11 +993,15 @@ def theoretical_moments(m, dr=None, var_list=None, *, Sigma_e=None, H=None, **op
         raise ValueError("theoretical moments incompatible with one-sided HP filter. "
                          "Use simulated moments instead")
     order = o["order"]
-    if order >= 3:
-        raise NotImplementedError("Theoretical moments are implemented up to second order")
-    if order == 2 and m.max_deriv_order < 2:
+    if order > 3:
+        raise NotImplementedError("Theoretical moments are implemented up to third order (pruned)")
+    if order >= 2 and m.max_deriv_order < 2:
         warnings.warn("using order = 1 because Hessian is equal to zero")
         order = o["order"] = 1
+    if order == 3 and not o["pruning"]:
+        # stoch_simul.m: "There is no code for theoretical moments at 3rd order without pruning"
+        raise NotImplementedError("Dynare has no theoretical moments at third order without pruning; "
+                                  "use pruning=True (pruned state space) or simulated moments (periods > 0)")
     if dr is None:
         dr = solve(m, order)
     R = _Rules(m, dr)
@@ -738,9 +1017,9 @@ def theoretical_moments(m, dr=None, var_list=None, *, Sigma_e=None, H=None, **op
     if np.any(Hd != 0):
         obs_pos, isub, iobs = _intersect_stable(ivar, vid)
         me_present = len(obs_pos) > 0
-    pruned = order == 2 and bool(o["pruning"])
+    pruned = order >= 2 and bool(o["pruning"])
     if pruned and (o["hp_filter"] or o["bandpass"]):
-        raise NotImplementedError("theoretical moments incompatible with filtering at order 2. "
+        raise NotImplementedError(f"theoretical moments incompatible with filtering at order {order}. "
                                   "Use simulated moments instead")
     names = [m.endo_names[i] for i in ivar]
     res = Moments(kind="pruned" if pruned else "theoretical", order=order, pruning=pruned, filter=_filter_name(o),
@@ -748,7 +1027,7 @@ def theoretical_moments(m, dr=None, var_list=None, *, Sigma_e=None, H=None, **op
                   var_names=names, var_index=ivar, exo_names=list(m.exo_names), stationary=np.ones(nvar, bool),
                   ar=nar, mean=None, std=None, variance=None, var=None)
     if pruned:
-        E_y, Var_y, Corr_y, Corr_yi = _pruned_order2(R, Sigma, ivar, o)
+        E_y, Var_y, Corr_y, Corr_yi = (_pruned_order3 if order == 3 else _pruned_order2)(R, Sigma, ivar, o)
         s2 = np.diag(Var_y)
         sd = np.sqrt(s2)
         res.mean, res.var, res.variance, res.std = E_y, Var_y, s2, sd
@@ -758,7 +1037,7 @@ def theoretical_moments(m, dr=None, var_list=None, *, Sigma_e=None, H=None, **op
             if not o["nocorr"]:
                 res.corr = Corr_y
             res.autocorr = list(Corr_yi)
-        if not o["nodecomposition"] and R.nexo > 1:
+        if order == 2 and not o["nodecomposition"] and R.nexo > 1:     # Dynare: no decomposition at order 3
             ghu_s = R.ghu[R.index_states]
             A = R.ghx[R.index_states, :]
             idx = R.inv_order_var[ivar]

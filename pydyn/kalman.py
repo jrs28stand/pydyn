@@ -236,11 +236,15 @@ def kalman_filter(Y, a, P, T, QQ, H, z, kalman_tol=1e-10, riccati_tol=1e-6, pres
     series in each period) selects the missing-observations filter; ``no_more_missing`` is the
     0-based first period from which no observation is missing.
     Returns minus the log likelihood summed after the presample (``inf`` if singular).
+    ``QQ`` may be a (n, n, periods + 1) array (``heteroskedastic_filter``): period ``t`` (0-based) then
+    uses ``QQ[:, :, t + 1]`` and the filter never switches to the steady-state gain, as in Dynare.
     """
     pp, smpl = Y.shape
     z = np.asarray(z, int)
     Tt = T.T
     lik = np.zeros(smpl)
+    qvec = np.ndim(QQ) == 3
+    QQv = QQ
     notsteady, F_singular = True, True
     oldK = np.inf
     t = 0
@@ -250,6 +254,8 @@ def kalman_filter(Y, a, P, T, QQ, H, z, kalman_tol=1e-10, riccati_tol=1e-6, pres
     K = iF = log_dF = None
     zz = np.ix_(z, z)
     while notsteady and t < smpl:
+        if qvec:
+            QQ = QQv[:, :, t + 1]
         if missing:
             d = data_index[t]
             if len(d) == 0:
@@ -273,7 +279,7 @@ def kalman_filter(Y, a, P, T, QQ, H, z, kalman_tol=1e-10, riccati_tol=1e-6, pres
         K = P[:, zt] @ iF
         P = T @ (P - K @ P[zt, :]) @ Tt + QQ
         a = T @ (a + K @ v)
-        if not missing or t >= no_more_missing:
+        if (not missing or t >= no_more_missing) and not qvec:
             notsteady = np.max(np.abs(K.ravel() - oldK)) > riccati_tol
             oldK = K.ravel()
         t += 1
@@ -312,8 +318,12 @@ def kalman_filter_d(Y, a, Pinf, Pstar, T, QQ, H, z, kalman_tol=1e-10, diffuse_ka
             return 0
         return int(np.sum(np.linalg.svd(M, compute_uv=False) > diffuse_kalman_tol))
 
+    qvec = np.ndim(QQ) == 3
+    QQv = QQ
     while t < smpl and diffuse_rank(Pinf if missing else Pinf[np.ix_(z, z)]):
         s = t + 1
+        if qvec:
+            QQ = QQv[:, :, t + 1]
         if missing:
             d = data_index[t]
             if len(d) == 0:
@@ -373,7 +383,11 @@ def univariate_kalman_filter(Y, a, P, T, QQ, Hdiag, Z, kalman_tol=1e-10, riccati
     notsteady = True
     full = np.arange(pp)
     t = 0
+    qvec = np.ndim(QQ) == 3
+    QQv = QQ
     while notsteady and t < smpl:
+        if qvec:
+            QQ = QQv[:, :, t + 1]
         d = full if data_index is None else data_index[t]
         P = (P + P.T) / 2
         for i, di in enumerate(d):
@@ -393,7 +407,7 @@ def univariate_kalman_filter(Y, a, P, T, QQ, Hdiag, Z, kalman_tol=1e-10, riccati
                 return (np.nan, lik) if return_lik else np.nan
         a = T @ a
         P = T @ P @ Tt + QQ
-        if t >= no_more_missing:
+        if t >= no_more_missing and not qvec:
             diff = np.abs(K.ravel() - oldK)
             notsteady = bool(np.nanmax(diff) > riccati_tol) if not np.all(np.isnan(diff)) else False
             oldK = K.ravel().copy()
@@ -434,8 +448,12 @@ def univariate_kalman_filter_d(Y, a, Pinf, Pstar, T, QQ, Hdiag, Z, kalman_tol=1e
 
     new_rank = rank(Pinf)
     t = s = 0
+    qvec = np.ndim(QQ) == 3
+    QQv = QQ
     while new_rank and t < smpl:
         s = t + 1
+        if qvec:
+            QQ = QQv[:, :, t + 1]
         d = full if data_index is None else data_index[t]
         for di in d:
             Zi = Z[di]

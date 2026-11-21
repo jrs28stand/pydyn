@@ -56,7 +56,7 @@ _DEFAULTS = dict(
     presample=0, diffuse_filter=False, lik_init=1, kalman_algo=0, kalman_tol=1e-10,
     diffuse_kalman_tol=1e-6, qz_criterium=None, filtered_vars=False, filter_step_ahead=None,
     filter_covariance=False, smoothed_state_uncertainty=False, parameter_set="calibration",
-    varobs=None, replicate_dynare_bugs=False, Harvey_scale_factor=10.0,
+    varobs=None, replicate_dynare_bugs=False, Harvey_scale_factor=10.0, heteroskedastic_filter=False,
 )
 PARAMETER_SETS = ("calibration", "posterior_mode", "posterior_mean", "posterior_median", "mle_mode",
                   "prior_mode", "prior_mean")
@@ -423,8 +423,20 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
     iF = np.zeros((smpl, pp, pp))
     L = np.zeros((smpl, mm, mm))
     P = np.zeros((smpl + 1, mm, mm))
+    # heteroskedastic_filter: Q is (n_exo, n_exo, smpl + 1); period t (0-based) predicts with Q[:, :, t + 1]
+    # and its smoothed shocks use Q[:, :, t] (missing_DiffuseKalmanSmootherH1_Z.m)
+    qvec = np.ndim(Q) == 3
+    Qv = Q
+    if qvec:
+        Q = Qv[:, :, 0]
     QQ = R @ Q @ R.T
     QRt = Q @ R.T
+
+    def QQ_at(t):
+        return R @ Qv[:, :, t + 1] @ R.T if qvec else QQ
+
+    def QRt_at(t):
+        return Qv[:, :, t] @ R.T if qvec else QRt
     a0, P0 = (np.zeros(mm) if a_zero is None else np.asarray(a_zero, float)), Pstar1.copy()
     if a_pred is not None:
         a[0] = a_pred
@@ -441,6 +453,7 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
         Pstar[0] = T @ Pstar[0] @ Tt + QQ
     while new_rank and t < smpl:
         di = di_list[t]
+        QQ = QQ_at(t)
         store_forecast = True
         if len(di) == 0:
             kind[t] = "missing"
@@ -506,6 +519,7 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
     while t < smpl:
         P[t] = np.tril(P[t]) + np.tril(P[t], -1).T
         di = di_list[t]
+        QQ = QQ_at(t)
         if len(di) == 0:
             atilde[t] = a[t]
             L[t] = T
@@ -560,7 +574,7 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
             if want_V:
                 N[t] = ZZ.T @ iFt @ ZZ + L[t].T @ N[t + 1] @ L[t]
         alphahat[t] = a[t] + P[t] @ r[t]
-        etahat[t] = QRt @ r[t]
+        etahat[t] = QRt_at(t) @ r[t]
         if want_V:
             V[t] = P[t] - P[t] @ N[t] @ P[t]
     if d == 0:
@@ -607,7 +621,7 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
                     N1[t] = Tt @ N1[t + 1] @ Ls
                     N2[t] = Tt @ N2[t + 1] @ (Tt if compat else T)     # Dynare has T' twice
             alphahat[t] = a[t] + Pstar[t] @ r0[t] + Pinf[t] @ r1[t]
-            etahat[t] = QRt @ r0[t]
+            etahat[t] = QRt_at(t) @ r0[t]
             if want_V:
                 x = Pinf[t] @ N1[t] @ Pstar[t]
                 V[t] = Pstar[t] - Pstar[t] @ N[t] @ Pstar[t] - x.T - x - Pinf[t] @ N2[t] @ Pinf[t]
@@ -623,6 +637,9 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
 # --------------------------------------------------------------------------------- univariate smoother
 def _smoother_univariate(T, Z, R, Q, Hd, Pinf1, Pstar1, Y, di_list, nk, kalman_tol, dk_tol,
                          want_V, want_PK, compat=False, a_pred=None, a_zero=None):
+    if np.ndim(Q) == 3:
+        raise NotImplementedError("heteroskedastic_filter: only the multivariate smoother is implemented "
+                                  "(the univariate smoother, kalman_algo 2 or 4 or after a singularity, is not)")
     """Port of ``missing_DiffuseKalmanSmootherH3_Z`` (no OccBin). ``Hd`` is the diagonal of the
     measurement-error covariance. ``compat=True`` keeps a defect of Dynare 7.2 in the smoothed
     state uncertainty of the diffuse phase (see ``smooth``)."""
@@ -926,7 +943,8 @@ def _initial_state(model, names, state_var, ys, params, loglinear):
 
 
 _FROM_ESTIMATION = ("datafile", "first_obs", "nobs", "prefilter", "loglinear", "logdata", "presample", "lik_init",
-                    "diffuse_filter", "kalman_algo", "kalman_tol", "diffuse_kalman_tol", "Harvey_scale_factor")
+                    "diffuse_filter", "kalman_algo", "kalman_tol", "diffuse_kalman_tol", "Harvey_scale_factor",
+                    "heteroskedastic_filter")
 
 
 # --------------------------------------------------------------------------------- public: smoother
@@ -996,8 +1014,6 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
             if k in eo and k not in user and eo[k] is not None:
                 user[k] = eo[k]
     opts = _resolve_options(model, user)
-    if _statements(model, "heteroskedastic_shocks"):
-        raise NotImplementedError("heteroskedastic_shocks blocks are not supported by the smoother")
     varobs = list(opts["varobs"] or model.varobs)
     if not varobs:
         raise SmootherError("no observed variables: declare varobs or pass varobs=[...]")
@@ -1112,9 +1128,18 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     want_V, want_PK = bool(opts["smoothed_state_uncertainty"]), bool(opts["filter_covariance"])
     ktol, dtol = float(opts["kalman_tol"]), float(opts["diffuse_kalman_tol"])
 
+    Qs = Q
+    if opts["heteroskedastic_filter"]:                # time-varying Q (pydyn.heteroskedastic)
+        from . import heteroskedastic
+        from .dates import data_start_date
+        fd = None
+        if isinstance(opts["datafile"], str):
+            s0 = data_start_date(opts["datafile"], model.json_dir.parents[2])
+            fd = None if s0 is None else s0 + (first - 1)
+        Qs = heteroskedastic.qvec(Q, *heteroskedastic.q_arrays(model, smpl, first, fd))
     out = None
     if kalman_algo in (1, 3):
-        out = _smoother_multivariate(G, Z, Hs, Q, Hme, Pinf, Pstar, Yd, di_list, nk, ktol, dtol,
+        out = _smoother_multivariate(G, Z, Hs, Qs, Hme, Pinf, Pstar, Yd, di_list, nk, ktol, dtol,
                                      want_V, want_PK, compat, a_pred, a_zero)
         if out is None:
             kalman_algo += 1                        # Dynare: switch to the univariate filter
@@ -1122,7 +1147,7 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
         if not np.all(np.abs(Hme - np.diag(np.diag(Hme))) < 1e-14):
             raise NotImplementedError("the univariate smoother with correlated measurement errors is not "
                                       "implemented (Dynare augments the state vector)")
-        out = _smoother_univariate(G, Z, Hs, Q, np.diag(Hme).copy(), Pinf, Pstar, Yd, di_list, nk,
+        out = _smoother_univariate(G, Z, Hs, Qs, np.diag(Hme).copy(), Pinf, Pstar, Yd, di_list, nk,
                                    ktol, dtol, want_V, want_PK, compat, a_pred, a_zero)
     alphahat, updated, aK = out["alphahat"], out["updated"], out["aK"]
     eps = Yd.T - alphahat[:, mf]                      # NaN where the observation is missing

@@ -64,6 +64,7 @@ from scipy import optimize, sparse
 from scipy.sparse.linalg import splu
 
 from . import options as _opt
+from . import dates as _dates
 from .expr import NAMESPACE
 from .steady import (DYNARE_SOLVE_ALGO, DYNARE_TOLF, PORTED_SOLVE_ALGOS, dynare_solve, fill_auxiliary,
                      steady_state)
@@ -166,6 +167,8 @@ _SOLVER_KEYS = {
     "allow_nonfinite_values": "simul.allow_nonfinite_values",
 }
 _SETUP_KEYS = {"periods": "periods", "endval_steady": "simul.endval_steady",
+               "first_simulation_period": "simul.first_simulation_period",
+               "last_simulation_period": "simul.last_simulation_period",
                "endval_steady_nocheck": "simul.endval_steady_nocheck", "datafile": "datafile"}
 _DEFAULTS = {
     "dynatol.f": None, "dynatol.x": 1e-5, "simul.maxit": 50, "stack_solve_algo": 0, "no_homotopy": False,
@@ -177,6 +180,7 @@ _DEFAULTS = {
     "noprint": False, "periods": None, "simul.endval_steady": False, "simul.endval_steady_nocheck": False,
     "datafile": None, "simul.robust_lin_solve": False, "simul.allow_nonfinite_values": False,
     "simul.steady_solve_algo": None, "simul.steady_maxit": 50, "simul.steady_tolx": None, "solve_algo": None,
+    "simul.first_simulation_period": None, "simul.last_simulation_period": None,
 }
 #: options that Dynare itself only uses with bytecode/block or other linear solvers, with the reason
 _NOTES = {
@@ -298,7 +302,57 @@ def _number(model, expr):
 def _period(v, what):
     if isinstance(v, (int, np.integer)) or (isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v)):
         return int(v)
-    raise NotImplementedError(f"{what} given as a date or an expression ({v!r}): dates are not supported")
+    raise NotImplementedError(f"{what} given as a date or an expression ({v!r}): dates are only supported for the "
+                              "periods of shocks blocks (with first_simulation_period / last_simulation_period)")
+
+
+def _shock_period(v):
+    """A period of a shocks/mshocks block: an int, or a pydyn.dates.Date converted later (``_undate``)."""
+    if _dates.is_date_value(v):
+        return _dates.Date.parse(v[0] if isinstance(v, (list, tuple)) else v)
+    return _period(v, "period")
+
+
+def simulation_periods(o):
+    """get_simulation_periods.m: ``(periods, first_simulation_period, last_simulation_period)`` from the
+    options ``periods``, ``simul.first_simulation_period`` and ``simul.last_simulation_period`` (dates or
+    None)."""
+    first, last = o.get("simul.first_simulation_period"), o.get("simul.last_simulation_period")
+    first = None if first in (None, "", []) else _dates.Date.parse(first[0] if isinstance(first, list) else first)
+    last = None if last in (None, "", []) else _dates.Date.parse(last[0] if isinstance(last, list) else last)
+    periods = o.get("periods")
+    if periods is not None and int(periods) > 0:
+        periods = int(periods)
+        if first is not None and last is not None:
+            if periods != last - first + 1:
+                raise ValueError("Options first_simulation_period, last_simulation_period and periods are inconsistent")
+        elif first is not None:
+            last = first + periods - 1
+        elif last is not None:
+            first = last - periods + 1
+    else:
+        if first is None or last is None:
+            if first is None and last is None:
+                return None, None, None
+            raise ValueError("Options first_simulation_period and last_simulation_period must be set when periods is "
+                             "not provided")
+        periods = last - first + 1
+    return periods, first, last
+
+
+def _undate(ws, first, last):
+    """Dated shock periods (make_ex_.m): period index = date - first_simulation_period + 1."""
+    out = []
+    for j, p1, p2, val, typ in ws.det_shocks:
+        if isinstance(p1, _dates.Date) or isinstance(p2, _dates.Date):
+            if last is None:
+                raise PerfectForesightError("PERFECT_FORESIGHT_SETUP: temporary shocks are specified using dates but "
+                                            "neither first_simulation_period nor last_simulation_period option was passed")
+            p1, p2 = (p - first + 1 if isinstance(p, _dates.Date) else p for p in (p1, p2))
+            if p1 <= 0:
+                raise PerfectForesightError("make_ex_: some shocks are set at a date before the first simulation period")
+        out.append((j, p1, p2, val, typ))
+    ws.det_shocks = out
 
 
 def steady_command_algo(model):
@@ -311,6 +365,9 @@ def steady_command_algo(model):
 
 def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learnt_endval=()):
     """Replay the statements of the .mod file up to the last perfect_foresight_setup."""
+    if getattr(model, "n_exo_det", 0):
+        raise NotImplementedError("perfect foresight with varexo_det variables is not supported; declare them "
+                                  "with varexo (in a perfect foresight model they behave like any exogenous variable)")
     sts = model.statements
     idx = [i for i, st in enumerate(sts) if _is_setup(st)]
     last = idx[-1] if idx else len(sts) - 1
@@ -413,7 +470,7 @@ def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learn
                     raise NotImplementedError(f"shock on {d['var']}: deterministic exogenous variables are not supported")
                 known = stored.get(d["var"], [])
                 for k, v in enumerate(d["values"]):
-                    p1, p2 = _period(v["period1"], "period"), _period(v["period2"], "period")
+                    p1, p2 = _shock_period(v["period1"]), _shock_period(v["period2"])
                     val = known[k] if k < len(known) else _number(model, v["value"])
                     ws.det_shocks.append((ix[d["var"]], p1, p2, val, typ))
         elif kind == "initval_file":
@@ -795,8 +852,14 @@ def _make_paths(model, ws, periods):
 
 def exo_path(model, periods):
     """Exogenous path from initval/endval/histval and the deterministic ``shocks``/``mshocks``
-    blocks (levels), as ``perfect_foresight_setup`` builds ``oo_.exo_simul``."""
+    blocks (levels), as ``perfect_foresight_setup`` builds ``oo_.exo_simul``. Dated shocks use the
+    first_simulation_period of the perfect_foresight_setup statement."""
     ws = _replay(model, steady=False)
+    so = _statement_options(model, "perfect_foresight_setup")
+    _, first, last = simulation_periods({"periods": periods, "simul.first_simulation_period":
+                                         so.get("simul.first_simulation_period"),
+                                         "simul.last_simulation_period": so.get("simul.last_simulation_period")})
+    _undate(ws, first, last)
     return _make_paths(model, ws, int(periods))[1]
 
 
@@ -820,6 +883,7 @@ def _vector_functions(model):
             ns["get_power_deriv"] = _get_power_deriv_vec
             ns.update(model.functions)
             ns["np"] = np
+            model._bind_external(ns)
             exec(compile(model.source, f"<pydyn-vector:{model.json_dir}>", "exec"), ns)  # noqa: S102 - generated from the model
             fns = (ns["dynamic_resid"], ns["dynamic_jac"])
         except Exception:  # noqa: BLE001
@@ -2006,6 +2070,10 @@ def perfect_foresight(model, periods=None, params=None, exo=None, y_init=None, y
         ws.initval_series, ws.initval_periods = histvalf_initvalf(model, "INITVAL", {"datafile": options["datafile"]})
     if o["periods"] is None and ws.initval_periods is not None:
         o["periods"] = ws.initval_periods                 # options_.periods set by initval_file
+    sim_periods, first_date, last_date = simulation_periods(o)      # dates: first/last_simulation_period
+    if o["periods"] is None and sim_periods is not None:
+        o["periods"] = sim_periods
+    _undate(ws, first_date, last_date)
     if o["periods"] is None:
         raise ValueError("periods not given and not set in the .mod file")
     T = int(o["periods"])

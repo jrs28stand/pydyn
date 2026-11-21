@@ -1,5 +1,7 @@
 # pydyn vs Dynare 7.2: what is and is not supported
 
+Update 2026-11-21 (smaller gaps): rows marked 2026-11-21 supersede the "(old)" rows below them.
+
 Audit of the snapshot `/home/claude/audit/snap` (copy of `/home/claude/pydyn` taken at the start; nothing in the original was touched). Date 2026-11-20. Test suite on the snapshot: 654 passed, 2 skipped (`test_first_order.py:72`, "no IRFs in reference").
 Method: read README and all modules; read the manual (`the-model-file.rst`, `time-series.rst`, `reporting.rst`, `dynare-misc-commands.rst`); ran several hundred probe `.mod` files through `pydyn.run_preprocessor` + `pydyn.Model` and the relevant functions; ran real Dynare 7.2 under Octave for the four cases marked "(Dynare/Octave)". Probe scripts: `/home/claude/audit/probes/*.py` (names quoted as "probe hNN"), Octave runs in `/home/claude/audit/oct/`.
 
@@ -32,13 +34,15 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | var (plain) | V | Model.endo_names | every test |  |
 | var(log), var(deflator=), var(log_deflator=), long_name, TeX names | S | preprocessor + Model | probe h14: var(log) steady+first_order OK; deflator forms load | not compared with Dynare numbers; pydyn never reads deflators (relies on the preprocessor stationarisation) |
 | varexo | V | Model.exo_names | every test |  |
-| varexo_det | ER | Model.__init__ | probe cmds2: NotImplementedError "deterministic exogenous variables are not supported" at load | clear error, no support |
+| varexo_det | V (stochastic) | Model (x[n_exo+i]), pydyn.varexo_det | 2026-11-21: tests/test_varexo_det.py (ghud, order-2 ghxud/ghuud/ghudud, simult_varexo_det path vs Dynare, 1e-14) | perfect foresight refuses varexo_det; forecast command not ported |
+| (old) varexo_det | ER | Model.__init__ | probe cmds2: NotImplementedError "deterministic exogenous variables are not supported" at load | clear error, no support |
 | parameters / parameter initialisation (incl. MATLAB expressions) | V | Model.params; pydyn.matlab | test_first_order, test_matlab (156-file corpus), test_stage3 param loop | MATLAB subset only (see README) |
 | var_remove | S | preprocessor | probe h18: loads, variable removed | not validated |
 | predetermined_variables | S | preprocessor + dr_ordering | probe vs Dynare/Octave (my run): ghx/ghu identical to 4 digits on a k(+1) RBC; no repo test | no repo test |
 | trend_var, log_trend_var | S | preprocessor | examples/aguiar_gopinath_2007_trend loads and first_order solves (probe ex.py); README sweep claims match, not in tests/ | no test in tests/ |
 | model_local_variable | S | Model._locals | probe cmds: loads; # definitions V in test_local_variables_equal_hand_expansion |  |
-| external_function | ER | Model._build | probe h16: NotImplementedError "external functions are not supported" when the function is used in the model (declaration alone is accepted) | Model(functions=) only serves steady_state_model, not the model block |
+| external_function | V | pydyn.external | 2026-11-21: tests/test_external.py (Dynare tests/external_function; jacob_element/hess_element reproduced) | Python callables or .m files; order <= 2 (preprocessor limit) |
+| (old) external_function | ER | Model._build | probe h16: NotImplementedError "external functions are not supported" when the function is used in the model (declaration alone is accepted) | Model(functions=) only serves steady_state_model, not the model block |
 | Expressions: + - * / ^, comparisons, unary minus, parameters in expressions | V | expr.Translator | test_review::test_comparisons_are_numeric, test_chained_comparisons |  |
 | Functions exp log ln log10 sqrt cbrt sign abs sin..atanh max min normcdf normpdf erf erfc | S | expr.NAMESPACE | probe cmds: all evaluated through steady+first_order; max/min derivatives V (test_max_min_derivatives) | values of the other functions not compared with Dynare |
 | Constants inf, nan | S | expr | not checked | not checked |
@@ -57,7 +61,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | equation tag mcp (lmmcp) | IS | - | probe h2: tag kept in JSON, never read; PF with lmmcp returns a path with r=-1.32 violating r>0 | no mcp/lmmcp solver for PF, EP or stoch |
 | model_options (statement) | S | preprocessor | probe: loads |  |
 | model_remove, model_replace | S | preprocessor | probe cmds2/h18: loads, equation set updated | not validated |
-| write_latex_original_model, _dynamic_, _static_, _steady_state_model | IS | Model._exec_statement (pass) | probe: no warning, no file | no LaTeX output |
+| write_latex_* | refused with a warning | Model | tests/test_latex.py | no LaTeX output |
+| (old) write_latex_original_model, _dynamic_, _static_, _steady_state_model | IS | Model._exec_statement (pass) | probe: no warning, no file | no LaTeX output |
 | write_latex_definitions / parameter_table / prior_table / collect_latex_files | IS | skipped (native / pass) | probe: accepted, nothing written | no LaTeX output |
 | Auxiliary variables (AUX_ENDO_LEAD/LAG, AUX_EXO_*, MULT_*, LOG_*) | V | Model.aux_names, steady.fill_auxiliary | test_auxiliary | Lagrange multipliers (Ramsey) have no defining equation and are skipped by fill_auxiliary (test_optimal_policy) |
 
@@ -86,7 +91,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | shocks: measurement error variances (var obs; stderr x) | V | Model.measurement_errors | est_nk, smo_me tests |  |
 | shocks: measurement-error covariances / correlations | PW | - | probe: "shocks: measurement-error covariance" warning; Estimation warns again |  |
 | mshocks, mshocks(learnt_in), relative_to_initval | PW | - | probe: warned | Dynare: perfect-foresight-models/perfect_foresight_setup.m |
-| heteroskedastic_shocks | PW | - | probe: warned at load; Estimation ignores it (likelihood unchanged); smoother raises NotImplementedError | Dynare: matlab/kalman/get_Qvec_heteroskedastic_filter.m |
+| heteroskedastic_shocks + heteroskedastic_filter | V | pydyn.heteroskedastic, Estimation, smoother.smooth | 2026-11-21: tests/test_heteroskedastic.py (likelihood all filters, multivariate smoother) | univariate smoother refuses; Estimation.smoother refuses |
+| (old) heteroskedastic_shocks | PW | - | probe: warned at load; Estimation ignores it (likelihood unchanged); smoother raises NotImplementedError | Dynare: matlab/kalman/get_Qvec_heteroskedastic_filter.m |
 | shock_paths block | ER | Model.__init__ | probe: JSONDecodeError at load (7.2 preprocessor writes invalid JSON: "period1" :1, "period2" :2") | JSON repair missing |
 | special options (shocks: periods / stderr scale ...) | n/a | - | no separate "special options" command in 7.2 manual; covered by shocks rows |  |
 | get_shock_stderr_by_name, set_shock_stderr_value | S | pydyn.matlab; Model.set_shock_stderr | test_matlab |  |
@@ -123,7 +129,7 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 
 | Dynare command | Status | pydyn function | Evidence | Missing / note |
 |---|---|---|---|---|
-| stoch_simul (order 1, orders 2-3, moments, IRFs) | V | first_order, k_order, simulate, irf, moments.stoch_simul_moments | test_first_order, test_korder, test_stage3, test_moments (decision rules 1e-9, moments 1e-9, order-2 IRFs with common draws) | options: see table; order-3 IRFs not validated; no oo_.irfs / graph driver / relative_irf / spectral_density / partial_information; theoretical moments only to order 2 |
+| stoch_simul (order 1, orders 2-3, moments, IRFs) | V | first_order, k_order, simulate, irf, moments.stoch_simul_moments | test_first_order, test_korder, test_stage3, test_moments (decision rules 1e-9, moments 1e-9, order-2 IRFs with common draws) | options: see table; order-3 IRFs not validated; no oo_.irfs / graph driver / relative_irf / spectral_density / partial_information; theoretical moments to order 2, and order 3 with pruning (2026-11-21, tests/test_moments3.py) |
 | Orders >3 | ER | k_order | KOrderError / NotImplementedError | Dynare also stops at 3 for the k-order solver |
 | get_irf | n/a | pydyn.irf / FirstOrderSolution.irf |  | no oo_.irfs dictionary |
 | extended_path (stochastic) | PW | - | probe |  |
@@ -153,7 +159,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | estimated_params_bounds, estimated_params_remove | ER | Estimation._setup_parameters | probe: NotImplementedError (remove also warned at load) |  |
 | estimation (likelihood, posterior mode, Laplace, RWMH) | P | Estimation.log_likelihood/log_posterior/mode/hessian/laplace/sample | likelihood V; mode V (schorfheide); target density V; sampler algorithm vs reimplementation | see option table; first order only; no diagnostics, MDD (MHM), posterior statistics, posterior IRFs/smoother, forecasts |
 | model_comparison | ER | Model.__init__ | probe: JSONDecodeError at load (invalid JSON for the file list) | no function either; Dynare: estimation/model_comparison.m |
-| data (block) | PW | - | probe: statement estimation_data warned |  |
+| data (block) | V | Estimation (pydyn.dates.apply_data_command) | 2026-11-21: tests/test_dates.py | file, first_obs, last_obs, nobs; no series/xls |
+| (old) data (block) | PW | - | probe: statement estimation_data warned |  |
 | filter_initial_state | PW | - | probe: warned at load; Estimation likelihood unchanged; smoother raises | Dynare: get_init_state.m |
 | shock_decomposition | V | smoother.shock_decomposition | test_shock_decomposition_matches_dynare (7 cases incl. loglinear, diffuse, ME, init_state) | calibrated parameters only |
 | shock_groups / use_shock_groups | P | smoother.group_shocks | test_group_shocks (internal consistency only) | not validated vs Dynare; use_shock_groups option silently ignored by shock_decomposition(); Dynare: shock_decomposition/expand_group.m |
@@ -162,7 +169,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 | calib_smoother | V | smoother.smooth | test_smoother (14 cases, filtered, k-step, covariances, diffuse, missing data) | calibrated parameters only |
 | unit_root_vars | n/a | - | not in the 7.2 manual or preprocessor (removed) |  |
 | bvar_density, bvar_forecast, bvar_irf, data | PW | - | probe: warned | Dynare: matlab/+bvar |
-| dsge_var (estimation option), dsge_prior_weight | IS | - | probe h3/h12: ignored silently; likelihood equals plain DSGE | Dynare: dsge_var_likelihood.m |
+| dsge_var, dsge_varlag | V | pydyn.dsge_var via Estimation | 2026-11-21: tests/test_dsge_var.py (likelihood, finite and infinite weight, mode) | no DSGE-VAR posterior IRFs/forecasts |
+| (old) dsge_var (estimation option), dsge_prior_weight | IS | - | probe h3/h12: ignored silently; likelihood equals plain DSGE | Dynare: dsge_var_likelihood.m |
 | evaluate_planner_objective | V | pydyn.optimal_policy.evaluate_planner_objective, evaluate_planner_objective_perfect_foresight | test_optimal_policy (orders 1 and 2, Ramsey, discretion, histval and period-1 shocks, perfect foresight) | order > 2 refused (k_order_welfare MEX); the first simulated shock of stoch_simul(periods>0) must be passed as u= |
 | mh options, generate_trace_plots, internals | IS | - | see estimation option table | MATLAB utilities; no diagnostics |
 | method_of_moments, matched_moments, matched_irfs, matched_irfs_weights | PW | - | probe: warned; rbc_irf_matching example loads | Dynare: matlab/+mom |
@@ -197,7 +205,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 
 | Dynare command | Status | pydyn function | Evidence | Missing / note |
 |---|---|---|---|---|
-| epilogue | IS | - | probe: not in modfile.json (no warning, nothing executed) | epilogue variables never computed |
+| epilogue | V | pydyn.epilogue.Epilogue | 2026-11-21: tests/test_epilogue.py (epilogue_dynamic/static) | user calls it, as in Dynare; shock_decomposition(with_epilogue) not ported |
+| (old) epilogue | IS | - | probe: not in modfile.json (no warning, nothing executed) | epilogue variables never computed |
 | var_model | PW | - | probe: warned |  |
 | trend_component_model, var_expectation_model, var_expectation, pac_model, pac_target_info, pac_expectation, pac_target_nonstationary | PW | - | pac_model example: loads only if pac.initialize lines are removed (then warned); with them: ModelError at load (var_expectation.initialize, pac.initialize) | Dynare: matlab/+pac, +var_expectation, pac-tools |
 | heterogeneity_dimension, var(heterogeneity=), model(heterogeneity=), shocks(heterogeneity=), heterogeneity_* commands, rouwenhorst | PW | - | six shipped examples load with warnings; any pydyn function then fails with NameError (misleading) | Dynare: matlab/+heterogeneity |
@@ -232,7 +241,8 @@ Option tables: HV honoured and validated; H honoured, not validated; KW honoured
 
 | Dynare command | Status | pydyn function | Evidence | Missing / note |
 |---|---|---|---|---|
-| dseries / dates / time-series chapter | NA | numpy arrays; estimation.load_data / smoother.load_data (.m, .mat, .csv) | probe: date options in perfect_foresight_setup raise ValueError | no dseries; no date arithmetic; no .xls; first_obs/nobs as dates unsupported |
+| dates | V | pydyn.dates | 2026-11-21: tests/test_dates.py (arithmetic, dated PF shocks and first/last_simulation_period, data command, dated heteroskedastic periods) | no dseries; dates refused in initval_file/histval_file options and learnt_in |
+| (old) dseries / dates / time-series chapter | NA | numpy arrays; estimation.load_data / smoother.load_data (.m, .mat, .csv) | probe: date options in perfect_foresight_setup raise ValueError | no dseries; no date arithmetic; no .xls; first_obs/nobs as dates unsupported |
 | reporting chapter (report, page, graph, table ...) | NA | - | collard_2001_reporting example loads, 48 MATLAB statements skipped with warning | use matplotlib/pandas |
 
 ## 2. Option-level tables

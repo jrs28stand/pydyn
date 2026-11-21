@@ -924,6 +924,10 @@ _DEFAULTS = dict(
     bayesian_irf=False, irf=40, relative_irf=False, irf_shocks=None,
     mode_check=False, mode_check_neighbourhood_size=0.5, mode_check_symmetric_plots=True,
     mode_check_number_of_points=20, huge_number=1e7,
+    # time-varying shock variances (pydyn.heteroskedastic); endogenous prior (pydyn.endogenous_prior)
+    heteroskedastic_filter=False, endogenous_prior=False,
+    # DSGE-VAR (pydyn.dsge_var): dsge_var is the calibrated weight, "NaN"/True when it is estimated
+    dsge_var=None, dsge_varlag=4,
 )
 #: names used in the preprocessor's JSON (or old names) -> option names of the manual used here
 _ALIASES = {"mh_nblocks": "mh_nblck", "harvey_scale_factor": "Harvey_scale_factor",
@@ -1341,7 +1345,10 @@ class Estimation:
         m = self.model
         ys, params = steady_state(m, self.model_params(theta))
         params = np.array(params, float)
-        if not np.all(np.isfinite(params)):
+        finite = np.isfinite(params)
+        if "dsge_prior_weight" in m._ip:                    # dsge_var=Inf: an infinite weight is legitimate
+            finite[m._ip["dsge_prior_weight"]] = True
+        if not np.all(finite):
             raise SteadyStateError("parameters are NaN or Inf after the steady-state computation")
         n = m.n_endo
         J = m.dynamic_jac(np.tile(ys, 3), m.exo_steady(), params, ys)
@@ -1405,11 +1412,21 @@ class Estimation:
 
     def _setup_data(self, data):
         o = self.options
+        data_command = [st for st in self.model.statements if st.get("statementName") == "estimation_data"]
         if data is None:
-            if not o["datafile"]:
+            if not o["datafile"] and not data_command:
                 raise EstimationError("no data: pass data=... or set the datafile option")
-            data = o["datafile"]
+            data = o["datafile"] or data_command[-1].get("options", {}).get("file")
         base = self.model.json_dir.parents[2] if hasattr(self.model, "json_dir") else None
+        if not isinstance(data, (dict, np.ndarray)):                   # data command, dates (pydyn.dates)
+            from .dates import apply_data_command
+            if isinstance(data, (str, Path)) and data != o["datafile"]:
+                o = dict(o, datafile=data)
+            self.first_date = apply_data_command(self.model, o, base)
+            self.options.update({k: o[k] for k in ("datafile", "first_obs", "nobs")})
+            o, data = self.options, o["datafile"]
+        else:
+            self.first_date = None
         raw = load_data(data, self.varobs, base)
         if o["loglinear"] and not o["logdata"]:
             with np.errstate(all="ignore"):
@@ -1419,6 +1436,7 @@ class Estimation:
         if first < 1 or nobs < 1 or first - 1 + nobs > raw.shape[0]:
             raise EstimationError(f"first_obs={first} and nobs={nobs} are not consistent with the "
                                   f"{raw.shape[0]} observations in the data")
+        self._alldata = raw                              # with the observations before first_obs (DSGE-VAR)
         raw = raw[first - 1:first - 1 + nobs]
         self.rawdata = raw.copy()
         if o["prefilter"]:
@@ -1447,6 +1465,8 @@ class Estimation:
         """Minus the log likelihood; raises _Rejected with Dynare's reason when it is not defined."""
         o = self.options
         theta = np.asarray(theta, float)
+        if o["dsge_var"] is not None and o["dsge_var"] is not False:
+            return self._dsge_var_minus_loglik(theta, return_lik)
         Q, Hm = self.covariances(theta)
         if self._groups["cx"] and not _ispd(Q[np.ix_(self._Q_check, self._Q_check)]):
             raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)",
@@ -1473,6 +1493,7 @@ class Estimation:
         if trend is not None:
             Y = Y - trend
         QQ = R @ Q @ R.T
+        QQf = self._heteroskedastic_QQ(R, Q)          # QQ, or its (mm, mm, nobs + 1) path
         mm = T.shape[0]
         a = np.zeros(mm)
         pre = int(o["presample"])
@@ -1502,14 +1523,14 @@ class Estimation:
             Pstar, Pinf = kalman.compute_Pinf_Pstar(z, T, R, Q, o["qz_criterium"], self._restrict_columns)
             singular = False
             if algo == 3:
-                dLIK, dlik, a1, P = kalman.kalman_filter_d(Y, a, Pinf, Pstar, T, QQ, Hm, z, **dkw)
+                dLIK, dlik, a1, P = kalman.kalman_filter_d(Y, a, Pinf, Pstar, T, QQf, Hm, z, **dkw)
                 if np.isinf(dLIK):
                     singular = True               # as Dynare: redo the diffuse stage observation by observation
                 else:
                     a = a1
             if singular or algo == 4:
                 Zm, Hd = Zmat()
-                dLIK, dlik, a, P = kalman.univariate_kalman_filter_d(Y, np.zeros(mm), Pinf, Pstar, T, QQ, Hd, Zm, **dkw)
+                dLIK, dlik, a, P = kalman.univariate_kalman_filter_d(Y, np.zeros(mm), Pinf, Pstar, T, QQf, Hd, Zm, **dkw)
             if np.isnan(dLIK):
                 raise _Rejected("the diffuse filter did not leave the diffuse stage, or a variance is negative (info 45)", 45)
             dp = len(dlik)
@@ -1518,6 +1539,8 @@ class Estimation:
         di = None if self._data_index is None else self._data_index[dp:]
         nmm = max(self._no_more_missing - dp, 0)
         lik = None
+        if QQf.ndim == 3:
+            QQ = QQf[:, :, dp:]
         if algo in (1, 3):
             out = kalman.kalman_filter(Y[:, dp:], a, P, T, QQ, Hm, z, diffuse_periods=dp, data_index=di,
                                        no_more_missing=nmm, return_lik=True,
@@ -1541,6 +1564,60 @@ class Estimation:
         if return_lik:
             return LIK, np.concatenate([dlik, lik])[pre:]
         return LIK
+
+    def _dsge_var_minus_loglik(self, theta, return_lik=False):
+        """``dsge_var_likelihood.m`` (pydyn.dsge_var) in place of the Kalman-filter likelihood."""
+        from . import dsge_var
+        if return_lik:
+            raise NotImplementedError("DSGE-VAR: no per-observation likelihood")
+        o = self.options
+        nlag = int(o["dsge_varlag"])
+        if getattr(self, "_dvar_moments", None) is None:
+            dsge_var.check_model(self)
+            first = int(o["first_obs"])
+            if first - nlag < 1:
+                raise EstimationError(f"DSGE-VAR: first_obs ({first}) - {nlag} cannot be less than the first "
+                                      "observation in the dataset; increase first_obs")
+            self._dvar_moments = dsge_var.sample_moments(self._alldata[first - 1 - nlag:first - 1 + self.nobs], nlag)
+        Q, _ = self.covariances(theta)
+        if not _ispd(Q):
+            raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)",
+                            43, _pd_penalty(Q))
+        lam = dsge_var.weight_value(self.model, self.model_params(theta))
+        n = len(self.varobs)
+        k = n * nlag + 1
+        TT = self.nobs + nlag
+        if lam < (k + n) / TT:
+            raise _Rejected("dsge_prior_weight is below (number of VAR parameters + observables) / T (info 51)",
+                            51, abs(TT * lam - (k + n)))
+        try:
+            ys, G, Hs, params = self.solve(theta)
+        except SteadyStateError as exc:
+            raise _Rejected(f"steady state: {exc}", 20) from None
+        except BlanchardKahnError as exc:
+            code, pen = self._bk_penalty(theta)
+            raise _Rejected(f"solution: {exc}", code, pen) from None
+        r = self._restrict
+        const = ys[self._obs_decl]
+        if o["loglinear"]:
+            const = np.log(const)
+        lik, code, pen = dsge_var.minus_loglik(G[np.ix_(r, r)], Hs[r, :], Q, self._mf, const, lam, TT, nlag,
+                                               self._dvar_moments, o["qz_criterium"], o["lyapunov_complex_threshold"])
+        if code:
+            raise _Rejected(f"DSGE-VAR likelihood not defined (info {code})", code, pen)
+        self.last_filter = "DSGE-VAR"
+        return lik
+
+    def _heteroskedastic_QQ(self, R, Q):
+        """``R Q R'`` or, with the heteroskedastic_filter option, its path over the sample (pydyn.heteroskedastic)."""
+        if not self.options["heteroskedastic_filter"]:
+            return R @ Q @ R.T
+        from . import heteroskedastic
+        key = (self.nobs, int(self.options["first_obs"]), getattr(self, "first_date", None))
+        if getattr(self, "_het_key", None) != key:
+            self._het_arrays = heteroskedastic.q_arrays(self.model, *key)
+            self._het_key = key
+        return heteroskedastic.rqr(R, heteroskedastic.qvec(Q, *self._het_arrays))
 
     def log_likelihood(self, theta) -> float:
         """Log likelihood of the data at ``theta``; ``-inf`` if the steady state or the solution
@@ -1592,7 +1669,24 @@ class Estimation:
             self.last_info = "the prior density is zero, infinite or NaN (info 40/47)"
             self.last_code, self.last_penalty = 40, 0.1
             return -np.inf
+        if self.options["endogenous_prior"]:
+            lp = lp + self._endogenous_prior(theta)
         return ll + lp
+
+    def _endogenous_prior(self, theta):
+        """``lnpriormom`` of ``endogenous_prior.m`` (pydyn.endogenous_prior), added to the log prior."""
+        from .endogenous_prior import lnpriormom
+        if self.options["lik_init"] != 1:
+            raise EstimationError("Endogenous prior not supported with non-stationary models")
+        ss = self.state_space(theta)
+        T, R, Q = ss["T"], ss["R"], ss["Q"]
+        Pstar = kalman.lyapunov_symm(T, R @ Q @ R.T, self.options["qz_criterium"],
+                                     self.options["lyapunov_complex_threshold"])
+        Y = self.data.T - ss["constant"][:, None]
+        trend = self._trend(ss["params"], self.nobs)
+        if trend is not None:
+            Y = Y - trend
+        return lnpriormom(Y[:, self._no_more_missing:], Pstar, ss["z"], ss["H"])
 
     def objective(self, theta, bounds=None):
         """Dynare's objective function: ``(fval, code, penalty)`` with ``fval`` minus the log posterior
@@ -2121,6 +2215,9 @@ class Estimation:
         variable: series}, ``updated`` {name: E[y_t | data up to t]}."""
         if self.options["lik_init"] != 1:
             raise NotImplementedError("the smoother is implemented for lik_init=1 only")
+        if self.options["heteroskedastic_filter"]:
+            raise NotImplementedError("Estimation.smoother ignores heteroskedastic_filter; use "
+                                      "pydyn.smoother.smooth(model, estimation=est, theta=theta)")
         m = self.model
         ss = self.state_space(theta)
         G, Hs, Q = ss["G"], ss["Hfull"], ss["Q"]

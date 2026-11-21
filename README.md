@@ -24,13 +24,18 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Perfect foresight: controlled paths, `initval_file`/`histval_file`/`datafile` (CSV, .mat, .m), vector shock values, `robust_lin_solve`; MATLAB code reading or writing `oo_.steady_state` | done, validated (47 of Dynare's 66 deterministic tests agree to 2e-14; the rest differ for documented reasons) |
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | `loglinear` in `stoch_simul` (rules, IRFs, simulation and moments in logs; order 1 only, as in Dynare) | done, validated |
-| Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
+| Moments: theoretical (incl. HP/band-pass filtered, pruned order 2 and pruned order 3), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data, observation trends) | done, validated |
 | Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
 | Shock groups, `init2shocks`, real-time decomposition, squeeze; decomposition figures (bars, detail panels, year-on-year, flip, steady state) | done, validated incl. the plotted bars against Dynare's drawing calls |
 | Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
 | Posterior analysis (`pydyn.posterior`, `pydyn.posterior_plots`): posterior statistics and HPD intervals, modified harmonic mean, model comparison, convergence diagnostics (inefficiency factors, Geweke, Brooks-Gelman, Raftery-Lewis), jscale tuning, jumping covariances, posterior IRFs, mode_check, prior and posterior densities; csminwel ported (default optimiser when the .mod file gives no `mode_compute`; Dynare's default newrat is not ported) | done, validated (sampler reproduces Dynare's chains exactly given Dynare's random numbers) |
 | OccBin likelihood (piecewise Kalman filter, inversion filter), OccBin smoother and shock decomposition, estimation (`OccbinEstimation`: mode, Laplace, MH) | done, validated on Dynare's OccBin filter tests |
+| External functions in the model block (Python callables or `.m` files via the interpreter; Dynare's numerical derivatives when none are supplied) | done, validated on Dynare's tests/external_function |
+| `varexo_det` in stochastic models (decision-rule terms at orders 1-2, `simult_varexo_det` simulation) | done, validated (perfect foresight and order 3 refused) |
+| Estimation extras: `heteroskedastic_shocks`/`heteroskedastic_filter` (likelihood and multivariate smoother), `endogenous_prior`, DSGE-VAR (`dsge_var`, `dsge_varlag`, estimated weight) | done, validated |
+| Dynare dates (yearly to daily, Dynare's arithmetic): dated shocks and `first/last_simulation_period` in perfect foresight, the `data(file=, first_obs=1992Q3, ...)` command in estimation | done, validated (no dseries) |
+| `epilogue` block (`pydyn.epilogue`, applied to simulated or smoothed paths on request, as in Dynare) | done, validated |
 | Optimal policy (`pydyn.optimal_policy`): Ramsey (`ramsey_model`, old `ramsey_policy`, `planner_objective`, `planner_discount`, `instruments`, `ramsey_constraints` with perfect foresight), its steady state as `dyn_ramsey_static.m` (with or without a steady-state block/file conditional on the instruments), `evaluate_planner_objective` at orders 1 and 2 (Ramsey, discretion, simple rules, perfect foresight), `discretionary_policy`, `osr` with `optim_weights` or a planner objective (csminwel) | done, validated on Dynare's tests/optimal_policy, tests/discretionary_policy and examples/optimal_policy (see below) |
 
 ## Validation
@@ -207,9 +212,9 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 - MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
   dates), random numbers and file-system functions are not supported; see the section above.
-- Not handled: external
-  functions inside the model block, deterministic exogenous variables, heterogeneous-agent models,
-  measurement-error covariances.
+- Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
+  dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
+  (`write_latex_*` warns), `varexo_det` in perfect foresight and the `forecast` command.
 - Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other
   optimisers (and therefore `osr_params_bounds`, which need a constrained one), `analytic_derivation`,
   welfare beyond order 2 (Dynare's `k_order_welfare` MEX) and `mult_elimination` are refused.

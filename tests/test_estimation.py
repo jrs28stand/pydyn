@@ -785,9 +785,9 @@ def test_calibration_and_option_report(post):
     # options that are not: reported once, by name
     with pytest.warns(pydyn.options.UnsupportedOptionWarning) as rec:
         e2 = estimation.Estimation(est.model, forecast=8, moments_varendo=True, analytic_derivation=True, mh_recover=True,
-                                   load_mh_file=True, dsge_var=0.5, conditional_likelihood=True, nodiagnostic=True)
+                                   load_mh_file=True, conditional_likelihood=True, nodiagnostic=True)
     msg = str(rec[0].message)
-    for name in ("forecast", "moments_varendo", "analytic_derivation", "mh_recover", "load_mh_file", "dsge_var",
+    for name in ("forecast", "moments_varendo", "analytic_derivation", "mh_recover", "load_mh_file",
                  "conditional_likelihood"):
         assert name in msg and name in e2.unsupported_options
     assert "nodiagnostic" not in msg and "mode_file" not in msg and "sub_draws" not in msg
