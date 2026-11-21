@@ -788,12 +788,12 @@ def test_calibration_and_option_report(post):
     assert est.unsupported_options == [] and est.ignored_options == ["nodisplay"]
     o = est.options
     assert (o["mh_drop"], o["mh_conf_sig"], o["mh_nblck"], o["sub_draws"], o["mode_file"]) == (0.4, 0.8, 3, 90, "post_nk_mode0")
-    # options that are not: reported once, by name
+    # options that are not (moments_varendo is acted on since pydyn.posterior_moments): reported once, by name
     with pytest.warns(pydyn.options.UnsupportedOptionWarning) as rec:
-        e2 = estimation.Estimation(est.model, forecast=8, moments_varendo=True, analytic_derivation=True, mh_recover=True,
+        e2 = estimation.Estimation(est.model, forecast=8, analytic_derivation=True, mh_recover=True,
                                    load_mh_file=True, conditional_likelihood=True, nodiagnostic=True)
     msg = str(rec[0].message)
-    for name in ("forecast", "moments_varendo", "analytic_derivation", "mh_recover", "load_mh_file",
+    for name in ("forecast", "analytic_derivation", "mh_recover", "load_mh_file",
                  "conditional_likelihood"):
         assert name in msg and name in e2.unsupported_options
     assert "nodiagnostic" not in msg and "mode_file" not in msg and "sub_draws" not in msg

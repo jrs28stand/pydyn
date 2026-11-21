@@ -21,6 +21,7 @@ return a list of figures (at most nine panels per figure, laid out as Dynare's `
     plot_posteriors(est, mc, mode=None)    prior density, posterior kernel density, posterior mode
     plot_trace(mc)                         draws of every chain
     plot_brooks_gelman(mc, est)            univariate and multivariate convergence diagnostics
+    plot_posterior_series(sd)              posterior mean and deciles of smoothed / filtered series (pm3.m)
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from . import posterior
 from .plotting import DECOMP_COLORS, STYLES, layout, save  # noqa: F401  (save re-exported for convenience)
 
 __all__ = ["plot_mode_check", "plot_priors", "plot_posteriors", "posterior_density_data", "plot_trace", "trace_data",
-           "plot_brooks_gelman", "brooks_gelman_data", "save"]
+           "plot_brooks_gelman", "brooks_gelman_data", "posterior_series_data", "plot_posterior_series", "save"]
 
 
 def _grid(panels, style, title, legend=None, per_figure=9, shape=None):
@@ -48,7 +49,9 @@ def _grid(panels, style, title, legend=None, per_figure=9, shape=None):
         for ax, (name, lines, vlines) in zip(axes.ravel(), chunk):
             ax.set_facecolor(st["surface"])
             for x, y, role, label in lines:
-                if isinstance(role, int):
+                if isinstance(role, dict):
+                    kw = dict(role)
+                elif isinstance(role, int):
                     kw = dict(color=DECOMP_COLORS[role], ls="-", lw=1.0)
                 elif role == "muted":
                     kw = dict(color="#a3a29d" if style == "pydyn" else (0.7, 0.7, 0.7), ls="-", lw=2.0)
@@ -178,4 +181,34 @@ def plot_brooks_gelman(mc, est=None, style="pydyn", plotrows=None, drop=None):
                  shape=(rows, 3))
     if multi:
         figs += _grid(multi, style, "Multivariate convergence diagnostic", shape=(3, 1))
+    return figs
+
+
+def posterior_series_data(sd, names=None) -> dict:
+    """What Dynare's ``pm3`` figures draw for each series of a :class:`pydyn.posterior_moments.SeriesDistribution`
+    (smoothed variables, shocks, filtered variables, ...): ``{name: {"mean": (periods,), "deciles": (9, periods)}}``.
+    Series whose mean is NaN in every period (for instance the trend of an unobserved variable) get no panel, as in
+    ``pm3_core.m``."""
+    out = {}
+    for name in (names or sd.names):
+        k = sd.names.index(name)
+        if np.all(np.isnan(sd.mean[:, k])):
+            continue
+        out[name] = {"mean": sd.mean[:, k], "deciles": sd.deciles[:, :, k]}
+    return out
+
+
+def plot_posterior_series(sd, title="Posterior distribution", style="pydyn", names=None):
+    """Posterior mean and the nine deciles of every series over the sample, nine panels per figure (``pm3_core.m``:
+    deciles in green, mean in black in Dynare's own style)."""
+    data = posterior_series_data(sd, names)
+    panels = []
+    for name, d in data.items():
+        t = np.arange(1, len(d["mean"]) + 1)
+        dec = dict(color="g", ls="-", lw=0.5) if style == "dynare" else dict(color="#8fb8e8", ls="-", lw=0.8)
+        lines = [(t, d["deciles"][q], dec, "deciles" if q == 0 else "") for q in range(9)]
+        lines.append((t, d["mean"], dict(color="k", ls="-", lw=1.0) if style == "dynare" else dict(color="#2a78d6", ls="-", lw=2.0),
+                      "mean"))
+        panels.append((name, lines, []))
+    figs = _grid(panels, style, title)
     return figs

@@ -61,7 +61,9 @@ Options used by :mod:`pydyn.posterior` and :mod:`pydyn.posterior_plots` when the
 ``Estimation``: ``mh_conf_sig``, ``sub_draws``, ``posterior_max_subsample_draws``, ``taper_steps``,
 ``geweke_interval``, ``raftery_lewis_diagnostics``, ``raftery_lewis_qrs``,
 ``brooks_gelman_plotrows``, ``bayesian_irf``, ``irf``, ``relative_irf``, ``irf_shocks``,
-``mode_check`` and its three settings, ``huge_number``. As everywhere in pydyn a flag such as
+``mode_check`` and its three settings, ``huge_number``; by :mod:`pydyn.posterior_moments`: ``moments_varendo``, ``ar``,
+``nodecomposition``, ``conditional_variance_decomposition``, ``contemporaneous_correlation``, the ``consider_*``
+options, ``smoother``, ``filtered_vars``, ``filter_step_ahead``. As everywhere in pydyn a flag such as
 ``bayesian_irf`` or ``mode_check`` does not make ``Estimation`` compute anything by itself: the
 corresponding function does, with the settings of the ``.mod`` file as defaults.
 
@@ -73,8 +75,8 @@ measurement errors, calibrated measurement-error covariances, ``estimated_params
 ``estimated_params_init(use_calibration)``, endogenous priors, prior restrictions,
 ``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers
 (DIME, online), ``mode_compute`` 2, 6, 10 and above, ``mh_recover``,
-``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior moments
-of the endogenous variables and the smoother for non-stationary models.
+``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior distributions of
+``filter_covariance`` and ``smoothed_state_uncertainty`` and the smoother for non-stationary models.
 """
 from __future__ import annotations
 
@@ -926,6 +928,10 @@ _DEFAULTS = dict(
     bayesian_irf=False, irf=40, relative_irf=False, irf_shocks=None,
     mode_check=False, mode_check_neighbourhood_size=0.5, mode_check_symmetric_plots=True,
     mode_check_number_of_points=20, huge_number=1e7,
+    # posterior distributions of endogenous statistics (pydyn.posterior_moments)
+    moments_varendo=False, ar=5, nodecomposition=False, conditional_variance_decomposition=(),
+    contemporaneous_correlation=False, endo_vars_for_moment_computations_in_estimation=None,
+    smoother=False, filtered_vars=False, filter_step_ahead=(),
     # time-varying shock variances (pydyn.heteroskedastic); endogenous prior (pydyn.endogenous_prior)
     heteroskedastic_filter=False, endogenous_prior=False,
     # DSGE-VAR (pydyn.dsge_var): dsge_var is the calibrated weight, "NaN"/True when it is estimated
@@ -946,7 +952,8 @@ _ALIASES = {"mh_nblocks": "mh_nblck", "harvey_scale_factor": "Harvey_scale_facto
             "posterior_sampler_options.sampling_opt": "posterior_sampler_options",
             "mh_tune_jscale.target": "mh_tune_jscale", "mh_tune_jscale.guess": "mh_tune_guess"}
 #: options that must keep their list form
-_VECTOR_OPTIONS = {"gstep", "additional_optimizer_steps", "taper_steps", "geweke_interval", "raftery_lewis_qrs", "irf_shocks"}
+_VECTOR_OPTIONS = {"gstep", "additional_optimizer_steps", "taper_steps", "geweke_interval", "raftery_lewis_qrs", "irf_shocks",
+                   "conditional_variance_decomposition", "filter_step_ahead"}
 #: who acts on an option when it is not Estimation itself (documentation and option_report())
 _HONOURED_BY = {
     "mode()": ["mode_compute", "mode_file", "optim", "additional_optimizer_steps", "cova_compute",
@@ -959,6 +966,9 @@ _HONOURED_BY = {
                         "irf_shocks", "mode_check", "mode_check_neighbourhood_size", "mode_check_symmetric_plots",
                         "mode_check_number_of_points", "huge_number"],
     "pydyn.posterior_plots": ["brooks_gelman_plotrows"],
+    "pydyn.posterior_moments": ["moments_varendo", "ar", "nodecomposition", "conditional_variance_decomposition",
+                                "contemporaneous_correlation", "endo_vars_for_moment_computations_in_estimation",
+                                "smoother", "filtered_vars", "filter_step_ahead"],
 }
 #: mode_compute values: ported algorithm, scipy stand-in, or not available
 _MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"), 7: ("Nelder-Mead", "fminsearch"),
@@ -2249,6 +2259,18 @@ class Estimation:
         """Posterior impulse responses (:func:`pydyn.posterior.posterior_irf`)."""
         from . import posterior as _post
         return _post.posterior_irf(self, mc, **kw)
+
+    def posterior_moments(self, mc=None, **kw):
+        """Posterior distributions of theoretical moments (``moments_varendo``;
+        :func:`pydyn.posterior_moments.posterior_theoretical_moments`)."""
+        from . import posterior_moments as _pm
+        return _pm.posterior_theoretical_moments(self, mc, **kw)
+
+    def posterior_smoother(self, mc=None, **kw):
+        """Posterior distributions of smoothed, updated and filtered variables
+        (:func:`pydyn.posterior_moments.posterior_smoother_statistics`)."""
+        from . import posterior_moments as _pm
+        return _pm.posterior_smoother_statistics(self, mc, **kw)
 
     def mode_check(self, mode, **kw):
         """Data of the mode-check plots (:func:`pydyn.posterior.mode_check`)."""

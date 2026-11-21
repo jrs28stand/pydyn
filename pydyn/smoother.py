@@ -104,6 +104,9 @@ _ESTIMATION_ONLY = {
     "irf", "forecast", "conf_sig", "mh_conf_sig", "load_mh_file", "prior_trunc", "smoother", "order",
     "posterior_sampler_options", "additional_optimizer_steps", "nobs_vec", "lyapunov", "sub_draws",
     "mh_nblck", "mh_recover", "mcmc_jumping_covariance", "mode_check.status",
+    # posterior moments of the endogenous variables (pydyn.posterior_moments)
+    "ar", "nodecomposition", "conditional_variance_decomposition", "contemporaneous_correlation",
+    "endo_vars_for_moment_computations_in_estimation",
 }
 
 

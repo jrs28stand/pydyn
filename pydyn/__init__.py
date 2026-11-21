@@ -10,7 +10,7 @@ from .model import Model, ModelError
 from .steady import steady_state, SteadyStateError
 from .simulate import simulate, irf
 from .perturbation import first_order, FirstOrderSolution
-from . import estimation, kalman, korder, matlab, moments, optimal_policy, posterior, posterior_plots, priors, smoother
+from . import estimation, kalman, korder, matlab, moments, optimal_policy, posterior, posterior_moments, posterior_plots, priors, smoother
 from .korder import k_order
 from .perfect_foresight import (perfect_foresight, PerfectForesightError, PerfectForesightResult,
                                 unanticipated_shocks)
@@ -30,5 +30,5 @@ __all__ = ["run_preprocessor", "Model", "ModelError", "steady_state", "first_ord
            # modules
            "dates", "dsge_var", "endogenous_prior", "epilogue", "estimation", "external", "heteroskedastic", "kalman",
            "korder", "matlab", "moments", "newrat", "nonlinear_filters", "occbin_filter", "octave_rng",
-           "optimal_policy", "plotting", "posterior", "posterior_plots", "priors", "samplers", "simplex", "smoother",
+           "optimal_policy", "plotting", "posterior", "posterior_moments", "posterior_plots", "priors", "samplers", "simplex", "smoother",
            "varexo_det"]
