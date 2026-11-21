@@ -283,9 +283,15 @@ def _filter_name(o):
 
 
 def _default_var_list(m):
+    # The variable list belongs to one stoch_simul statement (it does not accumulate like the options):
+    # Dynare's final results come from the last statement, and a statement without a list covers every
+    # endogenous variable.
+    last = None
     for st in m.statements:
-        if st.get("statementName") == "stoch_simul" and st.get("symbol_list"):
-            return list(st["symbol_list"])
+        if st.get("statementName") == "stoch_simul":
+            last = st
+    if last is not None and last.get("symbol_list"):
+        return list(last["symbol_list"])
     return list(m.orig_endo_names)
 
 
