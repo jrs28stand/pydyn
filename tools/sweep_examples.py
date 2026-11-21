@@ -1,0 +1,129 @@
+"""Load every Dynare example with pydyn and compare with saved Dynare results where they exist.
+
+Usage: python tools/sweep_examples.py <dir with one sub-folder per example group, containing the
+.mod files and ref_<name>.mat files written by Dynare>
+
+The references for the examples this package supports are kept in reference/examples and checked by
+tests/test_examples.py.
+"""
+import sys
+import warnings
+from pathlib import Path
+
+import numpy as np
+from scipy.io import loadmat
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import pydyn  # noqa: E402
+
+
+def check(mod: Path, ref_file: Path | None = None):
+    name = mod.stem
+    out = {"name": f"{mod.parent.name}/{name}"}
+    ref_file = mod.parent / f"ref_{name}.mat" if ref_file is None else ref_file
+    ref = loadmat(ref_file, squeeze_me=True) if ref_file.exists() else {}
+    out["dynare"] = "ok" if ref.get("ok") else ("partial" if "ys" in ref else "no reference")
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            m = pydyn.Model(pydyn.run_preprocessor(mod))
+        out["skipped"] = "; ".join(sorted({str(x.message)[:140] for x in w if "not handled" in str(x.message)}))
+    except Exception as e:  # noqa: BLE001
+        pac = "dseries" in str(e) or "pac" in mod.stem
+        out["status"] = "not supported" if pac else "load failed"
+        out["detail"] = "PAC / semi-structural models (dseries)" if pac else f"{type(e).__name__}: {str(e)[:110]}"
+        return out
+    kinds = {s["statementName"] for s in m.statements}
+    if "osr" in kinds:
+        out["status"], out["detail"] = "not supported", "osr (optimiser paths are not reproduced; see pydyn.optimal_policy.osr)"
+        return out
+    if any(k.startswith("heterogeneity") for k in kinds) or "heterogeneity" in str(mod.parent):
+        out["status"], out["detail"] = "not supported", "heterogeneous agents"
+        return out
+    try:
+        params = np.asarray(ref["params"], float) if "params" in ref and np.all(np.isfinite(ref["params"])) else None
+        ys, p = pydyn.steady_state(m, params=params)
+    except Exception as e:  # noqa: BLE001
+        out["status"], out["detail"] = "steady state failed", f"{type(e).__name__}: {str(e)[:110]}"
+        return out
+    notes = []
+    opts = {**m.options.get("stoch_simul", {}), **m.options.get("estimation", {})}
+    ref_ys = ref.get("dr_ys", ref.get("ys"))
+    if ref_ys is not None and np.shape(ref_ys) == ys.shape:
+        ref_ys = np.asarray(ref_ys, float)
+        d = np.max(np.abs(ys - ref_ys))
+        if d > 1e-3 and np.all(ys > 0) and np.max(np.abs(np.log(ys) - ref_ys)) < 1e-6:
+            d = np.max(np.abs(np.log(ys) - ref_ys))            # Dynare stored logs (loglinear)
+        notes.append(f"ys {d:.1e}")
+        numerical = m.steady_state_model is None and m.steady_state_fn is None
+        if numerical and 1e-10 < d < 1e-4:
+            # Dynare's nonlinear solver stops early; evaluate the rules at its steady state
+            ys = ref_ys
+            notes.append("rules at Dynare's ys")
+    if kinds & {"perfect_foresight_solver", "perfect_foresight_with_expectation_errors_solver"}:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pf = pydyn.perfect_foresight(m, tol=1e-12)
+            d = np.max(np.abs(pf.endo.T - ref["endo_simul"])) if "endo_simul" in ref else np.nan
+            out["status"] = "matches Dynare" if d < 1e-6 else "MISMATCH"
+            out["detail"] = f"perfect foresight path {d:.1e} ({pf.iterations} Newton steps)"
+        except Exception as e:  # noqa: BLE001
+            out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
+        return out
+    try:
+        if "discretionary_policy" in kinds:
+            from pydyn import optimal_policy
+            sol = optimal_policy.discretionary_policy(m)
+        else:
+            sol = pydyn.first_order(m, ys=ys, params=p, loglinear=False)    # scaled to logs below
+    except Exception as e:  # noqa: BLE001
+        out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
+        return out
+    if "W_unc" in ref:                     # evaluate_planner_objective (first period shock from oo_.exo_simul)
+        from pydyn import optimal_policy
+        v = optimal_policy.evaluate_planner_objective(m, sol.as_dr(), order=1, u=np.atleast_1d(ref["exo_simul1"]))
+        dw = abs(v.unconditional - ref["W_unc"])
+        if "W_cond_L0" in ref:
+            dw = max(dw, abs(v.zero_initial_multiplier - ref["W_cond_L0"]), abs(v.steady_initial_multiplier - ref["W_cond_LSS"]))
+        notes.append(f"welfare {dw:.1e}")
+        if dw > 1e-8:
+            out["status"], out["detail"] = "MISMATCH", ", ".join(notes)
+            return out
+    if "ghx" in ref:
+        ghx, ghu = sol.ghx, sol.ghu
+        if opts.get("loglinear"):
+            ghx = ghx * ys[sol.state_var][None, :] / ys[sol.order_var][:, None]
+            ghu = ghu / ys[sol.order_var][:, None]
+        rx, ru = np.atleast_2d(ref["ghx"]), np.asarray(ref["ghu"], float).reshape(ghu.shape)
+        if rx.shape != ghx.shape:
+            rx = rx.reshape(ghx.shape)
+        d = max(np.max(np.abs(ghx - rx)), np.max(np.abs(ghu - ru)))
+        notes.append(f"rules {d:.1e}")
+        ok = d < 1e-6
+    else:
+        ok = None
+    order = m.options.get("stoch_simul", {}).get("order", 1)
+    if order >= 2 and "ghxx" in ref and m.max_deriv_order >= 2:
+        try:
+            dr = pydyn.k_order(m, order=2, ys=ys, params=p, loglinear=False)
+            d2 = max(np.max(np.abs(dr[k] - np.asarray(ref[k], float).reshape(dr[k].shape)))
+                     for k in ("ghxx", "ghxu", "ghuu", "ghs2"))
+            notes.append(f"order 2 {d2:.1e}")
+            ok = ok and d2 < 1e-6
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"order 2 failed: {str(e)[:60]}")
+            ok = False
+    out["status"] = {True: "matches Dynare", False: "MISMATCH", None: "solved, no reference"}[ok]
+    out["detail"] = ", ".join(notes)
+    return out
+
+
+if __name__ == "__main__":
+    base = Path(sys.argv[1])
+    rows = [check(f) for f in sorted(base.glob("*/*.mod"))]
+    for r in rows:
+        print(f"{r['name']:58s} | {r['status']:20s} | {r.get('detail', '')}")
+        if r.get("skipped"):
+            print(f"{'':58s} |   {r['skipped']}")
