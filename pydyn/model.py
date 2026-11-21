@@ -570,6 +570,14 @@ class Model:
                                                                       "osr.tolf", "discretionary_tol", "dp.maxit",
                                                                       "planner_discount_latex_name")})
                 self.options.setdefault(kind + "_all", []).append(st)
+        elif kind == "conditional_forecast_paths":
+            # values evaluated where the block stands, as constrained_paths_ is in Dynare (read by pydyn.forecast)
+            stored = self._stmt_values[id(st)] = {}
+            for i, path in enumerate(st.get("paths", [])):
+                for k, v in enumerate(path.get("values", [])):
+                    stored[(i, k)] = self._value(v["value"])
+        elif kind in ("forecast", "conditional_forecast", "plot_conditional_forecast"):
+            pass                                   # read by pydyn.forecast.run_forecasts
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
         elif kind == "heteroskedastic_shocks":

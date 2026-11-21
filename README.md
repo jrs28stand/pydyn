@@ -73,6 +73,13 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
   the welfare-maximising rule at order 2, the same csminwel iterations; Ramsey constraints with
   perfect foresight to Dynare's solver tolerance.
 
+- Forecasts (`tests/test_forecast.py`, `reference/forecast/`): `forecast` after `stoch_simul` (orders 1 to 3,
+  `varexo_det`, `histval`, measurement error), `estimation(forecast=N)` from the smoothed end-of-sample state
+  (trends, prefilter, diffuse filter, missing data, loglinear, `varexo_det`), the posterior forecast
+  distribution (`MeanForecast`, `PointForecast`, `PointForecastME`) and `conditional_forecast`: means and bands
+  agree with Dynare to about 1e-14; simulated bands replay Dynare's `randn('state', s)` draws through
+  `pydyn.octave_rng`. OccBin forecasts are refused.
+
 Run: `PYDYN_REQUIRE_KORDER=1 DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
 (without `PYDYN_REQUIRE_KORDER=1` the order-2 and order-3 tests are skipped when the compiled k-order
 library has not been built; the test header says which applies)
@@ -92,6 +99,22 @@ for rho in (0.5, 0.7, 0.9):
 ```
 
 `sol.params` holds the parameters actually used, including any the steady state updated.
+
+### Forecasts
+
+```python
+from pydyn import forecast as fc
+fc.forecast(model, ["y", "c"], periods=8, conf_sig=0.9)           # after stoch_simul (Mean, HPDinf, HPDsup)
+fc.forecast_at(model, est, theta, horizon=8)                      # estimation(forecast=8) at one parameter vector
+fc.posterior_forecast(est, params=draws, horizon=8)               # oo_.MeanForecast / PointForecast / PointForecastME
+cf = fc.conditional_forecast(model, {"robs": [2.5, 2.5]}, ["er"], parameter_set="calibration", replic=500)
+fc.conditional_forecast_plot_data(cf, ["y"]); fc.run_forecasts(model)   # plot data; the statements of the .mod file
+```
+
+Dynare's options accumulate across statements (`periods`, `conf_sig`); `run_forecasts` follows them, the functions
+take explicit values. Orders 2 and 3 simulate (`forecast_replic`, default 1000); pass `rng=` for reproducible bands.
+Dynare 7.2 adds the observation trend and the prefilter mean to the mean forecast only, so the bands of
+`forecast_at` stay unshifted (`shift_bands=True` shifts them).
 
 ### Optimal policy
 
@@ -236,7 +259,7 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
   dates), random numbers and file-system functions are not supported; see the section above.
 - Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
   dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
-  (`write_latex_*` warns), `varexo_det` in perfect foresight and the `forecast` command.
+  (`write_latex_*` warns), `varexo_det` in perfect foresight.
 - Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other
   optimisers (and therefore `osr_params_bounds`, which need a constrained one), `analytic_derivation`,
   welfare beyond order 2 (Dynare's `k_order_welfare` MEX) and `mult_elimination` are refused.

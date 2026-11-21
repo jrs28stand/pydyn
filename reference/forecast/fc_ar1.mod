@@ -1,0 +1,34 @@
+// Dynare's tests/forecast/forecast_test_AR1.mod (AR(1) with a purely forward and a purely backward junk variable), with
+// the results of each forecast command saved: no measurement error, then with, then all variables.
+var junk A junk2;
+varexo epsilon;
+parameters rho;
+rho=0.9;
+model;
+  A= rho*A(-1)+epsilon;
+  junk=0.9*junk(+1);
+  junk2=0.9*junk2(-1);
+end;
+steady_state_model;
+  A = 0;
+  junk=0;
+  junk2=0;
+end;
+steady;
+shocks;
+  var epsilon=0.01^2;
+end;
+stoch_simul(order=1,irf=0,nograph);
+forecast(periods=30,conf_sig=0.95) A;
+fc1 = oo_.forecast;
+varobs A;
+shocks;
+  var epsilon=0.01^2;
+  var A=0.01^2;
+end;
+forecast(periods=30,conf_sig=0.95) A;
+fc2 = oo_.forecast;
+forecast(periods=30,conf_sig=0.8);
+fc3 = oo_.forecast;
+forecast(conf_sig=0.8) junk2 A;
+fc4 = oo_.forecast;
