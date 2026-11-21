@@ -184,7 +184,7 @@ def test_unknown_condition_without_calibration_is_skipped_with_one_warning(tmp_p
     ("set_param_value('rho', some_unknown_function(1));", "set_param_value"),
     ("M_.Sigma_e = cov(randn(10, 1));", "assigns to M_"),
     ("M_.H = 1;", "assigns to M_"),
-    ("oo_.steady_state(1) = 3;", "oo_.steady_state"),
+    ("oo_.steady_state(1) = oo_.dr.ys(1);\nsteady;", "oo_.steady_state"),   # computable writes are followed (see below)
     ("eval(some_unknown_function(1));", "eval"),
     ("x = some_unknown_function(1);\nrho = x;", "could not compute"),
     ("x = rand;\nshocks; var e; stderr x; end;", "could not compute"),
@@ -627,12 +627,13 @@ def test_review_a3_b1_initval_endval_read_the_current_steady_state_vector(tmp_pa
            head=RV_RBC, name="v02")
     np.testing.assert_allclose(m.endval["k"], 56.696838122096885, rtol=1e-14)
     assert m.initval == {"k": 20.0, "c": 1.5, "y": 2.5}
-    # v01: numerical steady state.  Dynare's own solver stops at k = 28.348419047 (residual 1e-10),
-    # the exact value is 28.348419061: agreement only to the solver's tolerance (rtol 1e-8 here)
+    # v01: numerical steady state.  Dynare's own solver (solve_algo=4, trust region) stops at
+    # k = 28.348419047 (residual 1e-10), the exact value is 28.348419061.  pydyn replays a 'steady'
+    # command with its port of Dynare's solver, so it stops at the same iterate (measured: identical)
     m = rv(tmp_path, "initval; k = 20; c = 1.5; y = 2.5; end;\nsteady;\ninitval; c = k/10; end;\n", head=RV_RBC, name="v01")
-    np.testing.assert_allclose(m.initval["c"], 2.8348419047165483, rtol=1e-8)
+    np.testing.assert_allclose(m.initval["c"], 2.8348419047165483, rtol=1e-13)
     assert m.initval["k"] == 20.0 and m.initval["y"] == 2.5
-    np.testing.assert_allclose(m.initval["c"], 2.8348419061048443, rtol=1e-12)          # (1/beta-1+delta)/(alpha) root
+    assert abs(m.initval["c"] - 2.8348419061048443) > 1e-10          # not the exact root (1/beta-1+delta)/(alpha)
 
 
 def test_review_a6_a7_in_steady_state_files(tmp_path):
@@ -757,3 +758,42 @@ def test_mutator_list_is_complete_for_the_dynare_tree():
     finally:
         sys.path.pop(0)
     assert sweep_matlab.mutators(DYNARE_SRC) == []
+
+
+# ------------------------------------------------------------------ oo_.steady_state read and written by MATLAB code
+WR_HEAD = ("var y c k; varexo e; parameters alpha beta delta A;\n"
+           "model; 1/c = beta/c(+1)*(alpha*A*k^(alpha-1)+1-delta); y = A*exp(e)*k(-1)^alpha; k = y - c + (1-delta)*k(-1); end;\n"
+           "alpha = 0.33; beta = 0.99; delta = 0.025; A = 1;\ninitval; k = 20; c = 1.5; y = 2.5; end;\n")
+
+
+def test_reads_and_writes_of_the_steady_state_vector(tmp_path):
+    """After a numerical 'steady', MATLAB code reads oo_.steady_state (pydyn replays Dynare's solver,
+    solve_algo=4, so the value is Dynare's iterate; model.calibration_tolerance records that it is
+    only known to the steady-state tolerance), writes elements of oo_.steady_state and the whole
+    oo_.exo_steady_state, and a later initval block reads them. Dynare 7.2 (Octave): params
+    [0.33 0.99 0.025 1.0051092360783622], oo_.steady_state [3.0153277082350867 3.01 30], exo 0.01."""
+    with pytest.warns(UserWarning, match="computed numerically"):
+        m = build(tmp_path, WR_HEAD + "steady;\nx1 = oo_.steady_state(1);\noo_.steady_state(3) = 30;\n"
+                  "oo_.exo_steady_state = 0.01;\ninitval; c = k/10 + e; end;\nA = x1/3;\n")
+    np.testing.assert_allclose(m.params, [0.33, 0.99, 0.025, 1.0051092360783622], rtol=1e-15)
+    assert m.initval == {"k": 30.0, "c": 3.01, "y": pytest.approx(3.0153277082350867, rel=1e-15), "e": 0.01}
+    assert m.calibration_tolerance == pytest.approx(6.06e-6, rel=1e-2)
+    # the writes are seen by the perfect-foresight replay at their place in the file
+    ws = importlib.import_module("pydyn.perfect_foresight")._replay(m, steady=False)
+    assert ws.ss[2] == 30.0 and ws.ss[1] == 3.01 and ws.xss[0] == 0.01
+    # an analytical steady state is read without the note
+    m2 = rv(tmp_path, RV_SSM + "steady;\nx1 = oo_.steady_state(3);\nalpha = x1/100;\n", head=RV_RBC, name="m2")
+    assert m2.calibration_tolerance is None
+    assert m2.get_param("alpha") == pytest.approx(((1 / 0.99 - 1 + 0.025) / 0.33) ** (1 / (0.33 - 1)) / 100, rel=1e-14)
+
+
+def test_unknown_writes_to_oo_refuse_only_their_users(tmp_path):
+    """oo_.steady_state assigned from something pydyn cannot compute: the file loads as long as nothing
+    later starts from it; a later steady, initval reference or perfect_foresight_setup is refused."""
+    ok = rv(tmp_path, "oo_ = some_unknown_function(oo_);\noo_.steady_state = oo_.dr.ys;\n", head=WR_HEAD, name="ok")
+    assert ok.params[0] == 0.33
+    for k, tail in enumerate(("oo_ = some_unknown_function(oo_);\nsteady;\n",
+                              "oo_.steady_state = oo_.dr.ys;\ninitval; c = k/10; end;\n",
+                              "oo_.steady_state(2) = oo_.dr.ys(2);\nperfect_foresight_setup(periods=10);\n")):
+        with pytest.raises(pydyn.ModelError, match="oo_"):
+            rv(tmp_path, tail, head=WR_HEAD, name=f"bad{k}")

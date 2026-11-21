@@ -21,7 +21,12 @@ scalar structs; operators with MATLAB precedence and associativity; indexing and
 ``break/continue/return``; anonymous functions and handles; function files and scripts that sit next
 to the ``.mod`` file; ``eval`` of a string the interpreter itself can compute; ``fzero``, ``fsolve``
 and ``csolve`` mapped to scipy; the Dynare interface (``M_.params``, ``M_.Sigma_e``, ``M_.*_names``,
-``set_param_value``, ``get_param_by_name``, ``set_shock_stderr_value``, ``options_.x = ...``).
+``set_param_value``, ``get_param_by_name``, ``set_shock_stderr_value``, ``varlist_indices`` (a port of
+Dynare 7.2 matlab/varlist_indices.m, GPL-3.0-or-later), ``options_.x = ...``), and reads and writes
+of ``oo_.steady_state`` / ``oo_.exo_steady_state`` (a steady state computed numerically is pydyn's
+replay of Dynare's solver; ``model.calibration_tolerance`` records that values read from it are only
+as accurate as that solver; an assignment pydyn cannot compute makes them unknown, and a later Dynare
+statement that starts from them is refused).
 
 Refused: complex numbers (an operation whose MATLAB result is complex is refused; 0/0, Inf-Inf and
 the like are NaN as in MATLAB),
@@ -2511,6 +2516,36 @@ def _ismember(I, a, nout):
     raise Unsupported("ismember on these arguments")
 
 
+@bi("varlist_indices")
+def _varlist_indices(I, a, nout):
+    """Dynare's matlab/varlist_indices.m: positions of the names ``sublist`` in the cell ``list``
+    (duplicates counted once; an unknown name is an error unless the third argument is true)."""
+    _nargs(a, 2, 3, "varlist_indices")
+    sub, lst = a[0], a[1]
+    if isinstance(sub, str):
+        names = [sub] if sub else []
+    elif isinstance(sub, Cell) and all(isinstance(c, str) for c in sub.items):
+        names = list(sub.items)
+    else:
+        raise Unsupported("varlist_indices on a char matrix or a non-text list")
+    if not isinstance(lst, Cell) or not all(isinstance(c, str) for c in lst.items):
+        raise Unsupported("varlist_indices: the list is not a cell array of names")
+    nocheck = len(a) == 3 and truth(a[2])
+    pos = [lst.items.index(n) + 1 if n in lst.items else 0 for n in names]
+    missing = [n for n, p in zip(names, pos) if p == 0]
+    if missing and not nocheck:
+        raise MatlabError("The following symbols are not endogenous variables: " + " ".join(missing))
+    first, seen = [], set()
+    for k, p in enumerate(pos):                      # unique(i_var, 'first') restricted to present names, in order
+        if p and p not in seen:
+            seen.add(p)
+            first.append(k)
+    i_var = np.array([[float(pos[k])] for k in first]).reshape(-1, 1) if first else np.zeros((0, 1))
+    out = [ret(i_var) if i_var.size != 1 else _F(i_var[0, 0]), _F(len(first)),
+           ret(np.array([[k + 1.0] for k in first]).reshape(-1, 1)) if first else np.zeros((0, 1))]
+    return out[:max(nout, 1)] if nout > 1 else out[0]
+
+
 @bi("cell")
 def _cell(I, a, nout):
     r, c = _dims(a)
@@ -3974,9 +4009,13 @@ class _HostOO:
         raise Unsupported(f"oo_.{name}: results are not available while the model is loaded", "results")
 
     def peek_field(self, name, raw=False):
+        if self.session is not None and name in ("steady_state", "exo_steady_state"):
+            return self.session.oo_vector(name)
         raise Unsupported(f"oo_.{name}: results are not available while the model is loaded", "results")
 
     def set_field(self, name, value):
+        if self.session is not None and name in ("steady_state", "exo_steady_state"):
+            return self.session.oo_write(name, value)
         raise Unsupported(f"assignment to oo_.{name}", "results")
 
 
@@ -4041,6 +4080,8 @@ class _TryUnknown(Exception):
 class _Info:
     def __init__(self):
         self.writes, self.calib, self.dyn, self.all, self.paths = set(), None, [], False, False
+        self.oo_whole = False           # assigns to oo_ as a whole (oo_ = f(...))
+        self.oo_input = None            # assigns to oo_.steady_state / oo_.exo_steady_state
         self.has_return = self.has_break = False
         self.solves = False
         self.count = 0
@@ -4078,7 +4119,8 @@ DECL_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks",
               "osr_params", "optim_weights", "matched_moments", "matched_irfs", "matched_irfs_weights", "var_model",
               "pac_model", "trend_component_model", "var_expectation_model", "perfect_foresight_setup",
               "perfect_foresight_solver", "initval_file", "histval_file", "homotopy", "occbin_setup",
-              "load_params_and_steady_state", "save_params_and_steady_state", "options", "model_info"}
+              "load_params_and_steady_state", "save_params_and_steady_state", "options", "model_info",
+              "perfect_foresight_controlled_paths"}
 #: Dynare statements that compute or display: inside a MATLAB block whose condition is unknown they
 #: are skipped (with a warning); any other Dynare statement there is an error
 COMPUTE_KINDS = {"steady", "check", "stoch_simul", "estimation", "osr", "forecast", "calib_smoother", "identification",
@@ -4099,9 +4141,19 @@ COMPUTE_KINDS = {"steady", "check", "stoch_simul", "estimation", "osr", "forecas
 _OPTION_FREE_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks", "native", "verbatim",
                       "estimated_params", "estimated_params_init", "estimated_params_bounds", "varobs"}
 #: Dynare statements whose expressions pydyn evaluates (they may refer to MATLAB variables)
-_EVALUATED_KINDS = {"param_init", "initval", "endval", "shocks", "load_params_and_steady_state"}
+_EVALUATED_KINDS = {"param_init", "initval", "endval", "shocks", "load_params_and_steady_state",
+                    "perfect_foresight_controlled_paths"}
 _ESTIMATING = {"estimation", "method_of_moments", "osr", "dynare_sensitivity", "sensitivity", "ms_sbvar_estimation"}
 _OO_INPUTS = ("steady_state", "exo_steady_state", "exo_det_steady_state")
+#: Dynare statements that start from the content of oo_.steady_state / oo_.exo_steady_state
+_USES_OO = (COMPUTE_KINDS - {"rplot", "write_latex_dynamic_model", "write_latex_static_model", "write_latex_original_model",
+                             "write_latex_steady_state_model", "collect_latex_files", "write_latex_definitions",
+                             "occbin_graph", "dynatype", "plot_shock_decomposition", "plot_conditional_forecast",
+                             "perfect_foresight_solver", "perfect_foresight_with_expectation_errors_solver"}) \
+    | {"histval_file", "initval_file", "smoother2histval"}
+#: ... and those that use it as it is (not only as the starting point of a steady-state computation)
+_USES_OO_PATHS = {"perfect_foresight_setup", "perfect_foresight_with_expectation_errors_setup", "simul", "extended_path",
+                  "save_params_and_steady_state", "histval_file", "initval_file", "smoother2histval"}
 
 
 class _ModInterp(Interpreter):
@@ -4161,6 +4213,10 @@ class ModSession:
         self.oo_written = set()         # variables given a value by initval/endval since the last steady
         self.pending = None             # (params, oo) of a 'steady' whose result has not been needed yet
         self.oo_failed = None           # why the steady state of an earlier 'steady' is unknown
+        self.oo_xfailed = None          # why oo_.exo_steady_state is unknown
+        self.oo_matlab_unknown = None   # why MATLAB code left oo_.steady_state unknown (Dynare statements using it are refused)
+        self.last_k = -1                # index (in model.statements) of the last Dynare statement run
+        self._num_warned = False
 
     # ---- reporting
     def error(self, msg):
@@ -4251,7 +4307,9 @@ class ModSession:
             info.calib = info.calib or "it assigns to M_"
         elif e.name == "oo_":
             if first in _OO_INPUTS:
-                info.calib = info.calib or f"it assigns to oo_.{first}"
+                info.oo_input = first          # not run: oo_.steady_state becomes unknown (see oo_unknown)
+            if t is e:
+                info.oo_whole = True
             info.paths = True
         elif e.name != "options_":
             info.writes.add(e.name)
@@ -4334,6 +4392,8 @@ class ModSession:
         info.dyn += sub.dyn
         info.all |= sub.all
         info.paths |= sub.paths
+        info.oo_whole |= sub.oo_whole
+        info.oo_input = info.oo_input or sub.oo_input
         info.count += sub.count
         info.has_return |= sub.has_return
         info.solves |= sub.solves
@@ -4360,6 +4420,9 @@ class ModSession:
             ws[k] = Tainted(why)
         if info.paths:
             self.path_edits = True
+        if info.oo_whole or info.oo_input:
+            what = "oo_" if info.oo_whole else f"oo_.{info.oo_input}"
+            self.oo_unknown(f"{what} was assigned by MATLAB code that pydyn did not run ({why})")
 
     def ss_params(self):
         """Indices of the parameters a steady-state computation may change."""
@@ -4464,7 +4527,7 @@ class ModSession:
             self.after_compute(kind, f"'{kind}' inside a block that was not executed")
             self.host.options.forget(self.statements[d.k].get("options", {}))
             if kind == "steady":
-                self.pending, self.oo_failed = None, "a 'steady' statement is inside a block that was not executed"
+                self.oo_unknown("a 'steady' statement is inside a block that was not executed", exo=False)
         self.record(s.text, "block", u, info.count)
         if info.has_return or (info.has_break and type(s) not in (For, While)):
             raise _Escape(u)
@@ -4493,7 +4556,8 @@ class ModSession:
                     self.taint(info, f"output of {s.rhs.base.name}")
                     self.on_solve(False)                    # what the call writes back into M_.params
                     if info.paths:
-                        self.pending, self.oo_failed = None, f"oo_ was assigned from {s.rhs.base.name}"
+                        self.oo_unknown(f"oo_ was assigned from {s.rhs.base.name}, which pydyn does not run while "
+                                        "loading", exo=info.oo_whole)
                     return self.record(s.text, "function", f"{s.rhs.base.name} is not run while loading")
                 return I.exec_simple(s, sc)
             except Unsupported as u:
@@ -4594,6 +4658,11 @@ class ModSession:
     def exec_dyn(self, s):
         st = self.statements[s.k]
         kind = st["statementName"]
+        self.last_k = s.k
+        if self.oo_matlab_unknown and kind in _USES_OO and not (kind not in _USES_OO_PATHS and not self.oo_xfailed
+                                                                and self._guess_free()):
+            raise self.error(f"the Dynare statement <{kind}> starts from oo_.steady_state / oo_.exo_steady_state, which "
+                             f"MATLAB code changed in a way pydyn cannot reproduce: {self.oo_matlab_unknown}")
         m, ws, h = self.model, self.sc.vars, self.host
         s.text = f"<{kind}{' ' + st['name'] if kind == 'param_init' else ''}>"
         if kind in _EVALUATED_KINDS:
@@ -4647,8 +4716,11 @@ class ModSession:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # the solver of Dynare's 'steady' command (its solve_algo, default 4: pydyn's port), so that a
+                # numerical steady state read by MATLAB code stops where Dynare's does
                 return steady_state(m, params=np.array(params, float),
-                                    exo=np.array([oo.get(v, 0.0) for v in m.exo_names], float))
+                                    exo=np.array([oo.get(v, 0.0) for v in m.exo_names], float),
+                                    solve_algo=int(m.options.get("steady", {}).get("solve_algo", 4)))
         finally:
             m.initval = saved
 
@@ -4705,33 +4777,104 @@ class ModSession:
         for name, v in zip(m.endo_names, ys):
             if name not in self.oo_written:
                 m._oo[name] = float(v)
+        if self.oo_written:
+            m._set_oo_auxiliary()       # initval/endval blocks after the steady: set_auxiliary_variables
+
+    def oo_unknown(self, why, exo=True):
+        """oo_.steady_state (and oo_.exo_steady_state) now hold values pydyn cannot reproduce: a later
+        Dynare statement that starts from them is refused (exec_dyn), as is MATLAB code reading them."""
+        self.pending, self.oo_failed = None, why
+        self.oo_written = set()                 # no value of oo_.steady_state is known any more
+        if exo:
+            self.oo_xfailed = why
+        self.oo_matlab_unknown = why
+        self.model._oo_events.append((self.last_k, "unknown", why))
+
+    def _guess_free(self):
+        """True when the steady state does not depend on the content of oo_.steady_state: a
+        steady_state_model block that sets every declared variable."""
+        m = self.model
+        if m.steady_state_model is None or m.steady_state_fn is not None:
+            return False
+        names = set()
+        for lhs, _ in m.steady_state_model:
+            names.update([lhs] if isinstance(lhs, str) else lhs)
+        return set(m.orig_endo_names) <= names
+
+    def _note_numerical(self):
+        """MATLAB code read a steady state that pydyn computed numerically (Dynare's differs from it
+        by up to the solver tolerance)."""
+        from .steady import DYNARE_TOLF
+        m = self.model
+        tol = float(m.options.get("steady", {}).get("solve_tolf", DYNARE_TOLF))
+        m.calibration_tolerance = max(tol, m.calibration_tolerance or 0.0)
+        if not self._num_warned:
+            self._num_warned = True
+            warnings.warn("MATLAB code in the .mod file reads oo_.steady_state after a steady state computed numerically: "
+                          "pydyn uses its own solution, which agrees with Dynare's only up to the steady-state "
+                          f"tolerance ({tol:.1e}); values computed from it are only that accurate "
+                          "(model.calibration_tolerance)")
 
     def oo_vector(self, name):
-        """oo_.steady_state / oo_.exo_steady_state for MATLAB code, when pydyn knows them exactly:
-        the initval/endval values, or a steady state given by a steady_state_model block or file.
-        A steady state found numerically is only known up to the solver's tolerance: refused."""
+        """oo_.steady_state / oo_.exo_steady_state for MATLAB code: the initval/endval values, a
+        steady state given by a steady_state_model block or file, or pydyn's numerical solution
+        (then model.calibration_tolerance records that later values are only that accurate)."""
         m = self.model
         if name == "exo_steady_state":
+            if self.oo_xfailed:
+                raise Unsupported(f"oo_.exo_steady_state is not known ({self.oo_xfailed})", "results")
             return ret(np.array([m._oo.get(v, 0.0) for v in m.exo_names], float).reshape(-1, 1))
         if self.pending is not None and not set(m.endo_names) <= self.oo_written:
-            analytical = m.steady_state_fn is not None or m.steady_state_model is not None or m.steady_state_file is not None
-            if not analytical:
-                raise Unsupported("oo_.steady_state after 'steady': a numerically computed steady state is not "
-                                  "reproduced to the last digit", "results")
             self.resolve()
-        if self.oo_failed or self.oo_numeric:
-            raise Unsupported(f"oo_.steady_state is not known exactly ({self.oo_failed or 'computed numerically'})", "results")
+        if self.oo_failed:
+            raise Unsupported(f"oo_.steady_state is not known ({self.oo_failed})", "results")
+        if self.oo_numeric:
+            self._note_numerical()
         return ret(np.array([m._oo.get(v, 0.0) for v in m.endo_names], float).reshape(-1, 1))
 
+    def oo_write(self, name, value):
+        """``oo_.steady_state = ...`` / ``oo_.exo_steady_state(i) = ...``: the new content is what later
+        Dynare statements see (initval/endval expressions, steady, perfect_foresight_setup, ...)."""
+        m = self.model
+        names = m.endo_names if name == "steady_state" else m.exo_names
+        if type(value) is Tainted:
+            arr(value)
+        try:
+            v = np.asarray(farr(value), float).ravel(order="F")
+        except (MatlabError, TypeError, ValueError):
+            raise Unsupported(f"oo_.{name} assigned a value that is not numeric", "results") from None
+        if v.size != len(names):
+            raise Unsupported(f"oo_.{name} assigned {v.size} values for {len(names)} variables", "results")
+        if name == "steady_state":
+            if self.pending is not None:                     # the computed values are replaced
+                self.pending = None
+            self.oo_failed, self.oo_numeric = None, False
+        else:
+            self.oo_xfailed = None
+        if not self.oo_failed and not self.oo_xfailed:
+            self.oo_matlab_unknown = None
+        values = {k: float(x) for k, x in zip(names, v)}
+        m._oo.update(values)
+        self.oo_written.update(values)
+        m._oo_assign(values)
+        m._oo_events.append((self.last_k, name, {k: float(x) for k, x in zip(names, v)}))
+        self.host.nwrites += 1
+
     def oo_value(self, name):
-        """oo_.steady_state(name) as a Dynare statement would read it now."""
+        """oo_.steady_state(name) / oo_.exo_steady_state(name) as a Dynare statement would read it now."""
+        m = self.model
+        if name in m._ix:
+            if self.oo_xfailed:
+                raise self.error(f"an initval/endval block refers to '{name}', whose value in oo_.exo_steady_state "
+                                 f"pydyn does not know ({self.oo_xfailed})")
+            return _F(m._oo.get(name, 0.0))
         if name not in self.oo_written:
             if self.pending is not None:
                 self.resolve()
             if self.oo_failed:
                 raise self.error(f"an initval/endval block refers to '{name}' after 'steady': in Dynare that is the "
                                  f"computed steady state, which pydyn could not compute ({self.oo_failed})")
-        return _F(self.model._oo.get(name, 0.0))
+        return _F(m._oo.get(name, 0.0))
 
     def shadow_results(self, kind):
         """Dynare commands create workspace variables named after the model's variables."""
@@ -4742,10 +4885,11 @@ class ModSession:
                     ws[k] = Tainted(f"Dynare's '{kind}' may overwrite this workspace variable")
                     self.any_taint = True
 
-    def eval_value(self, text, local=None):
+    def eval_value(self, text, local=None, vector=False):
         """Value of an expression in a Dynare statement, computed by the MATLAB interpreter (it
         indexes a MATLAB matrix, calls a MATLAB function, or its plain evaluation was not finite).
-        Parameter names mean M_.params, as in the driver file Dynare writes."""
+        Parameter names mean M_.params, as in the driver file Dynare writes. ``vector=True``
+        accepts a vector (returned as a 1-d float array in column-major order)."""
         m, h = self.model, self.host
         try:
             text = str(text)
@@ -4767,7 +4911,13 @@ class ModSession:
             with np.errstate(**_ERRSTATE):
                 self.I.scope_stack.append(sc)
                 try:
-                    return float(scalar(self.I.ev(body[0].e, sc), "value"))
+                    v = self.I.ev(body[0].e, sc)
+                    if vector:
+                        a = np.asarray(farr(v), float)
+                        if a.ndim == 2 and min(a.shape) > 1:
+                            raise MatlabError("value must be a scalar or a vector")
+                        return a.ravel(order="F")
+                    return float(scalar(v, "value"))
                 finally:
                     self.I.scope_stack.pop()
         except (ParseError, Unsupported) as exc:

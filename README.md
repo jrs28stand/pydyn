@@ -10,7 +10,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Preprocessor runner, JSON model loader | done (Dynare 7.2 JSON layout; 6.0 differs and is not supported) |
 | Parameters, `initval`, `shocks`, `steady_state_model` | done |
 | Changing parameters and re-solving without reloading (`set_param`, `set_params`) | done, validated |
-| Steady state: analytical block, numerical, MATLAB steady-state files and `.m` helpers (interpreted or translated), Python functions | done, validated |
+| Steady state: analytical block, numerical, MATLAB steady-state files and `.m` helpers (interpreted or translated), Python functions; Dynare's random restarts, `maxit`, and ports of `solve_algo` 4, 9, 13, 14 | done, validated |
 | MATLAB code in `.mod` files (control flow, matrices, `M_.params`, `set_param_value`, ...) | done, validated on Dynare's test suite |
 | First-order solution (`ghx`, `ghu`, IRFs, simulation) | done, validated |
 | OccBin piecewise-linear simulation, one or two constraints, `curb_retrench` | done, validated |
@@ -21,6 +21,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Perfect foresight: `initval`/`endval`/`histval` with or without `steady`, `shocks`, `mshocks`, homotopy, `linear_approximation`, `endogenous_terminal_period`, purely backward/forward/static and linear models | done, validated |
 | Perfect foresight with complementarity conditions (`lmmcp`, `[mcp=...]` tags and the perpendicular syntax; port of Dynare's LMMCP solver) | done, validated (lower bound binding 11 periods; two-sided bound) |
 | Perfect foresight with expectation errors (`learnt_in`), and a helper for sequences of unanticipated shocks | done, validated |
+| Perfect foresight: controlled paths, `initval_file`/`histval_file`/`datafile` (CSV, .mat, .m), vector shock values, `robust_lin_solve`; MATLAB code reading or writing `oo_.steady_state` | done, validated (47 of Dynare's 66 deterministic tests agree to 2e-14; the rest differ for documented reasons) |
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
 | `loglinear` in `stoch_simul` (rules, IRFs, simulation and moments in logs; order 1 only, as in Dynare) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
@@ -159,7 +160,7 @@ defaults from the `.mod` file where that is meaningful: `order`, `pruning`, `qz_
 used by `moments`, the `simul_*` options of OccBin, the estimation and smoother options listed in
 their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
 act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
-(OccBin constraints in linear estimation, `initval_file`, controlled paths) raise an error instead.
+(for example OccBin constraints in linear estimation) raise an error instead.
 `docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
 
 ## Performance

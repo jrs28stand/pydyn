@@ -45,3 +45,36 @@ dynare pf_temp nograph
 pf_save('pf_temp', M_, oo_, options_);
 dynare pf_zlb nograph
 pf_save('pf_zlb', M_, oo_, options_);
+% Added 2026-11-21 (pf_ivfx, pf_hvfx and pf_pfweecsv read the .csv files of the same name)
+dynare pf_cp nograph
+pf_save('pf_cp', M_, oo_, options_);
+dynare pf_cphom nograph
+pf_save('pf_cphom', M_, oo_, options_);
+dynare pf_cplin nograph
+pf_save('pf_cplin', M_, oo_, options_);
+dynare pf_hesl nograph
+pf_save('pf_hesl', M_, oo_, options_);
+dynare pf_hml nograph
+pf_save('pf_hml', M_, oo_, options_);
+dynare pf_hvfx nograph
+pf_save('pf_hvfx', M_, oo_, options_);
+dynare pf_irr nograph
+pf_save('pf_irr', M_, oo_, options_);
+dynare pf_ivf nograph
+pf_save('pf_ivf', M_, oo_, options_);
+dynare pf_ivfx nograph
+pf_save('pf_ivfx', M_, oo_, options_);
+dynare pf_pfweecsv nograph
+pf_save('pf_pfweecsv', M_, oo_, options_);
+dynare pf_pfweeml nograph
+pf_save('pf_pfweeml', M_, oo_, options_);
+dynare pf_rbcdet nograph
+pf_save('pf_rbcdet', M_, oo_, options_);
+dynare pf_rbcdet2 nograph
+pf_save('pf_rbcdet2', M_, oo_, options_);
+dynare pf_solow nograph
+pf_save('pf_solow', M_, oo_, options_);
+dynare pf_vec nograph
+pf_save('pf_vec', M_, oo_, options_);
+dynare pf_zlbfwd nograph
+pf_save('pf_zlbfwd', M_, oo_, options_);

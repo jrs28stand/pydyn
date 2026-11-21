@@ -24,6 +24,8 @@ from Dynare 7.2 (https://www.dynare.org), which is distributed under the GPL, ve
 | `pydyn/occbin_filter.py` (csolve) | `matlab/optimization/csolve.m` | GPL-3.0-or-later, Christopher Sims and Dynare Team |
 | `pydyn/occbin_filter.py` (inversion filter) | `matlab/+occbin/IVF_core.m`, `match_function.m`, `map_regime.m` | public domain (Cuba-Borda, Guerrieri, Iacoviello, Zhong; Guerrieri and Iacoviello) |
 | `reference/occest_*.mod`, `reference/occest_nkm_data.csv` | Dynare's `tests/occbin/filter` (NKM model and its data) and `tests/occbin/model_irrcap_twoconstraints` | GPL-3.0-or-later, Dynare Team |
+| `pydyn/steady.py` (solvers) | `matlab/optimization/{dynare_solve, trust_region}.m`, `mex/sources/block_trust_region/{trust_region, mexFunction, dulmage_mendelsohn}.f08` | GPL-3.0-or-later, Dynare Team |
+| `pydyn/perfect_foresight.py` (data files, controlled paths) | `matlab/{histvalf, histvalf_initvalf, varlist_indices}.m`, `matlab/perfect-foresight-models/{controlled_paths_by_period, controlled_paths_substitute_stacked_jacobian, lin_solve}.m` | GPL-3.0-or-later, Dynare Team |
 | `examples/nk_baseline_steadystate.py` | `examples/stochastic_simulations/nk_baseline_steadystate.m` | GPL-3.0-or-later, Dynare Team |
 | `reference/*.mod` | Dynare's example and test models, shortened or with changed commands; original headers kept where the source had them | GPL-3.0-or-later, Dynare Team |
 | `reference/*.mat` | numerical output of Dynare 7.2 run under GNU Octave | not program code |

@@ -333,11 +333,30 @@ class Model:
         s = str(s)
         local = {}
         for name in set(self._IDENT.findall(s)):
-            if name in self._ie:
+            if name in self._ie or name in self._ix:
                 local[name] = self._matlab.oo_value(name)
-            elif name in self._ix:
-                local[name] = np.float64(self._oo.get(name, 0.0))
         return self._value(s, local)
+
+    def _set_oo_auxiliary(self):
+        """The driver Dynare writes calls set_auxiliary_variables after an initval or endval block:
+        the auxiliary variables in oo_.steady_state follow the values just set (e.g. AUX_EXO_LEAD = x)."""
+        if not self.raw.get("aux_vars"):
+            return
+        from .steady import fill_auxiliary
+        y = np.array([self._oo.get(v, 0.0) for v in self.endo_names], float)
+        x = np.array([self._oo.get(v, 0.0) for v in self.exo_names], float)
+        try:
+            with np.errstate(all="ignore"):
+                y = fill_auxiliary(self, y, x, self.params)
+        except Exception:  # noqa: BLE001 - parameters not set yet, functions failing: leave them
+            return
+        for name in self.aux_names:
+            self._oo[name] = float(y[self._ie[name]])
+
+    def _oo_assign(self, values):
+        """MATLAB code assigned oo_.steady_state / oo_.exo_steady_state: later steady-state
+        computations start from (and use the exogenous values of) the new content, as in Dynare."""
+        (self.endval if self._endval_seen else self.initval).update(values)
 
     def _run_statements(self):
         """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
@@ -356,6 +375,14 @@ class Model:
         self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
         self._n_surprise = 0
         self._oo: dict[str, float] = {}            # what Dynare holds in oo_.steady_state / oo_.exo_steady_state
+        # MATLAB code that writes oo_.steady_state / oo_.exo_steady_state (or makes it unknown):
+        # (index of the last Dynare statement run before it, "steady_state" | "exo_steady_state" | "unknown", values)
+        self._oo_events: list = []
+        self._stmt_values: dict = {}               # id(statement) -> values an initval/endval block left in oo_
+        self._endval_seen = False
+        #: set when MATLAB code read a numerically computed steady state: the calibration from that
+        #: point on is only as accurate as the steady-state solver (Dynare's tolerance)
+        self.calibration_tolerance = None
         # every file goes through the session, with or without MATLAB lines: it also follows which
         # parameters and steady-state values an earlier steady/stoch_simul has changed in Dynare
         self._matlab = matlab.ModSession(self, ModelError)
@@ -384,24 +411,29 @@ class Model:
         kind = st["statementName"]
         if kind == "param_init":
             self.params[self._ip[st["name"]]] = self._value(st["value"])
-        elif kind == "initval":
+        elif kind == "initval" or (kind == "endval" and "learnt_in" not in st):
+            target = self.initval if kind == "initval" else self.endval
+            self._endval_seen = self._endval_seen or kind == "endval"
+            stored = self._stmt_values[id(st)] = {}
             for d in st["vals"]:
-                self.initval[d["name"]] = self._oo[d["name"]] = self._eval_with_vars(d["value"])
+                target[d["name"]] = self._oo[d["name"]] = stored[d["name"]] = self._eval_with_vars(d["value"])
                 self._matlab.oo_written.add(d["name"])
+            self._set_oo_auxiliary()
         elif kind == "endval":
-            for d in st["vals"]:
-                self.endval[d["name"]] = self._oo[d["name"]] = self._eval_with_vars(d["value"])
-                self._matlab.oo_written.add(d["name"])
+            pass                                   # endval(learnt_in=...): read by perfect_foresight
         elif kind == "load_params_and_steady_state":
+            stored = self._stmt_values[id(st)] = {}
             for d in st.get("values", []):
                 if d["name"] in self._ip:
                     self.params[self._ip[d["name"]]] = self.eval_expr(d["value"])
                 else:
-                    self.initval[d["name"]] = self._oo[d["name"]] = self.eval_expr(d["value"])
+                    self.initval[d["name"]] = self._oo[d["name"]] = stored[d["name"]] = self.eval_expr(d["value"])
                     self._matlab.oo_written.add(d["name"])
         elif kind == "shocks" and st.get("surprise"):
             self._n_surprise += 1
             self.options.setdefault("shock_paths", []).append(st)
+        elif kind == "shocks" and "learnt_in" in st:
+            pass                                   # shocks(learnt_in=...): news for perfect_foresight, not Sigma_e
         elif kind == "shocks":
             self._shocks(st)
         elif kind == "occbin_constraints":
@@ -427,8 +459,18 @@ class Model:
                           "plot_shock_decomposition", "realtime_shock_decomposition",
                           "squeeze_shock_decomposition", "init2shocks", "filter_initial_state",
                           "perfect_foresight_with_expectation_errors_setup",
-                          "perfect_foresight_with_expectation_errors_solver", "histval", "mshocks"):
+                          "perfect_foresight_with_expectation_errors_solver", "histval", "mshocks",
+                          "initval_file", "histval_file", "perfect_foresight_controlled_paths"):
             self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
+            if kind == "mshocks" and "learnt_in" not in st:
+                self._det_values(st)
+            elif kind == "histval":
+                self._histval_values(st)
+            elif kind == "perfect_foresight_controlled_paths":
+                stored = self._stmt_values[id(st)] = {}
+                for i, path in enumerate(st.get("paths", [])):
+                    for k, v in enumerate(path.get("values", [])):
+                        stored[(i, k)] = self._value(v["value"])
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
         elif kind in ("write_latex_dynamic_model", "write_latex_static_model",
@@ -437,6 +479,42 @@ class Model:
             pass
         else:
             self.unhandled_statements.append(kind)
+
+    def _det_value(self, text, n):
+        """Value of a deterministic shock over ``n`` periods: a number, or (``values (v);``) a MATLAB
+        vector with one value per period, as Dynare's make_ex_ assigns it."""
+        try:
+            return self._value(text)
+        except ModelError:
+            v = self._matlab.eval_value(text, vector=True)
+            if v.size == 1:
+                return float(v[0])
+            if v.size != n:
+                raise ModelError(f"deterministic shock value {text!r} has {v.size} elements for {n} periods") from None
+            return v
+
+    def _det_values(self, st):
+        """The values of the periods/values lines of a shocks or mshocks block, evaluated where the
+        block stands in the file (stored for perfect_foresight)."""
+        out = self._stmt_values[id(st)] = {}
+        for d in st.get("deterministic_shocks", []):
+            vals = out.setdefault(d["var"], [])
+            for v in d["values"]:
+                try:
+                    n = int(v["period2"]) - int(v["period1"]) + 1
+                except (TypeError, ValueError):            # dates: refused by perfect_foresight
+                    n = 1
+                vals.append(self._det_value(v["value"], n))
+
+    def _histval_values(self, st):
+        """histval values evaluated where the block stands (perfect_foresight uses them); a value
+        pydyn cannot compute is left to perfect_foresight, which reports it."""
+        out = self._stmt_values[id(st)] = {}
+        for d in st.get("vals", []):
+            try:
+                out[(d["name"], int(d["lag"]))] = self._value(d["value"])
+            except (ModelError, ValueError, TypeError, KeyError):
+                pass
 
     def _shocks(self, st):
         """One shocks block, applied in Dynare's order: reset, variances, covariances, correlations."""
@@ -461,9 +539,10 @@ class Model:
                 if key == "correlation":
                     val *= np.sqrt(S[i, i] * S[j, j])
                 S[i, j] = S[j, i] = val
+        self._det_values(st)
         for d in st.get("deterministic_shocks", []):
-            for v in d["values"]:
-                self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), self._value(v["value"])))
+            for v, val in zip(d["values"], self._stmt_values[id(st)][d["var"]]):
+                self.det_shocks.append((ix[d["var"]], int(v["period1"]), int(v["period2"]), val))
         for key in ("skewness", "coskewness"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")
@@ -479,6 +558,25 @@ class Model:
     def set_params(self, values: dict | None = None, **kw) -> None:
         for k, v in {**(values or {}), **kw}.items():
             self.set_param(k, v)
+
+    @property
+    def linear(self) -> bool:
+        """``model(linear)`` (or ``model_options(linear)``) in the .mod file. The preprocessor's JSON
+        output does not record it, so the .mod file next to the JSON folder is read (comments
+        removed); False when it cannot be found."""
+        cached = self.__dict__.get("_linear")
+        if cached is None:
+            cached = False
+            try:
+                mod = self.json_dir.parents[2] / (self.json_dir.parents[1].name + ".mod")
+                text = re.sub(r"/\*.*?\*/", " ", mod.read_text(errors="replace"), flags=re.S)
+                text = re.sub(r"(//|%)[^\n]*", " ", text)
+                cached = any(re.search(r"(?<![\w=])linear(?![\w=])", mo.group(1))
+                             for mo in re.finditer(r"(?<![\w.])model(?:_options)?\s*\(([^)]*)\)", text))
+            except (OSError, IndexError):
+                cached = False
+            self.__dict__["_linear"] = cached
+        return cached
 
     @property
     def orig_endo_names(self) -> list:
