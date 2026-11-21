@@ -1,5 +1,6 @@
 """Model-local variables (#) and auxiliary variables for leads/lags beyond one period."""
 import os
+import warnings
 import shutil
 from pathlib import Path
 
@@ -111,3 +112,40 @@ def test_perfect_foresight_example(tmp_path):
     np.testing.assert_allclose(pf.exo[:, 0], r["exo_simul"], rtol=1e-12)
     np.testing.assert_allclose(pf.endo.T, r["endo_simul"], rtol=1e-6, atol=1e-7)   # Dynare stops at 1e-5
     assert pf.max_residual < 1e-9
+
+
+# ------------------------------------------------------------------ var(log): LOG_x auxiliary variables
+def test_var_log_auxiliary_variables_start_at_the_log(tmp_path):
+    """var(log) x adds LOG_x with the equation x = exp(LOG_x), which is not linear in LOG_x: like
+    Dynare's set_auxiliary_variables (LOG_x = log(x)) fill_auxiliary takes the log, where its two
+    Newton steps gave LOG_k = 10.76 instead of log(12.76) = 2.55 on tests/log_transform/ramst.mod.
+    That wrong start made the perfect-foresight 'steady' (pydyn's port of solve_algo=4) fail on ramst
+    and the steady state of example1 fail. Dynare 7.2 references: reference/r_logtransform.m. Measured:
+    ramst steady state 0 and paths 7e-15; example1 ys 0, ghx 6e-14; fs2000_nonstationary
+    (var(log, deflator=A)) ys 5e-14, ghx 5e-14."""
+    r = loadmat(REF / "clean_log_transform.mat", squeeze_me=True)
+    m = load("log_ramst", tmp_path)
+    assert m.endo_names == r["ramst_names"].split(",")
+    y0 = np.array([m.initval.get(v, 0.0) for v in m.endo_names])
+    y = pydyn.steady.fill_auxiliary(m, y0, m.exo_steady(), m.params)
+    np.testing.assert_array_equal(y[m.endo_names.index("LOG_k")], np.log(y0[m.endo_names.index("k")]))
+    np.testing.assert_array_equal(y[m.endo_names.index("LOG_c")], np.log(y0[m.endo_names.index("c")]))
+    ys, _ = pydyn.steady_state(m)
+    np.testing.assert_allclose(ys, r["ramst_ys"], rtol=1e-14, atol=1e-15)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = pydyn.perfect_foresight(m)
+    assert res.status and int(r["ramst_status"]) == 1 and res.iterations == int(r["ramst_iterations"])
+    np.testing.assert_allclose(res.endo.T, r["ramst_endo"], rtol=1e-12, atol=1e-13)
+    for name, k in (("log_example1", "ex1"), ("log_fs2000ns", "fs")):
+        d = tmp_path / name
+        d.mkdir()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m = load(name, d)
+            sol = pydyn.first_order(m)
+        assert m.endo_names == r[k + "_names"].split(",")
+        np.testing.assert_array_equal(sol.order_var + 1, r[k + "_order_var"])
+        np.testing.assert_allclose(sol.ys, r[k + "_ys"], rtol=1e-12, atol=1e-14, err_msg=name)
+        np.testing.assert_allclose(sol.ghx, r[k + "_ghx"], rtol=1e-10, atol=1e-12, err_msg=name)
+        np.testing.assert_allclose(sol.ghu, r[k + "_ghu"], rtol=1e-10, atol=1e-12, err_msg=name)

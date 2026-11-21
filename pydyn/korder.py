@@ -95,8 +95,15 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
     order_var, state_var, cnt = dr_ordering(model.lead_lag_incidence)
 
     Sigma_e = np.asarray(model.Sigma_e if Sigma_e is None else Sigma_e, dtype=float)
-    if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(params)) and np.all(np.isfinite(Sigma_e))):
-        raise KOrderError("steady state, parameters or Sigma_e contain NaN or Inf")
+    if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(Sigma_e))):
+        raise KOrderError("steady state or Sigma_e contain NaN or Inf")
+    # Dynare's k_order_perturbation MEX (order 3, or the k_order_solver option) refuses any non-finite
+    # parameter; at orders 1 and 2 Dynare's MATLAB solvers only check the derivatives (below), so a
+    # parameter left uninitialised (NaN) that the model does not use does not stop them
+    if (order >= 3 or so.get("k_order_solver")) and not np.all(np.isfinite(params)):
+        bad = [n for n, v in zip(model.param_names, params) if not np.isfinite(v)]
+        raise KOrderError(f"M_.params contains NaN or Inf ({', '.join(bad)}): Dynare's k_order_perturbation, used at "
+                          "order 3 and with the k_order_solver option, refuses them too")
     yy, x0 = np.tile(ys, 3), model.exo_steady()
     nnz, rows, cols, vals = [], [], [], []
     for o in range(1, order + 1):
@@ -110,6 +117,10 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
     rows = np.ascontiguousarray(np.concatenate(rows), dtype=np.int32)
     cols = np.ascontiguousarray(np.concatenate(cols), dtype=np.int32)
     vals = np.ascontiguousarray(np.concatenate(vals), dtype=float)
+    if not np.all(np.isfinite(vals)):              # stochastic_solvers.m: info 8, 10, 11, 12
+        bad = [o + 1 for o, v in enumerate(np.split(vals, np.cumsum(nnz)[:-1])) if not np.all(np.isfinite(v))]
+        raise KOrderError(f"the derivatives of order {', '.join(map(str, bad))} of the dynamic model contain NaN or Inf "
+                          "at the steady state (check that the parameters the model uses are set)")
     sigma = np.asfortranarray(Sigma_e, dtype=float)
     dr = np.ascontiguousarray(order_var, dtype=np.int32)
 

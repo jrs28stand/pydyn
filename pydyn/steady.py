@@ -168,7 +168,8 @@ def steady_state_file_fn(model):
 
 def fill_auxiliary(model, ys, x, params):
     """Set auxiliary variables (added by the preprocessor for leads/lags > 1 etc.) from their
-    defining equations, which are linear in the auxiliary variable itself."""
+    defining equations, which are linear in the auxiliary variable itself, except those of
+    ``var(log)`` (type 7), set to the log of their variable as Dynare's set_auxiliary_variables does."""
     # Lagrange multipliers of Ramsey models (type 6) have no defining equation
     aux = [d["endo_index"] - 1 for d in model.raw.get("aux_vars", []) if d.get("type") != 6]
     rows = aux
@@ -176,8 +177,16 @@ def fill_auxiliary(model, ys, x, params):
         from .optimal_policy import _aux_rows
         rows = _aux_rows(model, aux).tolist()
     ys = ys.copy()
+    # var(log) x: the model has x = exp(LOG_x), not linear in LOG_x; Dynare's set_auxiliary_variables
+    # sets LOG_x = log(x) (the preprocessor's orig_expr), which the Newton steps below would not give
+    logs = {d["endo_index"] - 1: d["orig_index"] - 1 for d in model.raw.get("aux_vars", [])
+            if d.get("type") == 7 and d.get("orig_index") is not None}
     for _ in range(2 if aux else 0):
         for i, row in zip(aux, rows):
+            if i in logs:
+                with np.errstate(all="ignore"):
+                    ys[i] = np.log(ys[logs[i]]) if ys[logs[i]] >= 0 else np.nan
+                continue
             ys[i] = 0.0 if not np.isfinite(ys[i]) else ys[i]
             r = model.static_resid(ys, x, params)[row]
             ys[i] -= r / model.static_jac(ys, x, params)[row, i]
@@ -218,10 +227,14 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     pydyn's port of Dynare's algorithm (with ``tolx``, default ``steady(tolx=...)`` or eps^(2/3), and
     Dynare's maxit default 50); for the other values pydyn's own search is used, with a warning unless
     Newton's method from the same guess reaches the same root. Without ``solve_algo`` pydyn's own
-    search runs (it polishes the root to 1e-14, where Dynare's default solve_algo=4 stops at ``tol``).
+    search runs (it polishes the root to 1e-14, where Dynare's default solve_algo=4 stops at ``tol``),
+    except when the static Jacobian at the guess is structurally singular (typically a continuum of
+    steady states, e.g. a unit root): the point found then depends on the algorithm, so Dynare's
+    default solve_algo=4 is run as it is (blocks that hold at the guess keep their values; an error
+    where Dynare fails).
     """
     from . import options as _opt
-    so = model.options.get("steady", {})
+    so = _opt.steady_options(model)          # steady and check options, accumulated in file order
     if tol is None:
         tol = float(so.get("solve_tolf", DYNARE_TOLF))
     if check is None:
@@ -231,10 +244,12 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     if solve_algo is None and so.get("solve_algo") is not None:
         solve_algo = int(so["solve_algo"])
     ported = solve_algo is not None and int(solve_algo) in PORTED_SOLVE_ALGOS
-    if tolx is None and ported and so.get("solve_tolx") is not None:
+    # tolx is used by the ported algorithms, and by the default search when it runs Dynare's
+    # solve_algo=4 (structurally singular Jacobian, see _singular_default)
+    if tolx is None and (ported or solve_algo is None) and so.get("solve_tolx") is not None:
         tolx = float(so["solve_tolx"])
     _opt.warn_unused(model, "steady", {"solve_tolf", "steadystate.nocheck", "homotopy_mode", "homotopy_steps",
-                                       "steady.maxit", "solve_algo"} | ({"solve_tolx"} if ported else set()),
+                                       "steady.maxit", "solve_algo"} | ({"solve_tolx"} if ported or solve_algo is None else set()),
                      "steady_state")
     params = model.params if params is None else np.asarray(params, float)
     x = model.exo_steady() if exo is None else np.asarray(exo, float)
@@ -353,6 +368,8 @@ def _numerical(model, y0, x, params, tol, maxit, solve_algo=None, tolx=None):
         if np.all(np.isfinite(r0)) and np.max(np.abs(r0), initial=0.0) < EXACT:
             return y0.copy()                                     # already a solution: never move away from it
     if _finite_at(model, y0, x, params):
+        if structurally_singular(model.static_jac(y0, x, params)):
+            return _singular_default(model, y0, x, params, tol, maxit, tolx)
         ys = _solve_from(model, y0, x, params, maxit)
         if ys is None:
             raise SteadyStateError("steady state not found: non-finite values during the search")
@@ -365,6 +382,14 @@ def _numerical(model, y0, x, params, tol, maxit, solve_algo=None, tolx=None):
                               f"(seed {RESTART_SEED}) differ from Dynare's, so with several steady states the one found "
                               "can differ from Dynare's")
         solves += 1
+        if structurally_singular(model.static_jac(start, x, params)):
+            try:
+                return _singular_default(model, start, x, params, tol, maxit, tolx)
+            except SteadyStateError:
+                last = start if last is None else last
+                if solves >= RESTART_SOLVES:
+                    break
+                continue
         ys = _solve_from(model, start, x, params, maxit)
         if _converged(model, ys, x, params, tol):
             return ys
@@ -377,6 +402,36 @@ def _numerical(model, y0, x, params, tol, maxit, solve_algo=None, tolx=None):
     if last is None:
         raise SteadyStateError("steady state not found: non-finite values during the search")
     return last
+
+
+def structurally_singular(jac):
+    """True when the structure of ``jac`` (its non-zero entries, as in Octave's sparse Jacobian) has
+    no zero-free diagonal under any permutation: dmperm then has non-square blocks."""
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import structural_rank
+    S = np.asarray(jac) != 0
+    return S.shape[0] != S.shape[1] or structural_rank(csr_matrix(S)) < S.shape[0]
+
+
+def _singular_default(model, y0, x, params, tol, maxit, tolx):
+    """The default search when the static Jacobian at the guess is structurally singular (typically
+    a continuum of steady states: a unit root makes its static equation 0 = 0). The steady state
+    found then depends on the algorithm, so pydyn runs its port of Dynare's default solve_algo=4 as
+    it is (no polishing, which would move along the continuum): the blocks that already hold at the
+    guess keep their values, as in Dynare, and the point reached is Dynare's."""
+    def fun(y):
+        return model.static_resid(y, x, params), model.static_jac(y, x, params)
+    ys, err, _ = dynare_solve(fun, y0, tol, _EPS ** (2 / 3) if tolx is None else float(tolx),
+                              50 if maxit is None else int(maxit), DYNARE_SOLVE_ALGO, randomize=False)
+    if err:
+        raise SteadyStateError(
+            "steady state not found: the static model's Jacobian is structurally singular (a continuum of steady "
+            "states, e.g. a unit root?) and Dynare's default solver (solve_algo=4, trust region on the "
+            "Dulmage-Mendelsohn blocks), which pydyn runs as it is in this case, does not converge from this guess "
+            "(Dynare 7.2 fails here too: with such a Jacobian its block loop solves the blocks after the first one for "
+            "shifted columns); pydyn does not choose another point of the continuum. Give initval values at which "
+            "more of the equations hold, or a steady_state_model block")
+    return ys
 
 
 def _newton_reaches(model, y0, ys, x, params, maxit=50):
@@ -797,6 +852,274 @@ def _dm_blocks(jac):
     return blocks
 
 
+
+# ------------------------------------------------------------------- Dulmage-Mendelsohn (dmperm)
+# Port of CSparse (Copyright (c) 2006-2022, Timothy A. Davis, LGPL-2.1-or-later): cs_dmperm.c,
+# cs_maxtrans.c (with cs_augment), cs_scc.c, cs_dfs.c, cs_transpose.c, as called by Octave's dmperm
+# (seed 0, no random permutation). Only the structure is used, as Octave drops the zeros of the
+# sparse Jacobian built by the static_g1 files.
+def _cs_csc(S):
+    """CSC structure (column pointers, row indices sorted) of a boolean matrix."""
+    S = np.asarray(S, bool)
+    m, n = S.shape
+    Ai, Ap = [], [0]
+    for j in range(n):
+        rows = np.flatnonzero(S[:, j]).tolist()
+        Ai.extend(rows)
+        Ap.append(len(Ai))
+    return m, n, Ap, Ai
+
+
+def _cs_transpose(m, n, Ap, Ai):
+    """cs_transpose (structure only): rows of the result sorted."""
+    cnt = [0] * m
+    for i in Ai:
+        cnt[i] += 1
+    Cp = [0] * (m + 1)
+    for i in range(m):
+        Cp[i + 1] = Cp[i] + cnt[i]
+    w = Cp[:-1].copy()
+    Ci = [0] * len(Ai)
+    for j in range(n):
+        for p in range(Ap[j], Ap[j + 1]):
+            q = w[Ai[p]]
+            w[Ai[p]] += 1
+            Ci[q] = j
+    return n, m, Cp, Ci
+
+
+def _cs_maxtrans(m, n, Ap, Ai):
+    """cs_maxtrans with seed 0: (jmatch[m], imatch[n])."""
+    n2 = sum(1 for j in range(n) if Ap[j] < Ap[j + 1])
+    rowseen = [0] * m
+    k = 0
+    for j in range(n):
+        for p in range(Ap[j], Ap[j + 1]):
+            rowseen[Ai[p]] = 1
+            k += (j == Ai[p])
+    if k == min(m, n):
+        jmatch = [i if i < k else -1 for i in range(m)]
+        imatch = [j if j < k else -1 for j in range(n)]
+        return jmatch, imatch
+    m2 = sum(rowseen)
+    trans = m2 < n2
+    if trans:
+        cm, cn, Cp, Ci = _cs_transpose(m, n, Ap, Ai)
+    else:
+        cm, cn, Cp, Ci = m, n, Ap, Ai
+    jm = [-1] * cm
+    w = [-1] * cn
+    cheap = Cp[:cn].copy()
+    js, is_, ps = [0] * cn, [0] * cn, [0] * cn
+    for kk in range(cn):                                  # cs_augment(kk, ...)
+        found, i, head = False, -1, 0
+        js[0] = kk
+        while head >= 0:
+            j = js[head]
+            if w[j] != kk:
+                w[j] = kk
+                p = cheap[j]
+                while p < Cp[j + 1] and not found:
+                    i = Ci[p]
+                    found = jm[i] == -1
+                    p += 1
+                cheap[j] = p
+                if found:
+                    is_[head] = i
+                    break
+                ps[head] = Cp[j]
+            p = ps[head]
+            while p < Cp[j + 1]:
+                i = Ci[p]
+                if w[jm[i]] == kk:
+                    p += 1
+                    continue
+                ps[head] = p + 1
+                is_[head] = i
+                head += 1
+                js[head] = jm[i]
+                break
+            if p == Cp[j + 1]:
+                head -= 1
+        if found:
+            for p in range(head, -1, -1):
+                jm[is_[p]] = js[p]
+    im = [-1] * cn
+    for i in range(cm):
+        if jm[i] >= 0:
+            im[jm[i]] = i
+    return (im, jm) if trans else (jm, im)
+
+
+def _cs_bfs(n, Cp, Ci, wi, wj, queue, imatch, jmatch, mark):
+    tail = 0
+    for j in range(n):
+        if imatch[j] >= 0:
+            continue
+        wj[j] = 0
+        queue[tail] = j
+        tail += 1
+    head = 0
+    while head < tail:
+        j = queue[head]
+        head += 1
+        for p in range(Cp[j], Cp[j + 1]):
+            i = Ci[p]
+            if wi[i] >= 0:
+                continue
+            wi[i] = mark
+            j2 = jmatch[i]
+            if wj[j2] >= 0:
+                continue
+            wj[j2] = mark
+            queue[tail] = j2
+            tail += 1
+
+
+def _cs_scc(n, Ap, Ai):
+    """cs_scc: (p, r) of a square structure given in CSC (row order as stored)."""
+    _, _, ATp, ATi = _cs_transpose(n, n, Ap, Ai)
+    p = [0] * n
+    r = [0] * (n + 2)
+
+    def dfs(j, Gp, Gi, marked, top, out):          # cs_dfs: finished nodes go to out[top-1], out[top-2], ...
+        head = 0
+        st = [0] * (n + 1)
+        ps = [0] * (n + 1)
+        st[0] = j
+        while head >= 0:
+            j = st[head]
+            if not marked[j]:
+                marked[j] = True
+                ps[head] = Gp[j]
+            done = True
+            for q in range(ps[head], Gp[j + 1]):
+                i = Gi[q]
+                if marked[i]:
+                    continue
+                ps[head] = q
+                head += 1
+                st[head] = i
+                done = False
+                break
+            if done:
+                head -= 1
+                top -= 1
+                out[top] = j
+        return top
+
+    marked = [False] * n
+    top = n
+    fin = [0] * n
+    for i in range(n):
+        if not marked[i]:
+            top = dfs(i, Ap, Ai, marked, top, fin)
+    marked = [False] * n
+    top = n
+    nb = n
+    for k in range(n):
+        i = fin[k]
+        if marked[i]:
+            continue
+        r[nb] = top
+        nb -= 1
+        top = dfs(i, ATp, ATi, marked, top, p)
+    r[nb] = 0
+    rr = [r[k] for k in range(nb, n + 1)]
+    nb = n - nb
+    blk = [0] * n
+    for b in range(nb):
+        for k in range(rr[b], rr[b + 1]):
+            blk[p[k]] = b
+    rcopy = rr.copy()
+    for i in range(n):
+        p[rcopy[blk[i]]] = i
+        rcopy[blk[i]] += 1
+    return p, rr[:nb + 1], nb
+
+
+def dmperm(S):
+    """Octave's ``[p, q, r, s] = dmperm(S)`` for the structure ``S`` (boolean matrix), 0-based: a
+    port of CSparse's cs_dmperm with seed 0, which Octave calls. ``A(p, q)`` is block upper
+    triangular, block k has rows ``p[r[k]:r[k+1]]`` and columns ``q[s[k]:s[k+1]]``; when ``A`` is
+    structurally singular the first block (more columns than rows) and the last one (more rows than
+    columns) are not square. Checked against Octave 8.4's dmperm on 600 random structures (identical)."""
+    m, n, Ap, Ai = _cs_csc(S)
+    jmatch, imatch = _cs_maxtrans(m, n, Ap, Ai)
+    wi, wj = [-1] * m, [-1] * n
+    p, q = [0] * m, [0] * n
+    _cs_bfs(n, Ap, Ai, wi, wj, q, imatch, jmatch, 1)
+    _, _, ATp, ATi = _cs_transpose(m, n, Ap, Ai)
+    _cs_bfs(m, ATp, ATi, wj, wi, p, jmatch, imatch, 3)
+    cc, rr = [0] * 5, [0] * 5
+    # cs_unmatched(n, wj, q, cc, 0)
+    kr = cc[0]
+    for i in range(n):
+        if wj[i] == 0:
+            q[kr] = i
+            kr += 1
+    cc[1] = kr
+
+    def matched(set_, mark):
+        kc, kr = cc[set_], rr[set_ - 1]
+        for j in range(n):
+            if wj[j] != mark:
+                continue
+            p[kr] = imatch[j]
+            q[kc] = j
+            kr += 1
+            kc += 1
+        cc[set_ + 1] = kc
+        rr[set_] = kr
+    matched(1, 1)
+    matched(2, -1)
+    matched(3, 3)
+    kr = rr[3]
+    for i in range(m):
+        if wi[i] == 0:
+            p[kr] = i
+            kr += 1
+    rr[4] = kr
+    # fine decomposition of C = A(p, q) restricted to R2 x C2, entries in stored (original row) order
+    pinv = [0] * m
+    for k in range(m):
+        pinv[p[k]] = k
+    nc = cc[3] - cc[2]
+    Cp, Ci = [0], []
+    for k in range(cc[2], cc[3]):
+        j = q[k]
+        for t in range(Ap[j], Ap[j + 1]):
+            i = pinv[Ai[t]]
+            if rr[1] <= i < rr[2]:
+                Ci.append(i - rr[1])
+        Cp.append(len(Ci))
+    ps, rs, nb1 = _cs_scc(nc, Cp, Ci)
+    q[cc[2]:cc[3]] = [q[ps[k] + cc[2]] for k in range(nc)]
+    p[rr[1]:rr[1] + nc] = [p[ps[k] + rr[1]] for k in range(nc)]
+    r, s = [0], [0]
+    nb2 = 0
+    if cc[2] > 0:
+        nb2 += 1
+        r, s = [0, None], [0, None]
+    for k in range(nb1):
+        if nb2 >= len(r):
+            r.append(None); s.append(None)
+        r[nb2] = rs[k] + rr[1]
+        s[nb2] = rs[k] + cc[2]
+        nb2 += 1
+    if rr[2] < m:
+        if nb2 >= len(r):
+            r.append(None); s.append(None)
+        r[nb2] = rr[2]
+        s[nb2] = cc[3]
+        nb2 += 1
+    if nb2 >= len(r):
+        r.append(None); s.append(None)
+    r[nb2] = m
+    s[nb2] = n
+    return np.array(p), np.array(q), np.array(r[:nb2 + 1]), np.array(s[:nb2 + 1])
+
+
 def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=True):
     """matlab/optimization/dynare_solve.m for ``solve_algo`` 4 (Dulmage-Mendelsohn blocks, then the
     whole system, with trust_region.m), 9 (trust_region.m on the whole system), 13 and 14 (the
@@ -805,8 +1128,10 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
 
     As in Dynare: a guess whose residuals are below ``tolf`` is returned unchanged; when the
     residuals or the Jacobian are not finite at the guess, new guesses are drawn (see
-    _random_starts; pydyn's draws are not Dynare's). A structurally singular Jacobian (for which
-    MATLAB's dmperm returns non-square blocks) is solved without the block decomposition."""
+    _random_starts; pydyn's draws are not Dynare's). solve_algo 4 uses the exact blocks and block
+    order of Octave's dmperm (see dmperm), including Dynare's handling of the non-square blocks of a
+    structurally singular Jacobian. solve_algo 13 solves such a Jacobian without the block
+    decomposition."""
     x = np.array(x, float)
     n = len(x)
     with np.errstate(all="ignore"):
@@ -829,15 +1154,31 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
             x, err, _ = _trust_region(fun, x, allidx, allidx, tolf, tolx, maxit, factor)
             return x, err, restarted
         if solve_algo == 4:
-            blocks = _dm_blocks(fjac)
-            if blocks is not None:
-                for rows, cols in blocks:
-                    x, err, _ = _trust_region(fun, x, rows, cols, tolf, tolx, maxit, factor)
-                    if err:
-                        return x, True, restarted
-                fvec = fun(x)[0]
-                if not np.max(np.abs(fvec)) > tolf:
-                    return x, False, restarted
+            # [j1, j2, r, s] = dmperm(fjac), blocks from the last to the first. As in dynare_solve.m
+            # the indices j = r(i):r(i+1)-1 select the rows j1(j) AND the columns j2(j), although
+            # the columns of block i are j2(s(i):s(i+1)-1): when the Jacobian is structurally
+            # singular (a continuum of steady states, e.g. a unit root whose static equation is 0 = 0)
+            # the leading block has more columns than rows, so its trust region runs on its first
+            # r(2)-1 columns only and the other blocks get columns shifted by the difference. pydyn
+            # does the same, so that it stops where Dynare does (or fails where it fails).
+            j1, j2, r, s = dmperm(fjac != 0)
+            err = False
+            for i in range(len(r) - 2, -1, -1):
+                j = np.arange(r[i], r[i + 1])
+                blocklength, blockcolumns = r[i + 1] - r[i], s[i + 1] - s[i]
+                if blockcolumns != blocklength:
+                    if np.linalg.norm(fun(x)[0][j1[j]]) < tolf:      # block already satisfied: skipped
+                        err = False
+                        continue
+                if blockcolumns >= blocklength:
+                    x, err, _ = _trust_region(fun, x, j1[j], j2[j], tolf, tolx, maxit, factor)
+                else:                                                # "non-square block" error
+                    err = True
+                if err:
+                    return x, True, restarted
+            fvec = fun(x)[0]
+            if not np.max(np.abs(fvec)) > tolf:
+                return x, False, restarted
             x, err, _ = _trust_region(fun, x, allidx, allidx, tolf, tolx, maxit, factor)
             return x, err, restarted
         if solve_algo in (13, 14):

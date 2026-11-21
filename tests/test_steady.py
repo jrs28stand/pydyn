@@ -167,3 +167,65 @@ def test_benchmark_external_function_converges_to_dynares_root(tmp_path):
     np.testing.assert_allclose(ys, dr_ys, rtol=1e-10, atol=1e-14)
     ys4, _ = pydyn.steady_state(m, solve_algo=4)
     np.testing.assert_allclose(ys4, dr_ys, rtol=1e-13, atol=1e-14)
+
+
+# ------------------------------------------------------------------ continuum of steady states (unit root)
+def _ref_model(tmp_path, name):
+    from pathlib import Path
+    import shutil
+    ref = Path(__file__).resolve().parent.parent / "reference"
+    d = tmp_path / name
+    d.mkdir(exist_ok=True)
+    shutil.copy(ref / f"{name}.mod", d)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pydyn.Model(pydyn.run_preprocessor(d / f"{name}.mod"))
+
+
+def test_dmperm_is_octaves():
+    """The port of CSparse's cs_dmperm returns Octave's [p, q, r, s] (here the structure of the static
+    Jacobian of reference/ur_ss.mod at its initval, printed by Octave 8.4: p = [4 3 5 1 2],
+    q = [5 1 2 3 4], r = [1 4 5 6], s = [1 5 6 6]; 600 random structures were checked the same way)."""
+    J = np.array([[0, 0, 0, 1, 0], [0, 0, 0, 0, 0], [0, 1, 1, 1, 1], [1, 0, 1, 1, 1], [1, 1, 1, 0, 0]], bool)
+    p, q, r, s = S.dmperm(J)
+    assert (p + 1).tolist() == [4, 3, 5, 1, 2] and (q + 1).tolist() == [5, 1, 2, 3, 4]
+    assert (r + 1).tolist() == [1, 4, 5, 6] and (s + 1).tolist() == [1, 5, 6, 6]
+    assert S.structurally_singular(J) and not S.structurally_singular(np.eye(3) + np.eye(3, k=1))
+
+
+def test_unit_root_steady_state_is_dynares_point_of_the_continuum(tmp_path):
+    """R01. z = z(-1) + ez makes the static model singular (a continuum of steady states indexed by
+    z). Dynare's default solve_algo=4 solves the Dulmage-Mendelsohn blocks of the static Jacobian
+    from the last to the first, skipping those that already hold: here the unit-root equation and a's
+    block hold at initval, and the leading block (rows of the Euler, production and capital
+    equations, columns z, y, c, k) is solved, as dynare_solve.m indexes it, on its first three
+    columns only, so k keeps its initval 40 and z moves from 0.5 to 0.0516. pydyn's own search
+    (Powell's hybrid method on the whole system) used to stop at z = 0.199, k = 46.4 (the z column of
+    ghx 16% above Dynare's). Measured now: ys 4e-16, ghx 9e-14. Reference: reference/r_unitroot.m
+    (Dynare 7.2, Octave 8.4)."""
+    from scipy.io import loadmat
+    from pathlib import Path
+    r = loadmat(Path(__file__).resolve().parent.parent / "reference" / "clean_ur_ss.mat", squeeze_me=True)
+    m = _ref_model(tmp_path, "ur_ss")
+    ys, _ = pydyn.steady_state(m)
+    assert ys[2] == 40.0                                                  # untouched, as in Dynare
+    np.testing.assert_allclose(ys, r["ys"], rtol=1e-12, atol=1e-14)
+    ys4, _ = pydyn.steady_state(m, solve_algo=4)
+    np.testing.assert_array_equal(ys4, ys)
+    sol = pydyn.first_order(m)
+    np.testing.assert_array_equal(sol.order_var + 1, r["order_var"])
+    np.testing.assert_allclose(sol.ghx, r["ghx"], rtol=1e-10, atol=1e-13)
+    np.testing.assert_allclose(sol.ghu, r["ghu"], rtol=1e-10, atol=1e-13)
+
+
+def test_unit_root_steady_state_fails_where_dynare_fails(tmp_path):
+    """reference/ur_ss_fail.mod: a = 0.1 at initval. Dynare 7.2 fails (its block loop gives a's
+    equation the column of k, a defect of dynare_solve.m for structurally singular Jacobians);
+    pydyn refuses too instead of choosing another point of the continuum."""
+    from scipy.io import loadmat
+    from pathlib import Path
+    r = loadmat(Path(__file__).resolve().parent.parent / "reference" / "clean_ur_ss.mat", squeeze_me=True)
+    assert int(r["fail_failed"]) == 1
+    m = _ref_model(tmp_path, "ur_ss_fail")
+    with pytest.raises(S.SteadyStateError, match="structurally singular"):
+        pydyn.steady_state(m)

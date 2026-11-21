@@ -16,6 +16,7 @@ import numpy as np
 from . import dates as _dates
 from . import external, matlab
 from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name, temp_name
+from .options import ACCUMULATED_OPTIONS
 
 #: "fast": generated model functions run on Python floats with a numpy fallback; "numpy": numpy
 #: scalars only (the original behaviour). Environment variable PYDYN_CODEGEN overrides it.
@@ -423,9 +424,16 @@ class Model:
         self.det_shocks: list = []                 # (exo index, first period, last period, value), 1-based
         self.det_shocks_exo_det: list = []         # the same for varexo_det variables (index in exo_det_names)
         self.Sigma_e = np.zeros((self.n_exo, self.n_exo))
+        #: Dynare's M_.Correlation_matrix: set by 'corr' statements of shocks blocks only (not by
+        #: 'var e, u = ...'); estimation rebuilds Sigma_e from it when standard deviations are estimated
+        self.Correlation_matrix = np.eye(self.n_exo)
         self.measurement_errors: dict[str, float] = {}
         self.occbin_constraints = []
         self.options: dict[str, dict] = {}
+        #: (statement, its own options) in file order, for the statements whose options accumulate in
+        #: Dynare's options_ (see pydyn.options.accumulated)
+        self.options_sequence: list[tuple[str, dict]] = []
+        self._options_parsed: dict[str, dict] = {}
         self.matlab_options = matlab.Struct()      # options_.x = ... assignments (stored, not acted upon)
         self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
         self._n_surprise = 0
@@ -497,7 +505,10 @@ class Model:
                 d["name"] in self._ip or d["name"] in self._ix for d in st["values"]):
             self._homotopy = st["values"]          # applied by the next steady(homotopy_mode=...)
         elif kind in ("steady", "check", "occbin_setup", "occbin_graph", "rplot"):
-            self.options.setdefault(kind, st.get("options", {}))
+            if kind in ACCUMULATED_OPTIONS:
+                self._accumulate_options(kind, st.get("options", {}))
+            else:
+                self.options.setdefault(kind, st.get("options", {}))
             if kind == "steady" and st.get("options", {}).get("homotopy_mode") and getattr(self, "_homotopy", None):
                 # Dynare's steady moves these parameters and exogenous variables to their final values
                 # (it stops with an error if the homotopy fails); later statements see the final values
@@ -516,7 +527,10 @@ class Model:
                           "perfect_foresight_with_expectation_errors_setup",
                           "perfect_foresight_with_expectation_errors_solver", "histval", "mshocks",
                           "initval_file", "histval_file", "perfect_foresight_controlled_paths"):
-            self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
+            if kind in ACCUMULATED_OPTIONS:
+                self._accumulate_options(kind, st.get("options", {}))
+            else:
+                self.options[kind] = st.get("options", {}) if kind != "estimated_params" else st
             if kind == "mshocks" and "learnt_in" not in st:
                 self._det_values(st)
             elif kind == "histval":
@@ -544,11 +558,11 @@ class Model:
                     self.matlab_options["instruments"] = matlab.Cell(names, (len(names), 1) if names else (0, 0))
             if kind in ("ramsey_policy", "discretionary_policy", "osr"):
                 # these commands write their options into options_ (kept by later commands) and run stoch_simul
-                self.options["stoch_simul"] = {**self.options.get("stoch_simul", {}),
-                                               **{k: v for k, v in st.get("options", {}).items()
-                                                  if k not in ("instruments", "osr.opt_algo", "planner_discount", "analytic_derivation",
-                                                                "optim_opt", "osr.maxit", "osr.tolf", "discretionary_tol",
-                                                                "dp.maxit", "planner_discount_latex_name")}}
+                self._accumulate_options("stoch_simul", {k: v for k, v in st.get("options", {}).items()
+                                                         if k not in ("instruments", "osr.opt_algo", "planner_discount",
+                                                                      "analytic_derivation", "optim_opt", "osr.maxit",
+                                                                      "osr.tolf", "discretionary_tol", "dp.maxit",
+                                                                      "planner_discount_latex_name")})
                 self.options.setdefault(kind + "_all", []).append(st)
         elif kind in ("native", "verbatim"):
             pass                                   # run by pydyn.matlab.ModSession
@@ -566,6 +580,14 @@ class Model:
                             "(the model, parameters and priors are available as Python objects)", stacklevel=2)
         else:
             self.unhandled_statements.append(kind)
+
+    def _accumulate_options(self, kind, opts):
+        """Dynare writes the options of each statement into options_, where they stay until a later
+        statement sets them again: model.options[kind] holds the options of all the statements of
+        that kind so far (later ones override), options_sequence the statements in file order."""
+        self.options[kind] = {**self.options.get(kind, {}), **opts}
+        self.options_sequence.append((kind, dict(opts)))
+        self._options_parsed[kind] = dict(self.options[kind])
 
     def _det_value(self, text, n):
         """Value of a deterministic shock over ``n`` periods: a number, or (``values (v);``) a MATLAB
@@ -611,6 +633,7 @@ class Model:
         ix, S = self._ix, self.Sigma_e
         if st.get("overwrite"):
             S[:] = 0
+            self.Correlation_matrix = np.eye(self.n_exo)
             self.measurement_errors.clear()
         for key, power in (("variance", 1), ("stderr", 2)):
             for d in st.get(key, []):
@@ -627,6 +650,7 @@ class Model:
                 i, j = ix[d["name"]], ix[d["name2"]]
                 val = self._value(d[key])
                 if key == "correlation":
+                    self.Correlation_matrix[i, j] = self.Correlation_matrix[j, i] = val
                     val *= np.sqrt(S[i, i] * S[j, j])
                 S[i, j] = S[j, i] = val
         self._det_values(st)
@@ -686,9 +710,9 @@ class Model:
         return dict(zip(self.param_names, self.params.tolist()))
 
     def set_shock_stderr(self, name: str, value: float) -> None:
+        """Counterpart of Dynare's ``set_shock_stderr_value``: sets the variance ``Sigma_e[i, i]``
+        only, so the covariances with other shocks are kept (their correlation changes)."""
         i = self._ix[name]
-        self.Sigma_e[i, :] = 0.0
-        self.Sigma_e[:, i] = 0.0
         self.Sigma_e[i, i] = float(value) ** 2
 
     # ------------------------------------------------------------------ evaluation

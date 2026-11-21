@@ -823,3 +823,68 @@ def test_subclass_hook_for_occbin(post):
         assert m.occbin_constraints == [{"name": "zlb"}] and np.isfinite(e.log_posterior(e.x0))
     finally:
         m.occbin_constraints = saved
+
+
+# ------------------------------------------------------------------ standard deviations of correlated shocks (R11)
+@pytest.mark.parametrize("variant", [1, 2, 3])
+def test_estimated_stderr_with_correlated_shocks(load, variant):
+    """est_corr.mod (reference/r_shock_corr.m, Dynare 7.2): Sigma_e from set_all_parameters and the
+    likelihood at three points. 1: 'corr e, u' calibrated, stderr e estimated: the correlation is
+    kept. 2: 'var e, u = 0.06' (a covariance) calibrated: Dynare rebuilds Sigma_e from
+    M_.Correlation_matrix, which only 'corr' sets, so the covariance is dropped (pydyn kept the
+    correlation: likelihood off by 8.7) and pydyn warns. 3: corr u, w estimated as well: the
+    calibrated covariance of e, u keeps its value (check_for_calibrated_covariances), so at the third
+    point (stderr e = 0.2) the correlation is 1 and both reject the point. Measured: Sigma_e 2e-18,
+    log-likelihood 1e-13 relative."""
+    m = load("est_corr", variant)
+    r = ref(f"clean_est_corr_v{variant}.mat")
+    if variant == 2:
+        with pytest.warns(UserWarning, match="calibrated covariances of e and u are not kept"):
+            est = estimation.Estimation(m)
+    else:
+        est = estimation.Estimation(m)
+    assert ";".join(est.names) == r["names"]
+    for k in range(r["X"].shape[1]):
+        x = r["X"][:, k]
+        Q, _ = est.covariances(x)
+        np.testing.assert_allclose(Q, r["Sigma_e"][:, :, k], rtol=1e-14, atol=1e-16)
+        if np.isfinite(r["fval"][k]):
+            np.testing.assert_allclose(est.log_likelihood(x), -r["fval"][k], rtol=1e-12)
+        else:
+            assert est.log_likelihood(x) == -np.inf
+
+
+def test_set_shock_stderr_keeps_the_covariance(load):
+    """R11. Dynare's set_shock_stderr_value sets M_.Sigma_e(i,i) only: the covariance with a
+    correlated shock is kept, so their correlation changes (pydyn's Model.set_shock_stderr zeroed
+    the row and column). Reference: est_corr.mod variant 1 after set_shock_stderr_value('e', 0.8)."""
+    m = load("est_corr", 1)
+    r = ref("clean_est_corr_v1.mat")
+    saved = m.Sigma_e.copy()
+    np.testing.assert_allclose(m.Sigma_e, r["Sigma_e0"], rtol=1e-15)
+    try:
+        m.set_shock_stderr("e", 0.8)
+        np.testing.assert_allclose(m.Sigma_e, r["Sigma_e_set"], rtol=1e-15, atol=0)
+    finally:
+        m.Sigma_e[:] = saved                      # the model is shared with the other tests of the module
+
+
+@pytest.mark.parametrize("variant", [1, 2])
+def test_singular_forecast_error_variance_in_the_likelihood(load, variant):
+    """R25 (likelihood side). est_sing.mod: one shock, two observed variables. Dynare 7.2's
+    dsge_likelihood switches to the univariate filter when the multivariate one finds F singular
+    (use_univariate_filters_if_singularity_is_detected, default 1) and returns info 50 when the
+    option is 0 (variant 2); pydyn already did both. (Dynare's estimation command itself stops
+    earlier, in initial_estimation_checks, which pydyn does not port; reference/r_est_sing.m calls
+    dsge_likelihood directly.) Measured 3e-16 relative."""
+    m = load("est_sing", variant)
+    r = ref(f"clean_est_sing_v{variant}.mat")
+    est = estimation.Estimation(m)
+    assert ";".join(est.names) == r["names"]
+    for k in range(r["X"].shape[1]):
+        ll = est.log_likelihood(r["X"][:, k])
+        if variant == 1:
+            assert est.last_filter == "univariate" and int(r["info"][k]) == 0
+            np.testing.assert_allclose(ll, -r["fval"][k], rtol=1e-12)
+        else:
+            assert ll == -np.inf and int(r["info"][k]) == 50 and "info 50" in est.last_info

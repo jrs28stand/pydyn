@@ -57,6 +57,7 @@ _DEFAULTS = dict(
     diffuse_kalman_tol=1e-6, qz_criterium=None, filtered_vars=False, filter_step_ahead=None,
     filter_covariance=False, smoothed_state_uncertainty=False, parameter_set="calibration",
     varobs=None, replicate_dynare_bugs=False, Harvey_scale_factor=10.0, heteroskedastic_filter=False,
+    use_univariate_smoother_if_singularity_is_detected=False, noprint=False,
 )
 PARAMETER_SETS = ("calibration", "posterior_mode", "posterior_mean", "posterior_median", "mle_mode",
                   "prior_mode", "prior_mean")
@@ -104,6 +105,11 @@ def _resolve_options(model, user, extra_statements=()):
     opts = dict(_DEFAULTS)
     from_file = _statement_options(model, _STATEMENTS + tuple(extra_statements))
     opts.update({k: v for k, v in from_file.items() if k in _DEFAULTS})
+    # options_.noprint is set by the noprint/print options of any statement (stoch_simul, ...), and
+    # decides whether a stochastic singularity stops the smoother (print_info)
+    for st in getattr(model, "statements", []):
+        if "noprint" in (st.get("options") or {}):
+            opts["noprint"] = bool(st["options"]["noprint"])
     from . import options as _opt
     dropped = sorted(set(from_file) - set(_DEFAULTS) - _opt.COSMETIC - _ESTIMATION_ONLY)
     if dropped:
@@ -404,9 +410,10 @@ def _stationary_variance(T, R, Q, qz_criterium):
 # --------------------------------------------------------------------------------- multivariate smoother
 def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_tol, dk_tol,
                            want_V, want_PK, compat, a_pred=None, a_zero=None):
-    """Port of ``missing_DiffuseKalmanSmootherH1_Z``. ``Y`` is (n_obs, T). Returns ``None`` when
-    Dynare's routine reports a singular forecast-error variance (the caller then switches to the
-    univariate smoother, as ``DsgeSmoother`` does).
+    """Port of ``missing_DiffuseKalmanSmootherH1_Z``. ``Y`` is (n_obs, T). Returns Dynare's error
+    code (an int) when its routine reports a singular forecast-error variance: 420 (``F_inf``
+    rank-deficient) or 421 (``F_star``) in the diffuse phase, 422 (``F``) in a stationary period;
+    the caller then switches to the univariate smoother or stops, as ``DsgeSmoother`` does.
 
     ``compat=True`` reproduces three defects of Dynare 7.2 in the diffuse phase (see ``smooth``).
     ``a_pred`` is the state forecast for period 1 and ``a_zero`` the mean of the period-0 state
@@ -472,12 +479,12 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
             finf_zero = bool(np.all(np.abs(Finf) < dk_tol))
             if finf_zero or _rcond(Finf) < dk_tol:
                 if not finf_zero:
-                    return None                                          # error 420
+                    return 420
                 Fs = ZZ @ Pstar[t] @ ZZ.T + H[np.ix_(di, di)]
                 Fstar[t] = Fs
                 if _rcond(Fs) < kalman_tol:
                     if not np.all(np.abs(Fs) < kalman_tol):
-                        return None                                      # error 421
+                        return 421
                     kind[t] = "skip"
                     Pstar[t + 1] = T @ Pstar[t] @ Tt + QQ
                     Pinf[t + 1] = T @ Pinf[t] @ Tt
@@ -531,11 +538,11 @@ def _smoother_multivariate(T, Z, R, Q, H, Pinf1, Pstar1, Y, di_list, nk, kalman_
             F = ZZ @ P[t] @ ZZ.T + H[np.ix_(di, di)]
             dF = np.diag(F)
             if np.any(dF < kalman_tol):
-                return None                                              # error 422
+                return 422
             sig = np.sqrt(dF)
             ss = np.outer(sig, sig)
             if _rcond(F / ss) < kalman_tol:
-                return None
+                return 422
             iFt = np.linalg.inv(F / ss) / ss
             iF[t][np.ix_(di, di)] = iFt
             PZI = P[t] @ ZZ.T @ iFt
@@ -1141,7 +1148,16 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     if kalman_algo in (1, 3):
         out = _smoother_multivariate(G, Z, Hs, Qs, Hme, Pinf, Pstar, Yd, di_list, nk, ktol, dtol,
                                      want_V, want_PK, compat, a_pred, a_zero)
-        if out is None:
+        if isinstance(out, int):
+            # DsgeSmoother.m: a singular F in a stationary period (stochastic singularity, 422) stops
+            # with an error (print_info) unless use_univariate_smoother_if_singularity_is_detected (or
+            # noprint, under which print_info does not stop); otherwise, and for 420/421 in the
+            # diffuse phase, switch to the univariate smoother
+            if out == 422 and not (opts["use_univariate_smoother_if_singularity_is_detected"] or opts["noprint"]):
+                raise SmootherError("Kalman filter: F is singular in stationary period. Stochastic singularity detected. "
+                                    "(Dynare 7.2 stops here too; if the model is correctly specified, the option "
+                                    "use_univariate_smoother_if_singularity_is_detected switches to the univariate smoother)")
+            out = None
             kalman_algo += 1                        # Dynare: switch to the univariate filter
     if out is None:
         if not np.all(np.abs(Hme - np.diag(np.diag(Hme))) < 1e-14):

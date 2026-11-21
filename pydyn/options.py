@@ -18,12 +18,45 @@ class UnsupportedOptionWarning(UserWarning):
     pass
 
 
-def stoch_options(model) -> dict:
-    """Options of the model's solution commands, later commands taking precedence as in Dynare."""
+#: statements whose options accumulate in Dynare's options_ in file order: a later statement
+#: (of any of these kinds) only overrides the options it sets
+ACCUMULATED_OPTIONS = ("steady", "check", "stoch_simul", "estimation", "calib_smoother")
+
+_MISSING = object()
+
+
+def accumulated(model, kinds) -> dict:
+    """Dynare's options_ as the statements of ``kinds`` leave it: their options merged in file
+    order (model.options_sequence). Options changed in ``model.options[kind]`` after the model was
+    loaded take precedence; a kind whose options were emptied (``model.options[kind] = {}``) does
+    not contribute."""
+    seq = getattr(model, "options_sequence", None)
+    if seq is None:                                       # a model built without the statement list
+        out = {}
+        for kind in kinds:
+            out.update(model.options.get(kind, {}))
+        return out
+    parsed = getattr(model, "_options_parsed", {})
     out = {}
-    for kind in ("check", "stoch_simul", "estimation", "calib_smoother"):
-        out.update(model.options.get(kind, {}))
+    for kind, opts in seq:
+        if kind in kinds and model.options.get(kind):
+            out.update(opts)
+    for kind in kinds:
+        cur, base = model.options.get(kind) or {}, parsed.get(kind, {})
+        out.update({k: v for k, v in cur.items() if base.get(k, _MISSING) is not v})
     return out
+
+
+def stoch_options(model) -> dict:
+    """Options of the model's solution commands as Dynare's options_ holds them after the .mod file:
+    those of check, stoch_simul, estimation and calib_smoother accumulated in file order."""
+    return accumulated(model, ("check", "stoch_simul", "estimation", "calib_smoother"))
+
+
+def steady_options(model) -> dict:
+    """Options of the steady-state computation: those of steady and check (which takes the steady
+    options) accumulated in file order, as in Dynare's options_."""
+    return accumulated(model, ("steady", "check"))
 
 
 def qz_criterium(model, value=None, default=1.0 + 1e-6) -> float:

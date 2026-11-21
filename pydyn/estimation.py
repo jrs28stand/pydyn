@@ -1205,14 +1205,33 @@ class Estimation:
         else:
             self.lb, self.ub = lb, ub
         self.n = len(self.names)
-        # calibrated covariance structure
+        # calibrated covariance structure, as Dynare's set_all_parameters uses it: Sigma_e is rebuilt
+        # from the standard deviations and M_.Correlation_matrix (set by 'corr' statements only); when
+        # correlations are estimated, the other non-zero calibrated covariances keep their value
+        # (check_for_calibrated_covariances, which Dynare 7.2 only applies when ncx > 0)
         S = np.array(m.Sigma_e, float)
-        sd = np.sqrt(np.diag(S))
-        with np.errstate(divide="ignore", invalid="ignore"):
-            C = S / np.outer(sd, sd)
-        C[~np.isfinite(C)] = 0.0
-        np.fill_diagonal(C, 1.0)
+        C = getattr(m, "Correlation_matrix", None)
+        if C is None or np.shape(C) != S.shape:                 # a model object without it
+            sd = np.sqrt(np.diag(S))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                C = S / np.outer(sd, sd)
+            C[~np.isfinite(C)] = 0.0
+            np.fill_diagonal(C, 1.0)
+        C = np.array(C, float)
         self._Sigma_e0, self._corr0 = S, C
+        estimated_corr = {frozenset(k) for _, k, _ in groups["cx"]}
+        calibrated = [(i, j) for i in range(len(S)) for j in range(i)
+                      if S[i, j] != 0 and frozenset((i, j)) not in estimated_corr]
+        self._calibrated_cov = calibrated if groups["cx"] else []
+        if groups["vx"] and not groups["cx"]:
+            sd = np.sqrt(np.diag(S))
+            lost = [(i, j) for i, j in calibrated if not np.isclose(S[i, j], C[i, j] * sd[i] * sd[j], rtol=1e-12, atol=0)]
+            if lost:
+                warnings.warn("calibrated covariances of " + ", ".join(f"{m.exo_names[j]} and {m.exo_names[i]}" for i, j in lost)
+                              + " are not kept when standard deviations are estimated: as in Dynare 7.2 (set_all_parameters), "
+                              "Sigma_e is rebuilt from the correlations of 'corr' statements (M_.Correlation_matrix), and "
+                              "these covariances were not set by one (e.g. 'var e, u = ...'); write them as 'corr' to keep them",
+                              UserWarning, stacklevel=3)
         pp = len(self.varobs)
         H = np.zeros((pp, pp))
         for name, var in m.measurement_errors.items():
@@ -1268,6 +1287,8 @@ class Estimation:
         if g["vx"] or g["cx"]:
             sd = np.sqrt(np.diag(Q))
             Q = C * np.outer(sd, sd)
+            for k1, k2 in self._calibrated_cov:                # estim_params_.calibrated_covariances
+                Q[k1, k2] = Q[k2, k1] = self._Sigma_e0[k1, k2]
         if g["vn"] or g["cn"]:
             sd = np.sqrt(np.diag(H))
             H = CH * np.outer(sd, sd)

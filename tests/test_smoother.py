@@ -359,3 +359,29 @@ def test_errors(get):
         smoother.smooth(m, first_obs=80, nobs=20)
     with pytest.raises(smoother.SmootherError, match="prefilter"):
         smoother.smooth(model("smo_fs", 4), prefilter=1)
+
+
+# ------------------------------------------------------------------ stochastic singularity (R25)
+@pytest.mark.parametrize("variant", [1, 2, 3])
+def test_stochastic_singularity_stops_the_smoother_as_in_dynare(variant, tmp_path):
+    """smo_sing.mod: one shock, two observed variables, so F is singular in every stationary period
+    (Dynare's error 422). Dynare 7.2's DsgeSmoother stops (variant 1) unless
+    use_univariate_smoother_if_singularity_is_detected is set (variant 2) or options_.noprint is (by
+    an earlier stoch_simul(noprint), variant 3: print_info then does not stop); then it switches to
+    the univariate smoother. pydyn switched silently in all three. Reference: reference/r_smo_sing.m;
+    measured 1e-16."""
+    r = loadmat(REF / "clean_smo_sing.mat", squeeze_me=True)
+    for f in ("smo_sing.mod", "smo_sing_data.m"):
+        shutil.copy(REF / f, tmp_path)
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "smo_sing.mod", extra_args=(f"-DVARIANT={variant}",)))
+    if r[f"v{variant}_failed"]:
+        with pytest.raises(smoother.SmootherError, match=str(r[f"v{variant}_message"])[:40]):
+            smoother.smooth(m)
+        res = smoother.smooth(m, use_univariate_smoother_if_singularity_is_detected=True)
+        assert res.kalman_algo == 2
+        return
+    res = smoother.smooth(m)
+    assert res.kalman_algo == 2                       # switched to the univariate smoother
+    close(res.SmoothedVariables["x"], r[f"v{variant}_x"], rtol=1e-12, atol=1e-14)
+    close(res.UpdatedVariables["x"], r[f"v{variant}_x_upd"], rtol=1e-12, atol=1e-14)
+    close(res.SmoothedShocks["e"], r[f"v{variant}_e"], rtol=1e-12, atol=1e-14)

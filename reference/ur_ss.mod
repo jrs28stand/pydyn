@@ -1,0 +1,17 @@
+var y c k a z;
+varexo ea ez;
+parameters alpha beta delta rho;
+alpha = 0.36; beta = 0.99; delta = 0.025; rho = 0.95;
+model;
+a = rho*a(-1) + ea;
+z = z(-1) + ez;
+1/c = beta/c(+1)*(alpha*exp(a(+1))*k^(alpha-1)*exp(z(+1))^(1-alpha) + 1 - delta);
+y = exp(a)*k(-1)^alpha*exp(z)^(1-alpha);
+k = y - c + (1-delta)*k(-1);
+end;
+shocks; var ea; stderr 0.01; var ez; stderr 0.005; end;
+initval;
+z = 0.5; a = 0; k = 40; y = 3; c = 2.5;
+end;
+steady;
+stoch_simul(order=1, irf=0, nomoments, noprint, nograph);

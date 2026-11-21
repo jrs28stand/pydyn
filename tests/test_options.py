@@ -126,3 +126,41 @@ def test_estimation_reports_options_it_does_not_act_on(tmp_path):
         m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "est_nk.mod"))
     with pytest.warns(UnsupportedOptionWarning, match="posterior_sampling_method"):
         Estimation(m, posterior_sampling_method="dime_mcmc")                   # slice etc.: pydyn.samplers
+
+
+def test_options_accumulate_in_file_order(tmp_path):
+    """R23. Dynare writes the options of each statement into options_, where they stay until a later
+    statement sets them again (reference/opt_acc.mod, Dynare 7.2 options_ saved by
+    reference/r_options.m). The second stoch_simul keeps hp_filter=1600 and ar=2 of the first, so
+    oo_.var is the HP-filtered variance (pydyn used the last statement's options only: unfiltered,
+    off by 0.6); check(tolf=1e-9) sets the steady-state tolerance, steady(maxit=30) adds to
+    steady(solve_algo=9); check's qz_zero_threshold, after stoch_simul's, wins. Measured: steady state
+    identical, var 4e-16, autocorrelations 1.5e-14."""
+    from scipy.io import loadmat
+    from pydyn import options as O
+    r = loadmat(REF / "clean_opt_acc.mat", squeeze_me=True)
+    shutil.copy(REF / "opt_acc.mod", tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "opt_acc.mod"))
+    so = O.stoch_options(m)
+    assert so["hp_filter"] == r["hp_filter"] and so["ar"] == r["ar"] and so["order"] == r["order"]
+    assert so["qz_zero_threshold"] == r["qz_zero_threshold"]
+    st = O.steady_options(m)
+    assert st["solve_algo"] == r["solve_algo"] and st["steady.maxit"] == r["steady_maxit"]
+    assert st["solve_tolf"] == r["solve_tolf"]
+    assert [k for k, _ in m.options_sequence] == ["steady", "stoch_simul", "check", "steady", "stoch_simul"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ys, _ = pydyn.steady_state(m)
+        mo = pydyn.moments.theoretical_moments(m)
+    np.testing.assert_allclose(ys, r["ys"], rtol=1e-12, atol=1e-14)
+    assert mo.filter == "hp" and mo.ar == 2
+    np.testing.assert_allclose(mo.var, r["var"], rtol=1e-9, atol=1e-15)
+    np.testing.assert_allclose(mo.autocorr[0], r["autocorr1"], rtol=1e-9, atol=1e-14)
+    np.testing.assert_allclose(mo.autocorr[1], r["autocorr2"], rtol=1e-9, atol=1e-14)
+    # options changed after loading still take precedence; an emptied kind does not contribute
+    m.options["stoch_simul"]["ar"] = 4
+    assert O.stoch_options(m)["ar"] == 4
+    m.options["check"] = {}
+    assert O.stoch_options(m)["qz_zero_threshold"] == 1e-7
