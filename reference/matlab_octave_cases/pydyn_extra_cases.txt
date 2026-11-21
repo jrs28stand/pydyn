@@ -1,0 +1,547 @@
+x=5; r=size(x([1;1]));
+%%
+x=1:5; r=size(x(false(1,5)'));
+%%
+A=magic(3); r=size(A(false(3,3)));
+%%
+A=[1 2 3;4 5 6]; r=size(A(false(0,0)));
+%%
+x=5; r=size(x(true));
+%%
+x=(1:3)'; r=x(logical([1 0 1]));
+%%
+x=(1:3); r=x(logical([1;0;1]));
+%%
+A=[1 2 3;4 5 6]; r=A(logical([1;0;1]));
+%%
+A=[1 2 3;4 5 6]; r=A(logical([1 0 1; 0 0 0]));
+%%
+A=[1 2 3;4 5 6]; r=A(logical([1 0 1 0 0 1]));
+%%
+x=5; r=size(x(false(1,0)));
+%%
+x=5; r=size(x(zeros(1,0)));
+%%
+x=1:3; r=size(x([]));
+%%
+x=1:3; r=size(x(zeros(0,1)));
+%%
+A=[1 2;3 4]; r=size(A(zeros(1,0)));
+%%
+A=[1 2;3 4]; r=A([1 2; 2 1]);
+%%
+x=1:4; r=x([1 2; 3 4]);
+%%
+x=(1:4)'; r=x([1 2 3]);
+%%
+x=1:3; r=x(:);
+%%
+s='abc'; r=double(s(logical([1;0;1])));
+%%
+x=[]; x(3)=true; r=[double(islogical(x)) x];
+%%
+x=zeros(1,0); x(2)=true; r=[double(islogical(x)) x];
+%%
+clear y; y(2,2)=true; r=[double(islogical(y)) y(:)'];
+%%
+a=[1 2 3]; a(2)=true; r=[double(islogical(a)) a];
+%%
+l=[true false]; l(:)=[2 0]; r=[double(islogical(l)) l];
+%%
+l=[true false]; l(1,3)=4; r=[double(islogical(l)) l];
+%%
+x=[1 2 3]; x(2,:)=[true false true]; r=[double(islogical(x)) x(:)'];
+%%
+x=[1 2 3]; x(logical([1 0 1]))=[7 8]; r=x;
+%%
+x=[1 2 3]; x(logical([1 0 1 0 1]))=[7 8 9]; r=x;
+%%
+x=[1 2 3]; x(logical([0 0 0 0 0]))=[]; r=x;
+%%
+x=[1 2 3]; x(logical([0 0 0 0 0]))=5; r=x;
+%%
+x=zeros(0,1); x(3)=1; r=size(x);
+%%
+x=[]; x(:,1)=[1;2;3]; r=x;
+%%
+x=[]; x(2,:)=[1 2 3]; r=x;
+%%
+x=[]; x(:,2)=5; r=x;
+%%
+x=[]; x(:,:)=[1 2;3 4]; r=x;
+%%
+x=[]; x([1 2],:)=[1 2;3 4]; r=x;
+%%
+x=[]; x(:,[1 2])=[1 2;3 4]; r=x;
+%%
+x=[]; x(1:2,1:2)=7; r=x;
+%%
+x=[]; x(:,logical([1 0 1]))=[1 2;3 4]; r=x;
+%%
+x=[]; x(1,:)=[1;2;3]; r=x;
+%%
+x=[]; x(:,1)=[1 2 3]; r=x;
+%%
+x=[]; x(:,:)=zeros(1,0); r=size(x);
+%%
+x=zeros(2,2); x(:,3)=[1 2]; r=x;
+%%
+x=zeros(2,2); x(3,:)=[1;2]; r=x;
+%%
+x=zeros(2,2); x(1:2,1)=[1 2]; r=x;
+%%
+x=zeros(2,3); x(:)=[1 2 3 4 5 6]; r=x;
+%%
+x=zeros(2,3); x(1:6)=(1:6)'; r=x;
+%%
+x=zeros(2,2); x(5,5)=1; r=x;
+%%
+x=1:3; x(2:3)=[9;8]; r=x;
+%%
+x=(1:3)'; x(5)=1; r=x;
+%%
+x=5; x(3)=1; r=x;
+%%
+x=5; x(2,2)=1; r=x;
+%%
+x=zeros(1,0); x(1,3)=2; r=x;
+%%
+x=zeros(0,3); x(1,:)=[1 2 3]; r=x;
+%%
+x=zeros(0,3); x(:,1)=[]; r=size(x);
+%%
+x=1:3; x(:,2)=[]; r=x;
+%%
+x=1:3; x(1,:)=[]; r=size(x);
+%%
+x=[1;2;3]; x(2,:)=[]; r=x;
+%%
+x=[1;2;3]; x(:,1)=[]; r=size(x);
+%%
+A=[1 2 3;4 5 6]; A(:,[3 1])=[]; r=A;
+%%
+A=[1 2 3;4 5 6]; A([2 2],:)=[]; r=A;
+%%
+A=[1 2 3;4 5 6]; A(:,logical([1 0 1]))=[]; r=A;
+%%
+A=[1 2 3;4 5 6]; A(logical([0 1]),:)=[]; r=A;
+%%
+A=[1 2 3;4 5 6]; A(5)=[]; r=A;
+%%
+x=1:3; x([1 1])=[]; r=x;
+%%
+x=1:3; x([])=[]; r=x;
+%%
+x=1:3; x(1:0)=[]; r=x;
+%%
+x=(1:4)'; x(2:3)=[]; r=x;
+%%
+x=(1:4)'; x(logical([1 0 0 1]))=[]; r=x;
+%%
+x=1:3; x(1,[])=[]; r=x;
+%%
+x=1:3; x([],:)=[]; r=x;
+%%
+r=[zeros(1,0), zeros(0,1)]; r=size(r);
+%%
+r=[zeros(1,0); zeros(0,1)]; r=size(r);
+%%
+r=[1, zeros(1,0), 2];
+%%
+r=[1; zeros(0,1); 2];
+%%
+r=[zeros(0,1), zeros(0,1)]; r=size(r);
+%%
+r=[zeros(0,1); 5];
+%%
+r=[zeros(0,1), 5];
+%%
+r=[[], [], 3];
+%%
+r=[[]; []]; r=size(r);
+%%
+r=[true, []]; r=double(islogical(r));
+%%
+r=[true, false]; r=double(islogical(r));
+%%
+r=[true; zeros(0,1)]; r=double(islogical(r));
+%%
+r=[1 2; 3 4; [] ];
+%%
+r=[[1 2], []; 3 4];
+%%
+r=[zeros(1,0), [1;2]]; r=size(r);
+%%
+r=['ab', []]; r=double(r);
+%%
+r=['ab', 'c'; 'def']; r=double(r);
+%%
+r=double(any([NaN 0]'));
+%%
+r=double(all([NaN NaN]));
+%%
+r=double(any(zeros(0,3)));
+%%
+r=double(all(zeros(0,3)));
+%%
+r=double(any(zeros(3,0)));
+%%
+r=double(any([0 0; 0 NaN]));
+%%
+r=double(all([NaN 0; 1 NaN], 2));
+%%
+r=double(any(NaN(2,2), 1));
+%%
+r=double(xor(true, false));
+%%
+r=unique([2 1 2]);
+%%
+r=unique([2; 1; 2]);
+%%
+r=unique(5);
+%%
+r=unique([3 1; 1 2]);
+%%
+r=double(islogical(unique(true)));
+%%
+r=unique([Inf NaN -Inf 0 -0]);
+%%
+r=unique([1 1 1]);
+%%
+r=2^[1 0; 0 1];
+%%
+r=exp(1)^[0 1; -1 0];
+%%
+r=1^[1 2; 3 4];
+%%
+r=2^5;
+%%
+r=[1 2;3 4]^2;
+%%
+r=[1 2;3 4]^-1;
+%%
+r=0^[1 2; 3 4];
+%%
+r=(-2)^[1 2; 3 4];
+%%
+r=find([0 1 0 1 1], 2, 'last');
+%%
+r=find([0 1 0 1 1]', 1, 'last');
+%%
+r=find([0 0; 1 1], 1, 'last');
+%%
+r=size(find([0 0 0], 1, 'last'));
+%%
+r=find([1 2 3], 5, 'last');
+%%
+r=find([1 2 3], 5);
+%%
+r=size(find(zeros(0,3)));
+%%
+r=size(find(zeros(3,0)));
+%%
+r=size(find(0));
+%%
+r=find(NaN);
+%%
+r=strrep('abcabc', 'bc', 'X');
+%%
+r=strrep('aaaa', 'aa', 'b');
+%%
+r=strrep('abc', '', 'x');
+%%
+r=strrep('', 'a', 'x');
+%%
+r=strrep('aXbXc', 'X', '');
+%%
+r=strrep('ababa', 'aba', 'c');
+%%
+c=strrep({'aa', 'ba'}, 'a', 'c'); r=[c{1} c{2}];
+%%
+c=strsplit('a  b', ' '); r=numel(c);
+%%
+c=strsplit('a  b', ' ', 'CollapseDelimiters', false); r=numel(c);
+%%
+c=strsplit('a  b', ' ', false); r=numel(c);
+%%
+c=strsplit(' a b ', ' '); r=numel(c);
+%%
+c=strsplit('a,b;c', {',', ';'}); r=numel(c);
+%%
+c=strsplit('a\tb', '\t'); r=numel(c);
+%%
+c=strsplit(sprintf('a\tb'), '\t'); r=numel(c);
+%%
+c=strsplit('a.b', '.'); r=numel(c);
+%%
+c=strsplit('abc'); r=numel(c);
+%%
+c=strsplit('', ','); r=numel(c);
+%%
+c=strsplit('a1b22c', {'1', '22'}); r=double([c{:}]);
+%%
+c=strsplit('a22b', {'2', '22'}, 'CollapseDelimiters', false); r=numel(c);
+%%
+c=strsplit('a,,b', ','); r=double(c{2});
+%%
+c=upper({'ab'; 'c'}); r=double([c{1} c{2}]);
+%%
+c=lower({'AB', 'C'}); r=size(c);
+%%
+r=double(upper('aBc'));
+%%
+c=strcat({'a ', 'b'}, 'c '); r=double([c{1} '|' c{2}]);
+%%
+c=strcat({'a'}, {'b', 'c'}); r=[size(c) double([c{:}])];
+%%
+r=double(strcat('a ', 'b ', 'c'));
+%%
+r=double(strcat('a', ''));
+%%
+c=strcat({'x'}, {'y'}); r=double(c{1});
+%%
+r=sprintf('%d', []);
+%%
+r=sprintf('%d|', []);
+%%
+r=sprintf('a%db%dc', 1);
+%%
+r=sprintf('a%db', [1 2]);
+%%
+r=sprintf('a%db%dc', [1 2 3]);
+%%
+r=sprintf('a%db%dc', []);
+%%
+r=sprintf('a%sb%dc', 'xy');
+%%
+r=sprintf('a%5sb%dc', '');
+%%
+r=sprintf('a%db%sc', 1, '');
+%%
+r=sprintf('a%db%sc%dd', 1, [], 2);
+%%
+r=sprintf('[%s][%d]', '', []);
+%%
+r=sprintf('%s=%d\n', 'abc', 1, 'de', 2);
+%%
+r=sprintf('%%%d', []);
+%%
+r=sprintf('%d%%', [1 2]);
+%%
+r=sprintf('%d,', 1, [], 2);
+%%
+r=sprintf('%s,', 'a', '', 'b');
+%%
+r=sprintf('%d|');
+%%
+r=sprintf('|%s|');
+%%
+r=sprintf('%d%s', 1, 'ab', 2, 'c');
+%%
+r=sprintf('%s%d', 'ab', 'cd');
+%%
+r=sprintf('%d %s|', 'abc', 'de');
+%%
+r=sprintf('%c%d|', 'abc');
+%%
+r=sprintf('%f|', 'a');
+%%
+r=sprintf('%s', [72 105]);
+%%
+r=sprintf('%.0d|', 0);
+%%
+r=sprintf('%05.3d|', 5);
+%%
+r=sprintf('%-5.3d|', 5);
+%%
+r=sprintf('%.3d|', -5);
+%%
+r=sprintf('%+.3d|', 5);
+%%
+r=sprintf('%#x|%#o|%#X', 0, 0, 255);
+%%
+r=sprintf('%#5o|', 8);
+%%
+r=sprintf('%#-6o|', 8);
+%%
+r=sprintf('%#06o|', 8);
+%%
+r=sprintf('%#.3o|', 8);
+%%
+r=sprintf('%#.3g|', 1);
+%%
+r=sprintf('%#x|', 255);
+%%
+r=sprintf('%08.3f|', -3.14159);
+%%
+r=sprintf('%+5d|% d|', 3, 4);
+%%
+r=sprintf('%Lf|%hd', 1, 2);
+%%
+r=sprintf('%5.1s|', 'abc');
+%%
+r=sprintf('%.2s|', 'abc', 'd');
+%%
+r=sprintf('%d', 2^53);
+%%
+r=sprintf('%d', 3e10);
+%%
+r=sprintf('%d', -0);
+%%
+r=sprintf('%c%c|', 'ab', 'cd');
+%%
+r=sprintf('%s-%s|', 'ab', 'cd', 'ef');
+%%
+r=sprintf('%d', true);
+%%
+r=sprintf('abc', 1, 2);
+%%
+r=sprintf('%d %d\n', [1 2 3]);
+%%
+r=sprintf('%5.2c|', 'a');
+%%
+r=sprintf('%d', NaN);
+%%
+r=sprintf('%x|', NaN);
+%%
+r=sprintf('%05d|', Inf);
+%%
+r=sprintf('%-6d|', -Inf);
+%%
+r=sprintf('%.3d|', NaN);
+%%
+r=sprintf('%+d|', Inf);
+%%
+r=sprintf('%c', 'ab', 5);
+%%
+r=sprintf('%s', 'ab', 5);
+%%
+r=sprintf('%d|', '');
+%%
+r=sprintf('%s|%d|', '', 5);
+%%
+r=sprintf('%5s|', '');
+%%
+r=sprintf('%d,%d;', [1 2; 3 4]);
+%%
+r=sprintf('%o|%X|%E|%G', 8, 255, 1.5, 1e-10);
+%%
+r=sprintf('%g|%g|%g', 1e5, 1e-5, 123456789);
+%%
+r=sprintf('%8.3e|', 12345.6789);
+%%
+r=sprintf('%i|', 7);
+%%
+r=sprintf('%u|', 7);
+%%
+r=sprintf('%c', 72, 105);
+%%
+r=sprintf('%s and %s', 'cats', 'dogs');
+%%
+r=sprintf('%6.2f %6.2f\n', [1 2; 3 4]);
+%%
+r=num2str(pi, '%10.5f');
+%%
+r=num2str(pi, '%-10.5f|');
+%%
+r=num2str(7, '%d  ');
+%%
+r=num2str(7, '  %d');
+%%
+r=num2str(pi, 8);
+%%
+r=num2str(pi, 2);
+%%
+r=num2str(-pi, 4);
+%%
+r=num2str(12345.678, 3);
+%%
+r=num2str(5, '%d%d');
+%%
+r=num2str(5, '%s');
+%%
+r=num2str(3);
+%%
+r=num2str(-0.5);
+%%
+r=num2str(true);
+%%
+r=num2str(1e10);
+%%
+r=num2str(123.456);
+%%
+r=int2str(2.5);
+%%
+try, error('my:id', 'x=%d', 3); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('my:id', 'msg'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('my:id', 'msg %d'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('my:id', 'a\tb'); catch e, r=double(e.message); end
+%%
+try, error('a\tb'); catch e, r=double(e.message); end
+%%
+try, error('a\tb %d', 3); catch e, r=double(e.message); end
+%%
+try, error('hello world: %d', 3); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('my:id %d', 3); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('my:id:x', 'v=%s', 'q'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error(':id', 'v'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('id:', 'v'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('a-b:c.d', 'v'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('msg %d\n', 4); catch e, r=double(e.message); end
+%%
+r = 1; try, error(struct('message', '', 'identifier', 'q:r')); r = 7; catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error(struct('message', 'm')); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('x', 5); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, error('100%'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, assert(false, 'v=%d', 4); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, assert(false, 'a:b', 'v=%d', 4); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, assert(false, 'a:b', 'v'); catch e, r=[e.message '|' e.identifier]; end
+%%
+try, assert(false, '50%'); catch e, r=[e.message '|' e.identifier]; end
+%%
+r = 1; try, assert(true, 'nope'); r = 2; catch e, r = 3; end
+%%
+r = 1; try, assert(1 == 1); r = 2; catch e, r = 3; end
+%%
+r = 1; try, assert([true true], 'x'); r = 2; catch e, r = 3; end
+%%
+r = 1; try, assert([true false], 'x'); r = 2; catch e, r = 3; end
+%%
+try, try, error('a:b', 'inner'); catch e, rethrow(e); end; catch e2, r = [e2.message '|' e2.identifier]; end
+%%
+r = 0; try, x = [1 2; 3 4] \ [1; 2; 3]; catch, r = 1; end
+%%
+r = 0; try, x = chol([1 2; 2 1]); catch, r = 1; end
+%%
+r = 0; try, x = [1 2 3]; y = x(0); catch, r = 1; end
+%%
+r = 0; try, x = [1 2 3]; y = x(1.5); catch, r = 1; end
+%%
+r = 0; try, x = [1 2 3]; x(0) = 1; catch, r = 1; end
+%%
+r = 0; try, x = [1 2 3]; x([1 2]) = [1 2 3]; catch, r = 1; end
+%%
+r = 0; try, x = zeros(2,2); x(:,1) = [1 2 3]; catch, r = 1; end
+%%
+r = 0; try, x = zeros(2,2); x(7) = 1; catch, r = 1; end
+%%
+r = 0; try, l = true(1,2); l(1) = NaN; catch, r = 1; end
+%%
+r = 0; try, x = 1:3; x(1,2,1) = []; catch, r = 1; end
+%%
+r = 0; try, x = [1 2 3]; x(:, 4) = []; catch, r = 1; end

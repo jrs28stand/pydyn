@@ -1,0 +1,754 @@
+r = sprintf('%5.2f|%-6d|%e', pi, 42, 12345.678);
+%%
+r = sprintf('%g %g %g %g', 0.0001, 1e-5, 123456789, 100000);
+%%
+r = sprintf('%d,', [1 2 3]);
+%%
+r = sprintf('%.3d|%x|%5s|%c%c|%d%%', 5, 255, 'ab', 72, 105, 5);
+%%
+r = sprintf('%s-%s', 'abc', 'de');
+%%
+r = sprintf('%+.2e', -0.000123);
+%%
+r = sprintf('%G|%E', 1e-10, 2.5);
+%%
+r = sprintf('%#o|%o', 8, 8);
+%%
+r = sprintf('%i|%u', 7, 8);
+%%
+r = sprintf('[%8.3f]', [1.5; -2.25]);
+%%
+r = sprintf('abc\tdef\\n');
+%%
+r = sprintf('%s', 'a''b');
+%%
+r = num2str(pi);
+%%
+r = num2str(-0.5);
+%%
+r = num2str(123.456);
+%%
+r = num2str(1e10);
+%%
+r = num2str(true);
+%%
+r = num2str(1.23456789e-5);
+%%
+r = num2str(pi*1000);
+%%
+r = num2str(pi, 8);
+%%
+r = num2str(3.14159, '%10.5f');
+%%
+r = num2str(123456789.123);
+%%
+r = num2str(-7);
+%%
+r = num2str(0.1+0.2);
+%%
+r = num2str(1e-20);
+%%
+r = num2str(NaN);
+%%
+r = num2str(-Inf);
+%%
+r = int2str(2.5);
+%%
+r = int2str(-2.5);
+%%
+r = mat2str([1 2;3 4]);
+%%
+r = mat2str([0.1 -2.5]);
+%%
+r = mat2str(true);
+%%
+r = strrep('abcabc', 'bc', 'X');
+%%
+r = strrep('abc 2 def 22 ghi 222 jkl 2222', '22', '*');
+%%
+r = strrep('aaa', 'aa', 'b');
+%%
+r = strrep('abc', '', 'X');
+%%
+r = regexprep('abc123', '\d', 'X');
+%%
+r = regexprep('hello world', '(\w+) (\w+)', '$2 $1');
+%%
+r = regexprep('aBc', '[a-z]', '_', 'once');
+%%
+r = regexprep('Hello', 'l', 'L', 'ignorecase');
+%%
+c = regexp('a1b22c333', '\d+', 'match'); r = [c{:}];
+%%
+r = regexp('abcb', 'b');
+%%
+[tok] = regexp('x=12, y=345', '(\w)=(\d+)', 'tokens'); r = [tok{2}{:}];
+%%
+r = double(isempty(regexp('abc', 'z', 'once')));
+%%
+s = regexp('key: value', '(?<k>\w+): (?<v>\w+)', 'names'); r = [s.k s.v];
+%%
+c = strsplit('a,b,,c', ','); r = numel(c) * 10 + numel(c{3});
+%%
+r = strtrim(sprintf(' \t a b \n'));
+%%
+r = [upper('abC1') lower('ABc')];
+%%
+r = [max([1 NaN 3]), max(NaN, 1), min([NaN 2]), min(NaN, NaN)];
+%%
+[m, i] = max([NaN 2 NaN]); [n, j] = max([NaN NaN]); r = [m i n j];
+%%
+r = max([1 NaN; NaN NaN]);
+%%
+r = max([2 5; 7 1], [], 1);
+%%
+[m, i] = min([4 2 2 1 1]); r = [m i];
+%%
+r = max(3, [1 NaN 5]);
+%%
+r = [round(2.5), round(-0.5), fix(-2.5), floor(-0.5), ceil(-0.5)];
+%%
+r = [mod(-1, 3), rem(-1, 3), mod(5.5, 2), mod(5, -3), rem(5, -3), mod(-5, 3), rem(5, 0), mod(Inf, 3), mod(3, Inf), mod(-3, Inf)];
+%%
+r = [mod(0.3, 0.1), rem(0.3, 0.1), mod(1e17, 3)];
+%%
+r = [any([0 0 1]), all([]), sum([]), prod([]), isempty(''), numel('abc'), length([1 2; 3 4; 5 6])];
+%%
+r = mean([]);
+%%
+r = [sum([1 2; 3 4]), sum([1 2 3]'), mean([1 2; 3 5]), cumsum([1 2 3])];
+%%
+r = [sum([1 2; 3 4], 2)', prod([1 2; 3 4], 2)', mean([1 2; 3 5], 2)'];
+%%
+r = [isequal(1, true), isequal('a', 97), isequal([1 2], [1 2], [1 2]), isequal([], zeros(0, 3))];
+%%
+r = strcmp('a', {'a', 'b'});
+%%
+[tf, loc] = ismember([1 5 2], [2 1]); r = [tf loc];
+%%
+r = [find([0 1 0 1]), find([0 1 0 1], 1)];
+%%
+r = find([0; 1; 1])';
+%%
+[s, i] = sort([3 1 2], 'descend'); r = [s i];
+%%
+[s, i] = sort([3 1 2 1]); r = [s i];
+%%
+r = unique([3 1 2 1]);
+%%
+r = sort([3 NaN 1]);
+%%
+r = [nthroot(-8, 3), hypot(3, 4), atan2(1, -1), sign(-0), abs(-3)];
+%%
+r = [exp(1), log(10), log10(1000), log2(8), sqrt(16)];
+%%
+r = [factorial(5), nchoosek(5, 2), gamma(0.5)^2];
+%%
+r = [floor(log10(0)), 0^0, Inf^0, NaN^0, 1^NaN];
+%%
+r = [(-2)^3, (-8)^(1/3+0) * 0 + 1, 2^-1074 > 0];
+%%
+r = [isnan([1 NaN]), isinf([Inf -Inf 1]), isfinite([1 Inf NaN])];
+%%
+r = repmat([1 2], 2, 2);
+%%
+r = reshape(1:6, 2, 3);
+%%
+r = reshape(1:6, [], 2);
+%%
+r = [size(zeros(3, 0)), size([]), size(''), numel({})];
+%%
+r = [numel(1:0.1:2), 1:0];
+%%
+r = diag([1 2]);
+%%
+r = diag([1 2; 3 4])';
+%%
+r = kron([1 2], [1; 1]);
+%%
+r = [trace([1 2; 3 4]), det([1 2; 3 4]), rank([1 2; 2 4])];
+%%
+r = inv([2 0; 0 4]);
+%%
+r = [2 0; 0 4] \ [2; 4];
+%%
+r = [1 2] / [2 0; 0 4];
+%%
+r = norm([3 4]);
+%%
+r = [norm([1 2; 3 4], 1), norm([1 2; 3 4], Inf), norm([1 2; 3 4], 'fro')];
+%%
+x = 0; for k = 1:10, if mod(k, 2), continue; end; x = x + k; if k > 6, break; end; end; r = x;
+%%
+x = 0; k = 0; while true, k = k + 1; if k > 5, break, end, x = x + k; end; r = x;
+%%
+s = 0; for v = [1 2; 3 4], s = s + v(1) * v(2); end; r = s;
+%%
+s = ''; for c = 'abc', s = [c s]; end; r = s;
+%%
+x = 3; switch x, case {1, 2}, r = 1; case 3, r = 3; otherwise, r = 0; end
+%%
+x = 'foo'; switch x, case 'bar', r = 1; case {'baz', 'foo'}, r = 2; end
+%%
+try, error('my:id', 'boom %d', 3); catch err, r = [err.message '|' err.identifier]; end
+%%
+try, x = [1 2 3]; y = x(5); catch e, r = 1; end
+%%
+f = @(x, y) x + 2*y; g = @(x) f(x, 1); r = g(3);
+%%
+a = 2; f = @(x) a*x; a = 10; r = f(3);
+%%
+f = @sin; r = f(0) + feval(@cos, 0) + feval('abs', -2);
+%%
+s.a = 1; s.b.c = [1 2]; s.b.c(3) = 5; r = [s.a s.b.c isfield(s, 'b') isfield(s, {'a', 'z'})];
+%%
+s = struct('x', 1, 'y', 'ab'); f = fieldnames(s); r = [numel(f) double(f{2})];
+%%
+s.a = 1; s = rmfield(s, 'a'); r = isempty(fieldnames(s));
+%%
+s = struct(); s.('dyn') = 4; r = s.dyn + getfield(s, 'dyn');
+%%
+c = {1, 'two', [3 4]}; r = [c{1} numel(c{2}) c{3}(2) numel(c) iscell(c) ischar(c{2})];
+%%
+c = cell(2, 3); r = [size(c) isempty(c{1})];
+%%
+c = {}; c{3} = 5; r = [size(c) c{3}];
+%%
+x = 1:5; x([1 3]) = []; r = x;
+%%
+x = magic(4); r = x(end, end) + x(end) + x(2:3, end)';
+%%
+x = zeros(2); x(:) = 1:4; r = x';
+%%
+x = []; x(2, 3) = 1; r = size(x);
+%%
+x = 'hello'; r = [x(end:-1:1) x([1 1])];
+%%
+r = ['ab'; 'cd'];
+%%
+r = blanks(3);
+%%
+r = [num2str(5) 'x' int2str(3.7)];
+%%
+r = str2double('3.5e2') + str2double('abc') * 0;
+%%
+r = isnan(str2double('abc'));
+%%
+r = [isnumeric(1), isnumeric('a'), ischar('a'), islogical(true), isreal(1), isstruct(struct()), isa(1, 'double'), isa(1, 'numeric'), isa(int8(1), 'integer')];
+%%
+r = [floor(7/2), idivide(int32(7), int32(2))];
+%%
+r = [true + true, class(true + true) == 'double'];
+%%
+r = xor(true, [true false]);
+%%
+r = ~[1 0 2];
+%%
+r = [1 2 3] > 2 | [1 0 0];
+%%
+r = (1:3)' * (1:2);
+%%
+r = [1 2; 3 4] .^ [2 0.5; 1 0];
+%%
+r = 2 .^ [1 2 3];
+%%
+r = [1e308 * 10, -1e308 * 10, 1/Inf];
+%%
+r = [eps, realmin > 0, intmax('int32') == 2147483647, flintmax];
+%%
+r = fix(clock * 0);
+%%
+r = numel(datestr(0)) > 0;
+%%
+r = [fliplr([1 2 3]) flipud([1; 2])'];
+%%
+r = circshift([1 2 3 4], 1);
+%%
+r = [min([]), max([])];
+%%
+r = cumprod([1 2 3 4]);
+%%
+r = diff([1 4 9 16]);
+%%
+r = [std([1 2 3 4]), var([1 2 3 4]), median([3 1 2]), median([4 1 2 3])];
+%%
+r = [floor(-3.5), round(-3.5), round(3.4999), round(1e16 + 1)];
+%%
+r = [interp1([1 2 3], [10 20 30], 2.5), trapz([1 2 3])];
+%%
+r = polyval([1 2 3], 2);
+%%
+r = [numel(linspace(0, 1, 0)), linspace(1, 2, 1)];
+%%
+r = logspace(0, 2, 3);
+%%
+r = [colon(1, 3), colon(5, -2, 1)];
+%%
+r = horzcat([1 2], 3, []);
+%%
+r = vertcat([1 2], [3 4]);
+%%
+r = cat(2, [1 2], [3]);
+%%
+r = sub2ind([3 4], 2, 3);
+%%
+[i, j] = ind2sub([3 4], 8); r = [i j];
+%%
+r = [zeros(1, 2), ones(2, 1)', [1 0]];
+%%
+r = numel(eye(2, 3));
+%%
+r = triu([1 2; 3 4]) + tril([1 2; 3 4]);
+%%
+r = abs(int8(-128));
+%%
+r = double(int8(200));
+%%
+r = double(uint8(3.5)) + double(int16(-2.5));
+%%
+r = int32(7) / int32(2);
+%%
+r = bitand(12, 10) + bitor(12, 10) * 100 + bitxor(12, 10) * 10000;
+%%
+r = [floor(log2(1024)), nextpow2(100)];
+%%
+r = accumarray([1; 2; 1], [10; 20; 30])';
+%%
+r = histc([1 2 2 3 5], 1:5);
+%%
+r = 0; try, r = round(3.14159, 2); catch, r = -1; end
+%%
+r = 0; try, r = sum([1 NaN 2], 'omitnan'); catch, r = -1; end
+%%
+r = 0; try, r = max([1 5; 7 2], [], 'all'); catch, r = -1; end
+%%
+r = 0; try, r = sum([1 2; 3 4], 'all'); catch, r = -1; end
+%%
+r = 0; try, r = mean([1 NaN 3], 'omitnan'); catch, r = -1; end
+%%
+r = 0; try, r = sort([3 1; 2 4], 2); catch, r = -1; end
+%%
+r = 0; try, r = zeros(2, 'like', 1); catch, r = -1; end
+%%
+r = 0; try, r = num2str([1 2 3]); catch, r = -1; end
+%%
+r = 0; try, r = strjoin({'a', 'b'}, ', '); catch, r = -1; end
+%%
+r = 0; try, r = isfield(struct('a', 1), 'a'); catch, r = -1; end
+%%
+r = 0; try, x = fzero(@(x) x^2 - 2, [0 2]); r = x; catch, r = -1; end
+%%
+r = 0; try, x = fzero(@(x) x^3 - 8, 1, optimset('TolX', 1e-12)); r = x; catch, r = -1; end
+%%
+r = 0; try, x = fzero(@(x) x^2 + 1, [0 2]); r = x; catch, r = -1; end
+%%
+[x, fval, flag] = fsolve(@(x) [x(1)^2 - 4; x(2) - 1], [1; 0], optimset('Display', 'off')); r = [round(x' * 1e6) / 1e6, flag];
+%%
+r = 0; try, x = 1:3; x(5) = []; catch, r = -1; end
+%%
+r = 0; try, x = [1 2; 3 4]; y = x(3, 1); catch, r = -1; end
+%%
+r = 0; try, x = ones(2, 3) * ones(2, 3); catch, r = -1; end
+%%
+r = 0; try, s.a = 1; y = s.b; catch, r = -1; end
+%%
+r = 0; try, c = {1, 2}; y = c{3}; catch, r = -1; end
+%%
+r = 0; try, y = undefined_fn_xyz(1); catch, r = -1; end
+%%
+r = 0; try, y = str2func('@(x) x + 1'); r = y(2); catch, r = -1; end
+%%
+r = 0; try, error('abc'); catch e, r = double(e.message); end
+%%
+r = 0; try, error('50%% done'); catch e, r = double(e.message); end
+%%
+r = 0; try, error('a:b', 'x\ty'); catch e, r = double(e.message); end
+%%
+r = 0; try, error(struct('message', 'zz', 'identifier', 'q:r')); catch e, r = double([e.message e.identifier]); end
+%%
+r = 0; try, try, error('in:ner', 'inner'); catch e1, rethrow(e1); end; catch e2, r = double(e2.identifier); end
+%%
+r = 0; try, x = [1 2 3](0); catch, r = -1; end
+%%
+r = 0; try, assert(false, 'nope'); catch e, r = double(e.message); end
+%%
+r = 0; try, x = cell2mat({1 2; 3 4}); r = x; catch, r = -1; end
+%%
+r = 0; try, x = num2cell([1 2]); r = numel(x); catch, r = -1; end
+%%
+r = 0; try, s = struct('a', {}); r = numel(s); catch, r = -1; end
+%%
+r = 0; try, r = nnz([1 0 2]); catch, r = -1; end
+%%
+r = 0; try, r = numel(find([1 0 1] > 0, 1, 'last')); catch, r = -1; end
+%%
+r = 0; try, r = abs(-2:2); catch, r = -1; end
+%%
+r = 0; try, r = min([4 2 8], [], 2); catch, r = -1; end
+%%
+r = 0; try, [m, i] = max([1 5; 7 2], [], 2); r = [m' i']; catch, r = -1; end
+%%
+r = 0; try, r = any([0 0; 0 1]); catch, r = -1; end
+%%
+r = 0; try, r = all([1 1; 0 1], 2)'; catch, r = -1; end
+%%
+r = 0; try, r = isrow([1 2 3]) + 10 * iscolumn([1; 2]) + 100 * isvector([1 2]) + 1000 * isscalar(5); catch, r = -1; end
+%%
+r = 0; try, r = isspace('a b'); catch, r = -1; end
+%%
+r = 0; try, r = fix(-3.7) + floor(3.7) * 10; catch, r = -1; end
+%%
+r = 0; try, r = length('hello') + ndims([1 2]) * 10; catch, r = -1; end
+%%
+r = 0; try, r = sum(logical([1 1 0])); catch, r = -1; end
+%%
+r = 0; try, r = class(1 == 1); r = double(r); catch, r = -1; end
+%%
+r = 0; try, x = true(2); r = size(x) + islogical(x); catch, r = -1; end
+%%
+r = 0; try, x = 1:5; r = x(logical([1 0 1 0 1])); catch, r = -1; end
+%%
+r = 0; try, x = 1:5; x(x > 2 & x < 5) = 0; r = x; catch, r = -1; end
+%%
+r = 0; try, r = exist('pi') + 10 * exist('nonexistent_thing_xyz'); catch, r = -1; end
+%%
+r = 0; try, aa = 1; r = exist('aa', 'var') + 10 * exist('bb', 'var'); catch, r = -1; end
+%%
+r = 0; try, r = sqrt([4 9]); catch, r = -1; end
+%%
+r = 0; try, r = power(-8, 1/3); catch, r = -1; end
+%%
+r = 0; try, r = realpow(2, 3); catch, r = -1; end
+%%
+r = 0; try, r = log(0) + 10 * exp(-Inf); catch, r = -1; end
+%%
+r = 0; try, r = 1e400; catch, r = -1; end
+%%
+r = 0; try, r = [1, 2, ...
+  3]; catch, r = -1; end
+%%
+r = 0; try, x = [1 2 % comment
+  3 4]; r = x; catch, r = -1; end
+%%
+r = 0; try, x = {1, 'a'; 2, 'b'}; r = size(x); catch, r = -1; end
+%%
+r = 0; try, x = 3; x(2) = 4; r = x; catch, r = -1; end
+%%
+r = 0; try, s = 'abc'; s(5) = 'e'; r = double(s); catch, r = -1; end
+%%
+r = 0; try, x = 1:3; y = x'; r = y(end); catch, r = -1; end
+%%
+r = 0; try, x.y(2).z = 3; r = x.y(2).z; catch, r = -1; end
+%%
+r = 0; try, r = floor(log10(12345)); catch, r = -1; end
+%%
+r = 0; try, r = sum([0.1 0.2 0.3]) == 0.6; catch, r = -1; end
+%%
+r = 0; try, r = double(num2str(0.1 + 0.2 == 0.3)); catch, r = -1; end
+%%
+r = 0; try, r = sign([-2 0 3]); catch, r = -1; end
+%%
+r = 0; try, r = max([]) + 1; r = size(r); catch, r = -1; end
+%%
+r = 0; try, r = isempty(max([])); catch, r = -1; end
+%%
+r = 0; try, r = [] + 1; r = size(r); catch, r = -1; end
+%%
+r = 0; try, r = [] == []; r = size(r); catch, r = -1; end
+%%
+r = 0; try, if [], r = 1; else, r = 2; end; catch, r = -1; end
+%%
+r = 0; try, if 'a', r = 1; end; catch, r = -1; end
+%%
+r = 0; try, while [], r = 9; end; r = r + 1; catch, r = -1; end
+%%
+r = 0; try, r = ~isempty([]) || 5; catch, r = -1; end
+%%
+r = 0; try, x = 2; x(3, 3) = 1; r = x; catch, r = -1; end
+%%
+r = 0; try, r = mod(-7.5, 2) + rem(-7.5, 2) * 10; catch, r = -1; end
+%%
+r = 0; try, r = mod([5 -5], 3); catch, r = -1; end
+%%
+r = 0; try, r = idx_fn_xyz; catch, r = -1; end
+%%
+r = 0; try, r = linspace(0, 1, 4); catch, r = -1; end
+%%
+r = 0; try, r = sum(1:100); catch, r = -1; end
+%%
+r = 0; try, r = prod(1:20); catch, r = -1; end
+%%
+r = 0; try, r = cumsum([1 2; 3 4]); catch, r = -1; end
+%%
+r = 0; try, r = max(int8(5), 3); catch, r = -1; end
+%%
+r = 0; try, r = upper({'a', 'b'}); r = double([r{:}]); catch, r = -1; end
+%%
+r = 0; try, r = strcat('a ', 'b ', 'c'); r = double(r); catch, r = -1; end
+%%
+r = 0; try, r = strcat({'a '}, 'b'); r = double(r{1}); catch, r = -1; end
+%%
+r = 0; try, r = [num2str(1e5) '|' num2str(123456) '|' num2str(1.5e-3)]; r = double(r); catch, r = -1; end
+%%
+r = 0; try, r = double(num2str(-0.000123)); catch, r = -1; end
+%%
+r = 0; try, r = double(num2str(99999.5)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%5.1f', 2.25)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%.0f %.0f %.0f', 0.5, 1.5, 2.5)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%g', 1e5)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%d', 3e10)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%d', -Inf)); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('%d %s', 1, 'ab', 2, 'cd')); catch, r = -1; end
+%%
+r = 0; try, r = double(sprintf('x%sy', '')); catch, r = -1; end
+
+%%
+l = [true false true]; l(2) = 5; r = [double(islogical(l)) double(l)];
+%%
+l = [true false true]; l(end) = []; r = [double(islogical(l)) double(l)];
+%%
+l = [true false true]; l(2) = 0; r = [double(islogical(l)) double(l)];
+%%
+l = [true false true]; l(5) = 1; r = [double(islogical(l)) double(l)];
+%%
+l = [true false true]; l(2) = 2.5; r = [double(islogical(l)) double(l)];
+%%
+l = true(2,2); l(:,3) = 7; r = [double(islogical(l)) size(l) double(l(:))'];
+%%
+l = true(2,2); l(1,:) = []; r = [double(islogical(l)) size(l)];
+%%
+l = [true false true]; try, l(2) = NaN; r = 0; catch, r = 1; end
+%%
+l = false(1,3); l(2) = 1; a = [10 20 30]; r = a(l);
+%%
+l = false; l(2) = 3; r = [double(islogical(l)) double(l)];
+%%
+clear x; x(3) = true; r = [double(islogical(x)) double(x)];
+%%
+x = []; x(3) = true; r = [double(islogical(x)) double(x)];
+%%
+l = [1 2 3]; l(2) = true; r = [double(islogical(l)) l];
+%%
+A = [1 2 3; 4 5 6]; r = A(logical([1 0 1])); r = [size(r) r];
+%%
+A = [1 2 3; 4 5 6]; r = A(logical([1;0;1])); r = [size(r) r(:)'];
+%%
+A = [1 2 3; 4 5 6]; r = A(logical([1 0;0 1])); r = [size(r) r(:)'];
+%%
+A = [1 2 3; 4 5 6]; r = A(logical([0 0 0])); r = size(r);
+%%
+A = [1 2 3; 4 5 6]; r = A(A>2); r = [size(r) r(:)'];
+%%
+a = [1 2 3]; r = a(logical([1;0;1])); r = [size(r) r];
+%%
+a = [1 2 3]'; r = a(logical([1 0 1])); r = [size(r) r(:)'];
+%%
+a = [1 2 3]'; r = a(false(1,3)); r = size(r);
+%%
+a = [1 2 3]; r = a(false(3,1)); r = size(r);
+%%
+x = 5; r = size(x(false));
+%%
+x = 5; r = x(true);
+%%
+r = zeros(0,3); r(:,10) = 5; r = size(r);
+%%
+r = zeros(3,0); r(2,:) = 1; r = size(r);
+%%
+r = zeros(0,3); r(2,:) = 5; r = [size(r) r(:)'];
+%%
+r = zeros(0,3); r(end+1,:) = 7; r = [size(r) r(:)'];
+%%
+r = zeros(0,3); r(end+1,:) = [1 2 3]; r = [size(r) r(:)'];
+%%
+r = zeros(0,3); r(1:2,:) = [1 2 3; 4 5 6]; r = [size(r) r(:)'];
+%%
+r = zeros(0,3); r(3,2) = 1; r = [size(r) r(:)'];
+%%
+r = zeros(0,3); r(:,2) = 4; r = size(r);
+%%
+r = zeros(3,0); r(:,2) = [1;2;3]; r = [size(r) r(:)'];
+%%
+r = zeros(1,0); r(:,3) = 4; r = [size(r) r(:)'];
+%%
+r = zeros(0,1); r(2,:) = 4; r = [size(r) r(:)'];
+%%
+r = []; r(end+1,:) = [1 2 3]; r(end+1,:) = 4; r = [size(r) r(:)'];
+%%
+r = []; r(:,1) = [1;2;3]; r = [size(r) r(:)'];
+%%
+r = []; r(:,1) = 5; r = [size(r) r(:)'];
+%%
+r = []; r(2,:) = 5; r = [size(r) r(:)'];
+%%
+r = []; r(2,:) = [1 2]; r = [size(r) r(:)'];
+%%
+r = zeros(2,2); r(:,3) = [1;2]; r = [size(r) r(:)'];
+%%
+r = zeros(2,3); r(:,2) = [1 2]; r = [size(r) r(:)'];
+%%
+a = [3 1 4]; r = zeros(0,3); r(a>2,:) = true; r = [size(r) r(:)'];
+%%
+r = [1 2 3]; r(:,:) = []; r = size(r);
+%%
+r = [1;2;3]; r(:,:) = []; r = size(r);
+%%
+r = [1 2 3; 4 5 6]; r(:,:) = []; r = size(r);
+%%
+r = [1 2 3; 4 5 6]; r(2:end,[]) = []; r = [size(r) r(:)'];
+%%
+r = [1 2 3; 4 5 6]; r([],2) = []; r = [size(r) r(:)'];
+%%
+r = [1 2 3; 4 5 6]; r(:) = []; r = size(r);
+%%
+r = [1 2 3]; r(:) = []; r = size(r);
+%%
+r = [1 2 3; 4 5 6]; r([]) = []; r = [size(r) r(:)'];
+%%
+r = [1 2 3; 4 5 6]; r(1) = []; r = [size(r) r(:)'];
+%%
+r = [1 2 3 4]'; r([1 3]) = []; r = [size(r) r(:)'];
+%%
+r = [1 2 3 4]; r(logical([1 0 1 0])) = []; r = [size(r) r];
+%%
+r = 5; r(1) = []; r = size(r);
+%%
+r = 5; r(:,:) = []; r = size(r);
+%%
+r = zeros(0,3); r(:,:) = []; r = size(r);
+%%
+r = [1 2;3 4]; r(3,:) = []; r = 1;
+%%
+r = 0; try, x = [1 2 3, zeros(2,0)]; r = 1; catch, r = 2; end
+%%
+r = 0; try, x = [1 2 3; zeros(0,2)]; r = 1; catch, r = 2; end
+%%
+r = 0; try, x = [zeros(0,3), 1]; r = 1; catch, r = 2; end
+%%
+r = 0; try, x = [zeros(2,0); 1 2]; r = 1; catch, r = 2; end
+%%
+r = 0; try, x = [zeros(0,2); zeros(0,3)]; r = 1; catch, r = 2; end
+%%
+r = [zeros(1,0), 5]; r = [size(r) r];
+%%
+r = [zeros(1,0), zeros(1,0)]; r = size(r);
+%%
+r = [zeros(0,3); 1 2 3]; r = [size(r) r];
+%%
+r = [zeros(1,0); 1 2 3]; r = [size(r) r];
+%%
+r = [zeros(3,0), [1;2;3]]; r = [size(r) r(:)'];
+%%
+r = [zeros(2,0); zeros(1,0)]; r = size(r);
+%%
+r = [zeros(0,2), zeros(0,3)]; r = size(r);
+%%
+r = [zeros(2,0), zeros(2,0)]; r = size(r);
+%%
+r = [zeros(2,0), zeros(1,0)]; r = size(r);
+%%
+r = [[], zeros(1,0)]; r = size(r);
+%%
+r = [zeros(0,3), zeros(0,3)]; r = size(r);
+%%
+r = [1 2; 3 4; zeros(0,2)]; r = size(r);
+%%
+r = double(any([NaN 1]));
+%%
+r = double(any(NaN));
+%%
+r = double(all(NaN));
+%%
+r = double(all([NaN 0]));
+%%
+r = double(any([NaN 0]));
+%%
+r = double(all([NaN 1]));
+%%
+r = double(any([NaN 0; 0 0]));
+%%
+r = double(all([NaN 1; 1 1]));
+%%
+r = double(any([NaN 0; 1 0], 2));
+%%
+r = double(all([NaN 0; 1 1], 1));
+%%
+if any([NaN 1]), r = 1; else, r = 0; end
+%%
+r = unique([3 NaN 1 NaN]);
+%%
+r = unique([NaN NaN]);
+%%
+r = unique([NaN; 1; NaN; 1]);
+%%
+r = unique([Inf -Inf NaN Inf]);
+%%
+r = unique([3 1 2 1 3]');
+%%
+r = unique([3 1; 2 1]);
+%%
+r = size(unique([]));
+%%
+r = size(unique(zeros(1,0)));
+%%
+r = double(islogical(unique([true false true])));
+%%
+r = 2^[1 2;3 4];
+%%
+r = 0.5^[1 2;3 4];
+%%
+r = 2^[1 2; 2 1];
+%%
+r = 3.5^[2 0; 0 1];
+%%
+r = 10^[1 0; 0 -1];
+%%
+r = 2^[0 0; 0 0];
+%%
+r = size(2^zeros(0,0));
+%%
+r = 0; try, x = 2^[1 2 3]; r = 1; catch, r = 2; end
+%%
+r = 0; try, x = 2^[1 2;3 4;5 6]; r = 1; catch, r = 2; end
+%%
+r = double(sprintf('%d|', 'ab'));
+%%
+r = double(sprintf('%d', 'abc'));
+%%
+r = double(sprintf('%g', 'Hello'));
+%%
+r = double(sprintf('%u', '1e3'));
+%%
+r = double(sprintf('%ld', 5));
+%%
+r = double(sprintf('%-4.3g|', 'ab'));
+%%
+r = double(sprintf('%c|', 'ab'));
+%%
+r = double(sprintf('%s|', 'ab'));
+%%
+r = double(sprintf('%d %s', 5, 'abc'));
+%%
+r = double(sprintf('%s=%d;', 'ab', 5));
+%%
+r = double(sprintf('%d,', 'a', 5, 'bc'));
+%%
+r = double(sprintf('%x', 'a'));
+%%
+r = double(sprintf('%5.1f|', 'a'));
+%%
+r = double(sprintf('%c|', [72 105]));
+%%
+r = double(sprintf('%e', 'a'));
+%%
+r = double(sprintf('%f %f', 'ab'));
+%%
+r = double(sprintf('%d%%', 'ab'));
+%%
+r = double(sprintf('%li|%i', 5, 6));

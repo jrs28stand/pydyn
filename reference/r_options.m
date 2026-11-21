@@ -1,0 +1,9 @@
+% options_ after statements of several kinds (reference/opt_acc.mod), and the moments of the last
+% stoch_simul, which keeps the hp_filter and ar of the first one.
+addpath /home/claude/dl/src72/matlab
+dynare opt_acc nograph
+r = struct('solve_algo', options_.solve_algo, 'steady_maxit', options_.steady.maxit, ...
+           'qz_zero_threshold', options_.qz_zero_threshold, 'solve_tolf', options_.solve_tolf, 'hp_filter', options_.hp_filter, 'ar', options_.ar, ...
+           'order', options_.order, 'ys', oo_.steady_state, 'var', oo_.var, ...
+           'autocorr1', oo_.autocorr{1}, 'autocorr2', oo_.autocorr{2}, 'mean', oo_.mean);
+save('-mat7-binary','clean_opt_acc.mat','-struct','r');

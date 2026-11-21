@@ -1,0 +1,164 @@
+r = 2^3^2;
+%%
+r = -2^2;
+%%
+r = 2^-3^2;
+%%
+r = [-2^0.5, 2^-1, -3^-2, ~0 == 1, ~(0 == 1), 1:3 == 1:3];
+%%
+r = 1 - 2 - 3 * 4 / 5 / 2 \ 3;
+%%
+r = 3 > 2 > 1;
+%%
+r = [1 < 2 == 1, 1 + 1 == 2 & 3 > 2 | 0, 1 | 0 & 0];
+%%
+a = [1 2; 3 4]; r = a';
+%%
+a = [1 2; 3 4]; r = a^2 - a.^2 + a*a' - a.*a';
+%%
+a = [1 2; 3 4]; r = [a(end, 1), a(end), a(2, end), a(end-1, end), numel(a(:)), a(:, end)'];
+%%
+a = [1 -2]; b = [1 - 2]; c = [1 , -2]; d = [a' a']; e = [1 -2 + 3]; r = [numel(a) numel(b) numel(c) size(d) e];
+%%
+x = 3; a = [x' x', x -1, x - 1, x(1) -x]; r = a;
+%%
+r = [1:5; 10:-2:2; linspace(0, 1, 5)];
+%%
+r = [numel(1:0), numel(5:-1:1), numel(0:0.1:1), numel(1:0.3:2), size(zeros(0, 3))];
+%%
+r = 0:0.1:0.5;
+%%
+a = 1:10; r = a([1 end; 2 end-1]);
+%%
+a = [16 2 3 13; 5 11 10 8; 9 7 6 12; 4 14 15 1]; r = a(2:3, [1 end]);
+%%
+a = [16 2 3 13; 5 11 10 8; 9 7 6 12; 4 14 15 1]; r = a(a > 10)';
+%%
+a = 1:5; a(a > 2) = 0; a(end+1) = 7; a(9) = 1; r = a;
+%%
+a = []; a(3) = 5; b = zeros(2, 2); b(3, 4) = 1; c = 5; c(2, 2) = 1; r = [size(a) size(b) size(c) sum(b(:)) c(:)'];
+%%
+a = (1:6)'; a(2) = []; a([1 end]) = []; r = a';
+%%
+a = [16 2 3 13; 5 11 10 8; 9 7 6 12; 4 14 15 1]; a(:, 2) = []; a(1, :) = []; r = a;
+%%
+a = zeros(2, 3); a(:, 2) = [5; 6]; a(2, :) = 1:3; a(:) = a(:) + 1; r = a;
+%%
+a = eye(3); a(2, :) = [7 8 9]; a(:, 1) = 4; r = a;
+%%
+r = [max([3 9 2]), min([3 9 2]), max(2, [1 5 3]), max([1 5; 7 2]), max([1 5; 7 2], [], 2)'];
+%%
+[m, i] = max([3 NaN 9 2]); [n, j] = min([4 1; 0 8]); r = [m i n j];
+%%
+a = [1 2; 3 4]; r = [sum(a) sum(a, 2)' sum(a(:)) prod(a) mean(a) mean(a, 2)' sum([]) prod([]) sum(5)];
+%%
+r = [any([0 0 1]), all([1 1 0]), any([0 0; 0 1]), all([1 1; 0 1]), isempty([]), isempty(0), any([])];
+%%
+r = [find([0 3 0 5]), find([0; 1; 1])', numel(find(zeros(1, 3)))];
+%%
+[s, i] = sort([3 1 2]); t = sort([3 1 2], 'descend'); r = [s i t];
+%%
+r = [mod(-7, 3), mod(7, -3), rem(-7, 3), mod(5, 0), mod(5.5, 2), rem(5.5, -2)];
+%%
+r = [round(2.5), round(-2.5), round(0.49999), fix(-2.7), floor(-2.5), ceil(-2.5), sign(-3), abs(-3)];
+%%
+r = [exp(1), log(10), sqrt(16), log10(1000), log2(8), gamma(5), factorial(5), atan2(1, 1), hypot(3, 4)];
+%%
+r = [1/0, -1/0, log(0), 5/Inf, isnan(NaN), isinf(-Inf), isfinite(3), NaN == NaN, NaN ~= NaN, max(NaN, 1)];
+%%
+r = [size(zeros(3)), size(ones(2, 4)), size(eye(2, 3)), numel(NaN(2, 1)), length(zeros(3, 7)), ndims(5)];
+%%
+r = repmat([1 2], 2, 2);
+%%
+r = [diag([1 2 3]); diag([1 2; 3 4])' 0; trace([8 1 6; 3 5 7; 4 9 2]) det([1 2; 3 4]) norm([3 4])];
+%%
+a = [4 1; 2 3]; r = [inv(a); a \ [1; 2] * [1 1]; [1 2] / a];
+%%
+r = kron([1 2], [1; 1]);
+%%
+r = [norm([1 2; 3 4], 'fro'), norm([1 2; 3 4], 1), norm([1 2; 3 4], Inf), norm([1 -5 2], Inf), norm([3 4], 1)];
+%%
+r = reshape(1:6, 2, 3); r = [r; reshape(r, 3, [])'];
+%%
+r = [numel('hello'), double('a'), strcmp('ab', 'ab'), strcmp('ab', 'AB'), strcmpi('ab', 'AB'), strncmp('abc', 'abd', 2)];
+%%
+s = ['ab' 'cd' num2str(12) '_' int2str(2.6) '_' num2str(pi)]; r = double(s);
+%%
+r = double([num2str(0.5) '|' num2str(-123.456) '|' num2str(1e10) '|' num2str(1.23456789e-5) '|' num2str(100000.5) '|' num2str(true) '|' num2str(pi, 8)]);
+%%
+r = double(sprintf('%d|%5.2f|%s|%g|%e|%3d|%-4d|%%|%i', 3, 2.5, 'q', 0.0001, 12345.678, 7, 8, 9));
+%%
+r = double(sprintf('%d,', [1 2 3]));
+%%
+r = double([sprintf('%d', 15) '|' sprintf('%s=%g\n', 'x', 2)]);
+%%
+r = double([upper('aBc') lower('aBc') strtrim('  x y  ') strrep('hello', 'l', 'LL') strcat('a ', 'b')]);
+%%
+c = {'ab', 'cd', 'ab'}; r = [numel(c), size(c), strcmp(c, 'ab'), iscell(c), ischar(c{2}), ismember('cd', c), strmatch('cd', c, 'exact')];
+%%
+c = {}; c{3} = 5; c{1} = 'x'; r = [numel(c), isempty(c{2}), c{3}];
+%%
+s.a = 1; s.b.c = [1 2 3]; s.b.c(2) = 7; f = 'dyn'; s.(f) = 4; r = [s.a s.b.c s.dyn isfield(s, 'a') isfield(s, 'z') isstruct(s) numel(fieldnames(s))];
+%%
+n = 0; for i = 1:10, if mod(i, 2) == 0, continue, end, if i > 7, break, end, n = n + i; end, r = [n i];
+%%
+n = 0; for v = [1 2; 3 4], n = n + v(1) * v(2); end, k = 0; for i = [], k = k + 1; end, r = [n k];
+%%
+n = 0; k = 10; while k > 1, k = k / 2; n = n + 1; end, r = [n k];
+%%
+x = 3; switch x, case 1, r = 10; case {2, 3}, r = 20; otherwise, r = 30; end
+%%
+x = 'abc'; switch x, case 'ab', r = 1; case {'x', 'abc'}, r = 2; otherwise, r = 3; end
+%%
+if [], r = 1; elseif [1 1 0], r = 2; elseif [1 2 3], r = 3; else, r = 4; end
+%%
+try, error('boom %d', 3); r = 0; catch err, r = double(err.message); end
+%%
+try, a = [1 2 3]; b = a(5); r = 0; catch, r = 1; end
+%%
+r = 0; x = 0; if x ~= 0 && 1 / x > 1, r = 1; end, if x == 0 || undefined_function_xyz(1), r = r + 2; end
+%%
+a = 2; f = @(x) a * x.^2; a = 100; g = @(x, y) f(x) + y; r = [f(3), g(1, 1), f([1 2])];
+%%
+eval('r = 1 + 2;'); eval(['q' int2str(1) ' = 5;']); r = [r q1];
+%%
+r = fzero(@(x) x^3 - 2, 1);
+%%
+r = fzero(@(x) cos(x) - x, [0 1]);
+%%
+a = 1:5; a(2:3) = [9 8]; a(:) = 7:11; b = a; b(end:-1:1) = a; r = [a; b];
+%%
+a = true; b = [true false]; r = [a + a, b * 2, class(a) == 'logical', islogical(b & 1), isnumeric(a), isreal(1)];
+%%
+r = [isequal([1 2], [1 2]), isequal([1 2], [1 2]'), isequal('a', 'a'), isscalar(5), isvector([1 2]), isrow([1 2]), iscolumn([1 2])];
+%%
+r = [erf(0.3), erfc(0.3), gammaln(4.5), nthroot(-8, 3), realmax > 1e300, eps];
+%%
+x = 5; x(2) = 6; y.z = x; y.z(end + 1) = 7; r = [x y.z];
+%%
+a = [1 2 3]; r = [a(logical([1 0 1])), a([true true true]), numel(a(logical([0 0 0])))];
+%%
+a = [1 2; 3 4]; r = [a(:)' a(:, :)(2) size(a(1, :)) size(a(:, 1)) size(a([1 2])) size(a([1; 2]))];
+%%
+v = (1:4)'; r = [size(v(2:3)) size(v([2 3])) size(v(:)) size(v')];
+
+%%
+x = [1 10 0.3 0.7 5.5 -7 7 0 3 -1 1e15 2.5 -2.5 1 -1 0.2 100]; y = [0.1 0.1 0.1 0.1 2 3 -3 3 3 3 0.1 0.5 0.5 7 7 0.6 0.01]; r = [mod(x, y); rem(x, y)];
+%%
+r = [mod(5, 0), rem(5, 0), mod(NaN, 2), mod(2, NaN), mod(Inf, 2), mod(-0.5, 1), mod(1, -0.1), rem(-1, 0.1), mod(0.9, 0.3), mod(1.1, 0.1)];
+%%
+k = 5; for k = 1:0, end, a = [isempty(k) numel(k) size(k)]; j = 7; for j = [], end, r = [a isempty(j) size(j)];
+%%
+r = [round(0.49999999999999994), round(-0.49999999999999994), round(2.5), round(-2.5), round(1e15 + 0.5), round(-3.5), round(0.5)];
+%%
+r = [str2double({'0.5', '0.7'}), str2double('1,000'), str2double('1e3'), isnan(str2double('abc')), str2double(' 2.5 ')];
+%%
+r = double([num2str(2^53) '|' num2str(1e15) '|' num2str(123456789012) '|' sprintf('%s', 65) '|' sprintf('%s|%d', 'ab', 3)]);
+%%
+try, x = 0/0; r = 5; catch, r = 6; end, try, y = Inf - Inf + 0*Inf; r = [r 5]; catch, r = [r 6]; end, r = [r isnan(x) isnan(y) 1/0 -1/0 10^400];
+%%
+M.a = [1 2 3]; N = M; N.a(1) = 100; c = {M}; M.a(2) = 50; f = @() M.a(2); M.a(2) = 60; r = [M.a N.a c{1}.a f()];
+%%
+x = 1; clear x; w = 2; r = [exist('x', 'var') exist('w', 'var') w];
+%%
+r = [max(NaN, 1), min(1, NaN), max([NaN 2 1]), min([NaN 2 1]), isnan(max(NaN, NaN)), max(-0, 0)];

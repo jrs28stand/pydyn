@@ -1,1 +1,292 @@
 # pydyn
+
+Python front end for Dynare models with no MATLAB/Octave at run time. It runs the Dynare
+preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the numerical work in Python.
+
+## Status
+
+| Piece | State |
+|---|---|
+| Preprocessor runner, JSON model loader | done (Dynare 7.2 JSON layout; 6.0 differs and is not supported) |
+| Parameters, `initval`, `shocks`, `steady_state_model` | done |
+| Changing parameters and re-solving without reloading (`set_param`, `set_params`) | done, validated |
+| Steady state: analytical block, numerical, MATLAB steady-state files and `.m` helpers (interpreted or translated), Python functions; Dynare's random restarts, `maxit`, and ports of `solve_algo` 4, 9, 13, 14 | done, validated |
+| MATLAB code in `.mod` files (control flow, matrices, `M_.params`, `set_param_value`, ...) | done, validated on Dynare's test suite |
+| First-order solution (`ghx`, `ghu`, IRFs, simulation) | done, validated |
+| OccBin piecewise-linear simulation, one or two constraints, `curb_retrench` | done, validated |
+| OccBin impulse responses (`Occbin.irf`) | done, validated |
+| Orders 2 and 3 through Dynare's C++ k-order library | done, validated |
+| Simulation and IRFs at orders 2 and 3, with and without pruning | done, validated |
+| Model-local (`#`) and auxiliary variables (leads/lags beyond one, on endogenous and exogenous) | done, validated |
+| Perfect foresight: `initval`/`endval`/`histval` with or without `steady`, `shocks`, `mshocks`, homotopy, `linear_approximation`, `endogenous_terminal_period`, purely backward/forward/static and linear models | done, validated |
+| Perfect foresight with complementarity conditions (`lmmcp`, `[mcp=...]` tags and the perpendicular syntax; port of Dynare's LMMCP solver) | done, validated (lower bound binding 11 periods; two-sided bound) |
+| Perfect foresight with expectation errors (`learnt_in`), and a helper for sequences of unanticipated shocks | done, validated |
+| Perfect foresight: controlled paths, `initval_file`/`histval_file`/`datafile` (CSV, .mat, .m), vector shock values, `robust_lin_solve`; MATLAB code reading or writing `oo_.steady_state` | done, validated (47 of Dynare's 66 deterministic tests agree to 2e-14; the rest differ for documented reasons) |
+| OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
+| `loglinear` in `stoch_simul` (rules, IRFs, simulation and moments in logs; order 1 only, as in Dynare) | done, validated |
+| Moments: theoretical (incl. HP/band-pass filtered, pruned order 2 and pruned order 3), simulated, variance decompositions | done, validated |
+| Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data, observation trends) | done, validated |
+| Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
+| Shock groups, `init2shocks`, real-time decomposition, squeeze; decomposition figures (bars, detail panels, year-on-year, flip, steady state) | done, validated incl. the plotted bars against Dynare's drawing calls |
+| Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings (proposals outside `estimated_params` bounds rejected, as Dynare's code does despite its manual) | done, validated |
+| Posterior samplers beyond RWMH (`pydyn.samplers`): slice (univariate, rotated, multimodal), TaRB, independent MH, RWMH/independent MH with Student proposals, SMC (`hssmc`, `dsmh`), `posterior_sampler_options` | done, validated: replay of Dynare's chains from its seeds (exact for slice, independent MH, Student RWMH; SMC 3e-10 from Dynare's initial particles; TaRB block by block, whole-chain statistics inconclusive) |
+| Estimation at order 2 (`NonlinearEstimation`): Dynare's nonlinear filters `sis`, `apf`, `cpf`, `gf` (unscented/cubature/Monte Carlo) and `nlkf`, with pruning and the resampling options; common random numbers per evaluation; `mode_compute=8` (Dynare's simplex, ported); RWMH through the existing sampler | done, validated (likelihood 1e-9 to 1e-11 given identical draws, via a bit-exact port of Octave's random number generator; simplex path identical); `gmf` and order 3 refused |
+| Posterior analysis (`pydyn.posterior`, `pydyn.posterior_plots`): posterior statistics and HPD intervals, modified harmonic mean, model comparison, convergence diagnostics (inefficiency factors, Geweke, Brooks-Gelman, Raftery-Lewis), jscale tuning, jumping covariances, posterior IRFs, mode_check, prior and posterior densities; csminwel ported (default optimiser when the .mod file gives no `mode_compute`); newrat (`mode_compute=5`, Dynare's default) ported with `Hessian=1` | done, validated (sampler reproduces Dynare's chains exactly given Dynare's random numbers) |
+| Posterior (and prior) distributions of endogenous statistics (`pydyn.posterior_moments`, `Estimation.posterior_moments` / `.posterior_smoother`): `moments_varendo` (covariances, correlations, autocorrelations, variance decompositions incl. conditional and measurement-error variants), smoothed/updated/filtered variables, shocks and measurement errors, `filter_step_ahead` | done, validated with Dynare's own sub-draws (1e-12 to 1e-15) |
+| OccBin likelihood (piecewise Kalman filter, inversion filter), OccBin smoother and shock decomposition, estimation (`OccbinEstimation`: mode, Laplace, MH) | done, validated on Dynare's OccBin filter tests |
+| External functions in the model block (Python callables or `.m` files via the interpreter; Dynare's numerical derivatives when none are supplied) | done, validated on Dynare's tests/external_function |
+| `varexo_det` in stochastic models (decision-rule terms at orders 1-2, `simult_varexo_det` simulation) | done, validated (perfect foresight and order 3 refused) |
+| Estimation extras: `heteroskedastic_shocks`/`heteroskedastic_filter` (likelihood and multivariate smoother), `endogenous_prior`, DSGE-VAR (`dsge_var`, `dsge_varlag`, estimated weight) | done, validated |
+| Dynare dates (yearly to daily, Dynare's arithmetic): dated shocks and `first/last_simulation_period` in perfect foresight, the `data(file=, first_obs=1992Q3, ...)` command in estimation | done, validated (no dseries) |
+| `epilogue` block (`pydyn.epilogue`, applied to simulated or smoothed paths on request, as in Dynare) | done, validated |
+| Optimal policy (`pydyn.optimal_policy`): Ramsey (`ramsey_model`, old `ramsey_policy`, `planner_objective`, `planner_discount`, `instruments`, `ramsey_constraints` with perfect foresight), its steady state as `dyn_ramsey_static.m` (with or without a steady-state block/file conditional on the instruments), `evaluate_planner_objective` at orders 1 and 2 (Ramsey, discretion, simple rules, perfect foresight), `discretionary_policy`, `osr` with `optim_weights` or a planner objective (csminwel) | done, validated on Dynare's tests/optimal_policy, tests/discretionary_policy and examples/optimal_policy (see below) |
+
+## Validation
+
+`tests/` compares against Dynare 7.2 run under Octave 8.4 (`reference/*.mat`, produced by the
+`reference/*.m` scripts):
+
+- First order: `collard_2001_simulated_moments`, `rbc_occbin`, `schorfheide_2000_sim`.
+  Decision rules agree to about 1e-13 and 28 IRFs to about 1e-15 (measured; the tests assert 1e-9).
+- OccBin, two constraints: `rbc_occbin` (200 periods). Piecewise and linear paths agree to 1e-15
+  and the regime history is identical in all 169 shock periods.
+- OccBin, one constraint: Dynare's `borrcon` test model, default options and `curb_retrench`.
+  Paths agree to 1e-16, regime history identical.
+- Order 2 rules against Dynare's default second-order solver, order 3 against `k_order_solver`:
+  about 1e-14.
+- Simulation at orders 1, 2 and 3 against `simult_` with the same shock draws, pruned and
+  unpruned: about 1e-15. IRFs at orders 2 and 3 against the `irf.m` algorithm with saved draws, and
+  against Dynare's own `irf.m` run with a fixed seed whose draws are regenerated.
+- Parameter loop: six (alp, rho) combinations on the Schorfheide model against
+  `set_param_value` + `resol` in Dynare: steady state, rules and IRFs agree.
+- Steady-state function: `nk_baseline` with a Python port of `nk_baseline_steadystate.m`
+  (`examples/nk_baseline_steadystate.py`), including the parameter it overwrites (`Rbar`) after
+  changing `betta`.
+- Helper function inside `steady_state_model`: `collard_2001_analytical_steady_state`.
+- Numerical steady states agree to Dynare's own solver tolerance (Dynare's steady state for the
+  Collard model carries a residual of roughly 1e-6; ours is solved to 1e-14).
+- Optimal policy (`tests/test_optimal_policy.py`, `reference/r_policy.sh`): 19 Ramsey cases from
+  Dynare's tests and examples (no steady-state file, `steady_state_model` and `_steadystate.m` given
+  the instruments, auxiliary variables, histval, linear models, orders 1 and 2): steady state, rules
+  and the three welfare values agree to about 1e-12 or better; 5 discretionary-policy tests: rules,
+  moments and welfare to about 1e-14; OSR: the loss at Dynare's optimum to 1e-14 on 5 tests and, for
+  the welfare-maximising rule at order 2, the same csminwel iterations; Ramsey constraints with
+  perfect foresight to Dynare's solver tolerance.
+
+- Forecasts (`tests/test_forecast.py`, `reference/forecast/`): `forecast` after `stoch_simul` (orders 1 to 3,
+  `varexo_det`, `histval`, measurement error), `estimation(forecast=N)` from the smoothed end-of-sample state
+  (trends, prefilter, diffuse filter, missing data, loglinear, `varexo_det`), the posterior forecast
+  distribution (`MeanForecast`, `PointForecast`, `PointForecastME`) and `conditional_forecast`: means and bands
+  agree with Dynare to about 1e-14; simulated bands replay Dynare's `randn('state', s)` draws through
+  `pydyn.octave_rng`. OccBin forecasts are refused.
+
+Run: `PYDYN_REQUIRE_KORDER=1 DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor python -m pytest tests`
+(without `PYDYN_REQUIRE_KORDER=1` the order-2 and order-3 tests are skipped when the compiled k-order
+library has not been built; the test header says which applies)
+(set `PYDYN_EXAMPLES` to Dynare's `examples` folder).
+
+## Working after the model is loaded
+
+The model is loaded once; everything afterwards is ordinary Python, so an external loop needs no
+re-run of the preprocessor:
+
+```python
+m = pydyn.Model(pydyn.run_preprocessor("model.mod"))
+for rho in (0.5, 0.7, 0.9):
+    m.set_param("rho", rho)                    # like set_param_value
+    sol = pydyn.first_order(m)                 # steady state recomputed, then decision rules
+    resp = pydyn.irf(sol, shock, periods=20)
+```
+
+`sol.params` holds the parameters actually used, including any the steady state updated.
+
+### Forecasts
+
+```python
+from pydyn import forecast as fc
+fc.forecast(model, ["y", "c"], periods=8, conf_sig=0.9)           # after stoch_simul (Mean, HPDinf, HPDsup)
+fc.forecast_at(model, est, theta, horizon=8)                      # estimation(forecast=8) at one parameter vector
+fc.posterior_forecast(est, params=draws, horizon=8)               # oo_.MeanForecast / PointForecast / PointForecastME
+cf = fc.conditional_forecast(model, {"robs": [2.5, 2.5]}, ["er"], parameter_set="calibration", replic=500)
+fc.conditional_forecast_plot_data(cf, ["y"]); fc.run_forecasts(model)   # plot data; the statements of the .mod file
+```
+
+Dynare's options accumulate across statements (`periods`, `conf_sig`); `run_forecasts` follows them, the functions
+take explicit values. Orders 2 and 3 simulate (`forecast_replic`, default 1000); pass `rng=` for reproducible bands.
+Dynare 7.2 adds the observation trend and the prefilter mean to the mean forecast only, so the bands of
+`forecast_at` stay unshifted (`shift_bands=True` shifts them).
+
+### Optimal policy
+
+```python
+from pydyn import optimal_policy as op
+m = pydyn.Model(pydyn.run_preprocessor("ramsey.mod"))    # ramsey_model(...), planner_objective ...
+sol = pydyn.first_order(m)                               # Ramsey steady state (dyn_ramsey_static), rules
+w = op.evaluate_planner_objective(m, sol)                # w.unconditional, w.zero_initial_multiplier, ...
+dp = op.discretionary_policy(m2)                         # discretionary_policy(instruments=...)
+res = op.osr(m3)                                         # osr_params, optim_weights or planner_objective
+```
+
+Dynare's conditional welfare starts from the shock in `oo_.exo_simul(1,:)`: after
+`stoch_simul(periods=...)` that is the first simulated shock, which pydyn does not draw (pass it as
+`u=`). OSR minimises with a port of csminwel; near the optimum its numerical gradients are dominated
+by rounding, so pydyn's iterations can stop at a different point of a flat region than Dynare's
+(`op.osr_objective` evaluates the loss at given parameters).
+
+### MATLAB code in `.mod` files and steady-state files
+
+`pydyn.matlab` is an interpreter for the subset of MATLAB that `.mod` files use to set up a
+calibration. It runs the MATLAB lines of a `.mod` file in order with the Dynare statements, so
+control flow around parameter assignments (`if`, `for`, `switch`, ...) behaves as in Dynare.
+
+- A `<model>_steadystate.m` file next to the `.mod` file is used automatically. Where possible it
+  is translated to Python once (`pydyn.matlab.translate_steady_state(path)` returns the source)
+  and reused, which costs about the same per call as a hand-written Python function.
+- `.m` helper functions called from a `steady_state_model` block are found and run the same way.
+- A Python `steady_state_fn` or `functions={...}` entry passed to `Model` takes precedence.
+- Display, plotting and post-processing lines are skipped with one summarised warning
+  (`model.matlab_skipped` lists them); `options_.x = ...` assignments are stored in
+  `model.matlab_options` and not acted on.
+- Code that could change the calibration in a way the interpreter cannot follow raises
+  `ModelError` naming the line. It is deliberately strict: refusing is preferred to guessing.
+- MATLAB text is parsed and evaluated by the interpreter itself and never passed to Python's
+  `eval`/`exec`; file access is limited to reading `.m` and `.mat` files next to the `.mod` file.
+
+On 212 files from Dynare's own test suite that contain MATLAB code and that Dynare runs under
+Octave: 180 load with a calibration identical to Dynare's (one more to solver tolerance), 31 are
+refused with a clear error, none load with a different calibration (`tools/sweep_matlab.py`; re-checked
+by `tests/test_matlab.py`). An independent adversarial review (617 mixed Dynare/MATLAB cases run in
+both systems) found eleven ways to get a different calibration without an error; each is fixed or
+refused and has a regression test. A further 650 small cases checked against Octave 8.4
+(`reference/matlab_octave_cases/`, shared with the Julia port JDyn) cover indexing, logical class,
+empty arrays, deletion, `sprintf`/`num2str`, `error`/`try` and string functions: every case matches
+Octave or is refused (`tests/test_matlab_octave_cases.py`). Python exceptions inside MATLAB code
+become MATLAB errors that `try/catch` sees; refusals are never caught. Model expressions
+(`steady_state_model`, generated code) run without access to Python's builtins.
+References are from Octave; MATLAB-only behaviour rests on documentation.
+
+Two consequences for models without any MATLAB code: `model.params` after loading includes the
+parameters that a `steady_state_model` block or steady-state file sets when the file has a `steady`
+or `stoch_simul` command (as `M_.params` does in Dynare), and `initval`/`endval` expressions that
+refer to other variables are evaluated as Dynare does (values set so far, zero if unset, the
+computed steady state after `steady`).
+
+## Dynare's shipped examples
+
+`tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's
+own results (stored in `reference/examples`). Fifteen match (decision rules, second order where the
+example asks for it, the perfect-foresight path, and the welfare of the two Ramsey examples);
+`rbc_irf_matching` loads and solves but has no reference; the expectation-errors example matches
+too; seven are outside the scope of this package: the six heterogeneous-agent examples and the PAC model. `nk_baseline`
+and `collard_2001_analytical_steady_state` use their MATLAB steady-state code directly.
+
+## Installation
+
+Python 3.11 or newer, numpy 2.0+, scipy 1.13+ (matplotlib 3.8+ optional, for figures):
+
+```sh
+pip install .                                  # or: pip install -e .
+korder/build.sh /path/to/dynare-7.2           # optional: orders 2-3 (Dynare's C++ library)
+export DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor
+```
+
+The Dynare 7.2 preprocessor binary is required (pydyn reads its JSON output). The k-order library
+is looked up next to the installed package, at `$PYDYN_KORDER_LIB`, or in the source tree's
+`korder/`.
+
+## The C++ k-order library
+
+`korder/build.sh /path/to/dynare-7.2` compiles Dynare's `mex/sources/libkorder` unchanged into
+`korder/libpydyn_korder.so`. Two small files make that possible:
+
+- `korder/stub/mex.h`: a stand-in for the MATLAB header (the library only touches it in code
+  paths we never call);
+- `korder/korder_capi.cc`: replaces the MEX gateway. Dynare's gateway calls back into MATLAB for
+  the model derivatives; this one receives them precomputed from Python.
+
+`pydyn.k_order(model, order=2)` returns `ghx`, `ghu`, `ghxx`, `ghxu`, `ghuu`, `ghs2` (and the
+third-order arrays) laid out as in `oo_.dr`. Third order needs third derivatives in the JSON:
+set `order=3` in the `.mod` file or run the preprocessor with `output=third`.
+
+## Use
+
+```python
+import pydyn
+jd = pydyn.run_preprocessor("model.mod")      # needs DYNARE_PREPROCESSOR or the binary on PATH
+m = pydyn.Model(jd)
+sol = pydyn.first_order(m)
+sol.ghx, sol.ghu                               # same layout as oo_.dr.ghx / oo_.dr.ghu
+sol.irf(shock_vector, periods=40)
+
+ob = pydyn.Occbin(m)                           # model with an occbin_constraints block
+res = ob.simulate(ob.surprise_shocks(), periods=200)
+res.piecewise, res.linear, res.regime_history
+ob.irf([-0.05], periods=40)                    # piecewise IRF, relative to a no-shock baseline
+
+dr2 = pydyn.k_order(m, order=2)                # needs korder/libpydyn_korder.so
+path = pydyn.simulate(dr2, shocks, pruning=True)
+girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, drop=100)
+```
+
+## Options from the .mod file
+
+Loading a model does not run its commands; the Python functions do the work and take their
+defaults from the `.mod` file where that is meaningful: `order`, `pruning`, `qz_criterium` and
+`loglinear` (`k_order`, `first_order`, `simulate`, `irf`), `steady(tolf, nocheck)`, the `stoch_simul` options
+used by `moments`, the `simul_*` options of OccBin, the estimation and smoother options listed in
+their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
+act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
+(for example OccBin constraints in linear estimation) raise an error instead.
+`docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
+
+## Performance
+
+- The first-order solver is a port of Dynare's reduced algorithm (static variables removed by QR, QZ
+  on the dynamic block). `PYDYN_FIRST_ORDER=full` selects the original full-size solver.
+- Generated model functions run on Python floats and fall back to numpy where plain floats would
+  raise or turn complex, so results are numpy's in every case (`PYDYN_CODEGEN=numpy` disables this).
+- A `steady_state_model` block is compiled once per model (`PYDYN_SS_COMPILE=0` disables this).
+- Compiled model functions are cached in `~/.cache/pydyn` (or `$PYDYN_CACHE_DIR`), keyed by a hash
+  of the preprocessor output; `PYDYN_CACHE=0` or `Model(..., cache=False)` turns the cache off. The
+  cache is never read from the model's own folder.
+
+Time for one `set_param` + steady state + first-order solve (CPU, one thread): about 0.3 ms for a
+15-variable model and 0.8-1.1 ms at 28-40 variables.
+
+## Known limits
+
+- MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
+  dates), random numbers and file-system functions are not supported; see the section above.
+- Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
+  dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
+  (`write_latex_*` warns), `varexo_det` in perfect foresight.
+- Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other
+  optimisers (and therefore `osr_params_bounds`, which need a constrained one), `analytic_derivation`,
+  welfare beyond order 2 (Dynare's `k_order_welfare` MEX) and `mult_elimination` are refused.
+- Linear estimation and the smoother refuse models with `occbin_constraints`; use
+  `pydyn.OccbinEstimation` and `pydyn.occbin_filter.occbin_smoother`. Not implemented for OccBin:
+  particle filters, the diffuse filter, OccBin forecasts; missing data in the OccBin filters is
+  not validated.
+- `shocks(surprise, overwrite)`: the preprocessor's JSON does not record `overwrite` for surprise
+  blocks, so several surprise blocks are merged (with a warning).
+- OccBin regime matrices are evaluated at the exogenous steady state; Dynare uses zero. The two
+  differ only for models with a non-zero exogenous steady state (not tested).
+- The k-order library keeps process-wide state. Calls are serialised with a lock, and a call in a
+  forked child process after the parent used the library raises an error: use the `spawn` start
+  method for multiprocessing.
+- The 7.2 preprocessor writes invalid JSON for some statements. The loader repairs `matched_irfs`
+  and `estimated_params_bounds`; files using `shock_paths`, `model_comparison` or `colormap=`
+  still fail to load.
+
+## Independent review
+
+`tests/test_review.py` holds regression tests for the bugs an independent review found, with
+Dynare's results as expected values: comparisons used as numbers, chained comparisons, derivatives
+of `max`/`min`, the order in which `shocks` blocks apply variances and correlations, models with
+no leads or no lags, numerical steady states with auxiliary variables, `initval` entries that
+refer to each other, linear models at second order, and name clashes with temporary terms.
+
+## Licence
+
+GPL-3.0-or-later (see `LICENSE`). Parts are ported from Dynare; `NOTICE.md` lists which files and
+their upstream terms. This project is not affiliated with the Dynare Team.
