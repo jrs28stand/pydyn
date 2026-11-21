@@ -126,7 +126,7 @@ def test_steady_state_and_rules_match(get):
     model, run = get
     for name, case in (("smo_fs", 2), ("smo_me", 3), ("smo_ur", 1)):
         r, m = ref(name, case), model(name, case)
-        sol = pydyn.first_order(m)
+        sol = pydyn.first_order(m, loglinear=False)                # the references store levels
         close(sol.ys, r["ys"])
         res = run(name, case, True)
         ov = r["order_var"].astype(int) - 1

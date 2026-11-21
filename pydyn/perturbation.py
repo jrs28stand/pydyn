@@ -15,6 +15,35 @@ class BlanchardKahnError(Exception):
     pass
 
 
+class LoglinearError(ValueError):
+    pass
+
+
+def log_mask(model) -> np.ndarray:
+    """Variables Dynare takes logs of under ``loglinear``: every endogenous variable except the
+    auxiliary variables for leads and lags of exogenous variables (types 2 and 3), which stay in levels
+    (Dynare's ``log_variable`` / ``indices_lagged_leaded_exogenous_variables``)."""
+    mask = np.ones(model.n_endo, bool)
+    for a in model.raw.get("aux_vars", []):
+        if a.get("type") in (2, 3):
+            mask[a["endo_index"] - 1] = False
+    return mask
+
+
+def loglinearize(ys, G, H, mask):
+    """Rules in log deviations for the variables in ``mask``: ``D^-1 G D`` and ``D^-1 H`` with
+    ``D = diag(ys)`` on logged variables (identity elsewhere), as ``stochastic_solvers.m`` does.
+    Returns ``(log_ys, G, H)``, where ``log_ys`` holds logs for logged variables and levels otherwise."""
+    ys = np.asarray(ys, float)
+    if np.any(ys[mask] <= 0) or not np.all(np.isfinite(ys[mask])):
+        bad = np.nonzero(mask & ~(ys > 0))[0]
+        raise LoglinearError("The loglinearization of the model cannot be performed, because the steady "
+                             f"state is not strictly positive (variables at positions {bad.tolist()})")
+    d = np.where(mask, ys, 1.0)
+    log_ys = np.where(mask, np.log(np.where(mask, ys, 1.0)), ys)
+    return log_ys, G * d[None, :] / d[:, None], H / d[:, None]
+
+
 @dataclass
 class FirstOrderSolution:
     """y_t - ys = G (y_{t-1} - ys) + H u_t, variables in declaration order.
@@ -30,6 +59,8 @@ class FirstOrderSolution:
     eigenvalues: np.ndarray
     jacobian: np.ndarray
     params: np.ndarray = None
+    loglinear: bool = False                 # rules and ys are in logs (log deviations) for logged variables
+    steady_state: np.ndarray = None         # the steady state in levels
 
     def as_dr(self) -> dict:
         """Decision rule in the dict form used by ``pydyn.simulate`` / ``pydyn.irf``."""
@@ -241,15 +272,20 @@ def _solve_full(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM):
     return G, H, eig
 
 
-def first_order(model, ys=None, params=None, qz_criterium=None) -> FirstOrderSolution:
-    """First-order solution in levels. ``qz_criterium`` defaults to the value set in the .mod file
-    (``stoch_simul``/``check``/``estimation``), else Dynare's 1 + 1e-6."""
+def first_order(model, ys=None, params=None, qz_criterium=None, loglinear=None) -> FirstOrderSolution:
+    """First-order solution. ``qz_criterium`` defaults to the value set in the .mod file
+    (``stoch_simul``/``check``/``estimation``), else Dynare's 1 + 1e-6.
+
+    ``loglinear`` (default: the .mod file's ``stoch_simul``/``estimation`` option) returns the rules in
+    log deviations as Dynare does: ``ys``, ``ghx``, ``ghu`` and everything computed from them
+    (``simulate``, ``irf``, moments) are then in logs, except for the auxiliary variables of leads and
+    lags of exogenous variables, which Dynare keeps in levels. ``steady_state`` keeps the levels.
+    """
     from . import options as _opt
     from .steady import steady_state
 
-    if _opt.stoch_options(model).get("loglinear"):
-        _opt.warn_once(model, "the .mod file sets loglinear: first_order, simulate and irf work in levels "
-                              "(estimation and the smoother do honour loglinear)")
+    if loglinear is None:
+        loglinear = bool(_opt.stoch_options(model).get("loglinear", False))
     for key in ("partial_information", "aim_solver", "dr", "dr_cycle_reduction_tol", "sylvester"):
         if key in _opt.stoch_options(model):
             _opt.warn_once(model, f"the .mod file sets {key}: pydyn always uses its QZ-based solver")
@@ -257,6 +293,12 @@ def first_order(model, ys=None, params=None, qz_criterium=None) -> FirstOrderSol
     if ys is None:
         ys, params = steady_state(model, params)
     params = model.params if params is None else params
+    if loglinear:                                        # Dynare checks this before solving (info 26)
+        mask = log_mask(model)
+        if np.any(~(np.asarray(ys, float)[mask] > 0)):
+            bad = [model.endo_names[i] for i in np.nonzero(mask & ~(np.asarray(ys, float) > 0))[0]]
+            raise LoglinearError("The loglinearization of the model cannot be performed, because the steady "
+                                 f"state is not strictly positive: {', '.join(bad)}")
     n = model.n_endo
     J = model.dynamic_jac(np.tile(ys, 3), model.exo_steady(), params, ys)
     fm, f0, fp, fu = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:]
@@ -267,5 +309,9 @@ def first_order(model, ys=None, params=None, qz_criterium=None) -> FirstOrderSol
     mask = np.ones(n, bool)
     mask[state_var] = False
     G[:, mask] = 0.0
+    levels = np.array(ys, float)
+    if loglinear:
+        ys, G, H = loglinearize(levels, G, H, log_mask(model))
     return FirstOrderSolution(ys=ys, G=G, H=H, order_var=order_var, state_var=state_var,
-                              eigenvalues=eig, jacobian=J, params=np.array(params, float))
+                              eigenvalues=eig, jacobian=J, params=np.array(params, float),
+                              loglinear=bool(loglinear), steady_state=levels)

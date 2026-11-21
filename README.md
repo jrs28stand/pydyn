@@ -22,6 +22,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Perfect foresight with complementarity conditions (`lmmcp`, `[mcp=...]` tags and the perpendicular syntax; port of Dynare's LMMCP solver) | done, validated (lower bound binding 11 periods; two-sided bound) |
 | Perfect foresight with expectation errors (`learnt_in`), and a helper for sequences of unanticipated shocks | done, validated |
 | OccBin options: periodic solutions, regime guesses, check-ahead and reset settings, Dynare's error codes, Dynare-style IRFs (`irf_occbin`) | done, validated |
+| `loglinear` in `stoch_simul` (rules, IRFs, simulation and moments in logs; order 1 only, as in Dynare) | done, validated |
 | Moments: theoretical (incl. HP/band-pass filtered and pruned order 2), simulated, variance decompositions | done, validated |
 | Kalman smoother, shock decomposition, initial-condition decomposition (stationary and diffuse, missing data, observation trends) | done, validated |
 | Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
@@ -153,8 +154,8 @@ girf = pydyn.irf(dr2, impulse, m.Sigma_e, periods=40, pruning=True, replic=50, d
 ## Options from the .mod file
 
 Loading a model does not run its commands; the Python functions do the work and take their
-defaults from the `.mod` file where that is meaningful: `order`, `pruning` and `qz_criterium`
-(`k_order`, `first_order`, `simulate`, `irf`), `steady(tolf, nocheck)`, the `stoch_simul` options
+defaults from the `.mod` file where that is meaningful: `order`, `pruning`, `qz_criterium` and
+`loglinear` (`k_order`, `first_order`, `simulate`, `irf`), `steady(tolf, nocheck)`, the `stoch_simul` options
 used by `moments`, the `simul_*` options of OccBin, the estimation and smoother options listed in
 their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
 act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
@@ -179,8 +180,7 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 - MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
   dates), random numbers and file-system functions are not supported; see the section above.
-- Not handled: `loglinear` in the solution functions (`first_order`, `k_order`, `simulate`, `irf`,
-  `moments`: they work in levels and warn; estimation and the smoother do honour it), external
+- Not handled: external
   functions inside the model block, deterministic exogenous variables, Ramsey/optimal policy,
   heterogeneous-agent models, measurement-error covariances, `steady_state()` of an expression.
 - Linear estimation and the smoother refuse models with `occbin_constraints`; OccBin filtering

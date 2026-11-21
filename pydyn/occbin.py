@@ -98,7 +98,7 @@ class Occbin:
         base = np.array(m.params if params is None else params, float)
         base[self.switch] = 0.0
         self.ys, self.params = steady_state(m, base)
-        self.ref = first_order(m, self.ys, self.params)
+        self.ref = first_order(m, self.ys, self.params, loglinear=False)   # piecewise rules are in levels
         self.P, self.Q = self.ref.G, self.ref.H
         self.n, self.n_exo = m.n_endo, m.n_exo
         self._regimes: dict[tuple, tuple] = {}

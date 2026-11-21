@@ -58,7 +58,7 @@ def load_library(path: str | os.PathLike | None = None):
 
 
 def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, library=None,
-            qz_criterium=None) -> dict:
+            qz_criterium=None, loglinear=None) -> dict:
     """Solve the model by perturbation at ``order`` (1 to 3) with Dynare's C++ solver.
 
     Returns a dict with Dynare's decision-rule arrays (``ghx``, ``ghu``, ``ghxx``, ``ghxu``,
@@ -72,8 +72,10 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
         order = int(so.get("order", 2))
     if pruning is None:
         pruning = bool(so.get("pruning", False))
-    if so.get("loglinear"):
-        _opt.warn_once(model, "the .mod file sets loglinear: k_order, simulate and irf work in levels")
+    if loglinear is None:
+        loglinear = bool(so.get("loglinear", False))
+    if loglinear and order > 1:
+        raise KOrderError("Loglinear options currently only works at order 1")      # as Dynare
     qz = _opt.qz_criterium(model, qz_criterium)
     if order > model.max_deriv_order:
         raise KOrderError(f"the preprocessor output only has derivatives up to order "
@@ -140,6 +142,20 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
             res[f"g_{i}"] = get(f"g_{i}")
             if pruning:
                 res[f"pruning_g_{i}"] = get(f"pruning_g_{i}")
+        if loglinear:                                    # order 1 only (checked above)
+            from .perturbation import log_mask
+            mask = log_mask(model)
+            d = np.where(mask, ys, 1.0)
+            if np.any(ys[mask] <= 0):
+                raise KOrderError("The loglinearization of the model cannot be performed, because the "
+                                  "steady state is not strictly positive")
+            res["ghx"] = res["ghx"] * d[state_var][None, :] / d[order_var][:, None]
+            res["ghu"] = res["ghu"] / d[order_var][:, None]
+            res["steady_state"] = ys.copy()
+            res["ys"] = np.where(mask, np.log(d), ys)
+            res["loglinear"] = True
+            for i in range(order + 1):                   # the folded tensors are in levels
+                res.pop(f"g_{i}", None)
         return res
     finally:
         lib.pydyn_korder_free(h)

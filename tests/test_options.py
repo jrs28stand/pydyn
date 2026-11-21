@@ -65,10 +65,13 @@ def test_order_and_pruning_default_to_the_mod_file(tmp_path):
     assert pydyn.k_order(m, pruning=False)["pruning"] is False
 
 
-def test_loglinear_is_reported_by_the_level_solver(tmp_path):
+def test_loglinear_is_honoured_from_the_mod_file(tmp_path):
+    """Validated against Dynare in tests/test_loglinear.py; here only that the option is picked up.
+    This model has a = 0 in the steady state, which Dynare also refuses to loglinearise."""
     m = build(tmp_path, RBC % ("", "stoch_simul(order=1, loglinear, irf=0);"))
-    with pytest.warns(UnsupportedOptionWarning, match="loglinear"):
+    with pytest.raises(pydyn.perturbation.LoglinearError, match="not strictly positive: a"):
         pydyn.first_order(m)
+    assert not pydyn.first_order(m, loglinear=False).loglinear
 
 
 def test_steady_state_tolerance_follows_dynare(tmp_path):

@@ -1026,7 +1026,7 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
             if list(varobs) != list(estimation.varobs):
                 raise SmootherError("varobs differs from the observed variables of the estimation")
             params, Q, Hme, theta = _calibration(estimation, theta)
-            sol = first_order(model, params=params)
+            sol = first_order(model, params=params, loglinear=False)     # loglinear is applied below
         else:
             Q = np.array(model.Sigma_e, float)
             Hme = np.diag([float(model.measurement_errors.get(v, 0.0)) for v in varobs])
@@ -1034,7 +1034,7 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
             if extra_me:
                 raise SmootherError(f"measurement error declared on non-observed variable(s) {sorted(extra_me)}")
             if sol is None:
-                sol = first_order(model)
+                sol = first_order(model, loglinear=False)
     opts["parameter_set"] = pset
     params = np.array(getattr(sol, "params", model.params), float)
     ys = np.asarray(sol.ys, float)

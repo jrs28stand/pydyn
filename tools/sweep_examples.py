@@ -73,7 +73,7 @@ def check(mod: Path, ref_file: Path | None = None):
             out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
     try:
-        sol = pydyn.first_order(m, ys=ys, params=p)
+        sol = pydyn.first_order(m, ys=ys, params=p, loglinear=False)    # scaled to logs below
     except Exception as e:  # noqa: BLE001
         out["status"], out["detail"] = "solution failed", f"{type(e).__name__}: {str(e)[:110]}"
         return out
@@ -93,7 +93,7 @@ def check(mod: Path, ref_file: Path | None = None):
     order = m.options.get("stoch_simul", {}).get("order", 1)
     if order >= 2 and "ghxx" in ref and m.max_deriv_order >= 2:
         try:
-            dr = pydyn.k_order(m, order=2, ys=ys, params=p)
+            dr = pydyn.k_order(m, order=2, ys=ys, params=p, loglinear=False)
             d2 = max(np.max(np.abs(dr[k] - np.asarray(ref[k], float).reshape(dr[k].shape)))
                      for k in ("ghxx", "ghxu", "ghuu", "ghs2"))
             notes.append(f"order 2 {d2:.1e}")
