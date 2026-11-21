@@ -35,17 +35,14 @@ class OccbinEstimation(Estimation):
     (``kalman_algo = 2, 4``), particle filtering options.
     """
 
+    handles_occbin = True
+
     def __init__(self, model, data=None, occbin=None, **options):
         if not getattr(model, "occbin_constraints", None):
             raise ValueError("the model has no occbin_constraints block: use pydyn.Estimation")
-        cons = model.occbin_constraints
-        # Estimation refuses OccBin models (it would ignore the constraints); its data, prior and
-        # parameter handling is what is reused here, the likelihood is replaced below.
-        model.occbin_constraints = []
-        try:
-            super().__init__(model, data, **options)
-        finally:
-            model.occbin_constraints = cons
+        # Estimation's data, prior and parameter handling is reused; the likelihood and smoother are
+        # replaced below (handles_occbin tells Estimation not to refuse the model).
+        super().__init__(model, data, **options)
         o = self.options
         if o["loglinear"]:
             raise NotImplementedError("loglinear is not supported with OccBin (Dynare's OccBin works in levels)")

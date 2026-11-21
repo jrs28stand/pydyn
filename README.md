@@ -29,6 +29,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
 | Shock groups, `init2shocks`, real-time decomposition, squeeze; decomposition figures (bars, detail panels, year-on-year, flip, steady state) | done, validated incl. the plotted bars against Dynare's drawing calls |
 | Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
+| Posterior analysis (`pydyn.posterior`, `pydyn.posterior_plots`): posterior statistics and HPD intervals, modified harmonic mean, model comparison, convergence diagnostics (inefficiency factors, Geweke, Brooks-Gelman, Raftery-Lewis), jscale tuning, jumping covariances, posterior IRFs, mode_check, prior and posterior densities; csminwel ported (default optimiser when the .mod file gives no `mode_compute`; Dynare's default newrat is not ported) | done, validated (sampler reproduces Dynare's chains exactly given Dynare's random numbers) |
 | OccBin likelihood (piecewise Kalman filter, inversion filter), OccBin smoother and shock decomposition, estimation (`OccbinEstimation`: mode, Laplace, MH) | done, validated on Dynare's OccBin filter tests |
 
 ## Validation
@@ -96,9 +97,9 @@ control flow around parameter assignments (`if`, `for`, `switch`, ...) behaves a
   `eval`/`exec`; file access is limited to reading `.m` and `.mat` files next to the `.mod` file.
 
 On 212 files from Dynare's own test suite that contain MATLAB code and that Dynare runs under
-Octave: 157 load with a calibration identical to Dynare's, 40 are refused with a clear error, 15
+Octave: 163 load with a calibration identical to Dynare's (one more to solver tolerance), 33 are refused with a clear error, 15
 are outside this package for unrelated reasons, none load with a different calibration
-(`tools/sweep_matlab.py`; the 157 are re-checked by `tests/test_matlab.py`). An independent
+(`tools/sweep_matlab.py`; the 163 are re-checked by `tests/test_matlab.py`). An independent
 adversarial review (617 mixed Dynare/MATLAB cases run in both systems) found eleven ways to get a
 different calibration without an error; each is fixed or refused and has a regression test.
 References are from Octave; MATLAB-only behaviour rests on documentation.

@@ -554,3 +554,266 @@ def test_estimated_params_init_and_unsupported_blocks(workdir):
         estimation.Estimation(model("estimated_params;\nrho, beta_pdf, 0.5, 0.2;\nend;"))
     with pytest.raises(NotImplementedError, match="estimated_params_bounds"):
         estimation.Estimation(model("estimated_params_bounds;\nlam, 0, 1;\nend;"))
+
+
+# ====================================================================== optimisers (mode_compute), see reference/r_posterior.m
+@pytest.fixture(scope="module")
+def post(tmp_path_factory):
+    """post(mod, n) -> Estimation for reference/<mod>.mod preprocessed with -DPOST=n."""
+    work = tmp_path_factory.mktemp("post_est")
+    made = {}
+
+    def _post(mod, n=0, **kw):
+        if (mod, n) not in made:
+            sub = work / f"{mod}_{n}"
+            sub.mkdir()
+            for f in list(REF.glob("est_*_data.m")) + [REF / f"{mod}.mod", REF / f"{mod}_mode0.mat"]:
+                shutil.copy(f, sub)
+            made[(mod, n)] = pydyn.Model(pydyn.run_preprocessor(sub / f"{mod}.mod", extra_args=(f"-DPOST={n}",)))
+        return estimation.Estimation(made[(mod, n)], **kw)
+    return _post
+
+
+def _rosenbrock(x):
+    """The objective of reference/r_posterior.m (post_testfun), with the same floating-point operations."""
+    k = np.flatnonzero(x > 1.5)
+    if k.size:
+        s = 0.0
+        for j in k:
+            s = s + (x[j] - 1.5) * (x[j] - 1.5)
+        return np.inf, 42, s
+    f = 0.0
+    for i in range(x.size - 1):
+        a = x[i + 1] - x[i] * x[i]
+        b = 1 - x[i]
+        f = f + 100 * (a * a) + b * b
+    return f, 0, 0.0
+
+
+def test_csminwel_on_test_function_matches_dynare():
+    """csminwel1.m and the port on a function both evaluate with identical arithmetic. The first evaluations are
+    bit-identical; later ones drift apart because Octave and numpy round their matrix products differently and the
+    search amplifies that (measured: 1e-13 after 27 evaluations, 1e-9 after 75, 1e-7 after 140). Iteration and
+    evaluation counts stay equal where the run is short or the gradient accurate."""
+    t = ref("post_csminwel_fun.mat")
+    counts = {}
+    for v in range(1, t["settings"].shape[0] + 1):
+        method, eps, nit, crit = t["settings"][v - 1]
+        p = f"s{v}_"
+        X, F = [], []
+
+        def fobj(x):
+            out = _rosenbrock(x)
+            X.append(np.array(x))
+            F.append(out[0])
+            return out
+        res = estimation.csminwel(fobj, t["x0"], method=int(method), epsilon=eps, nit=int(nit), crit=crit)
+        Fd = t[p + "F"]
+        np.testing.assert_array_equal(F[:20], Fd[:20])                       # bit for bit
+        np.testing.assert_allclose(F[:60], Fd[:60], rtol=1e-6)
+        counts[v] = (res["iterations"], res["fcount"], res["retcode"])
+        assert res["fcount"] == len(F)
+        assert abs(res["f"] - t[p + "fh"]) < 1e-6 and res["retcode"] == t[p + "retcode"]
+        np.testing.assert_allclose(res["x"], t[p + "xh"], atol=5e-4)
+        if v in (2, 3, 6):                                                   # same path to the end
+            assert counts[v][:2] == (t[p + "itct"], t[p + "fcount"])
+            idx = t[p + "Xidx"].astype(int) - 1
+            np.testing.assert_allclose(np.array(X)[idx].T, t[p + "X"], atol=2e-2 if v < 6 else 1e-5)
+            np.testing.assert_allclose(res["x"], t[p + "xh"], atol=1e-6)
+    assert counts[6] == (13, 102, 8)                                         # iteration count termination
+    with pytest.raises(ValueError, match="gradient"):
+        estimation.csminwel(_rosenbrock, t["x0"], method=4)
+    bad = estimation.csminwel(_rosenbrock, np.full(5, 2.0))
+    assert bad["retcode"] == -1 and bad["x"] is None
+    flat = estimation.csminwel(lambda x: (1.0, 0, 0.0), np.zeros(3))         # zero gradient
+    assert flat["retcode"] == 1 and flat["iterations"] == 1
+
+
+@pytest.mark.parametrize("mod", ["post_nk", "post_schorfheide"])
+def test_csminwel_follows_dynare_on_the_posterior(post, mod):
+    """mode_compute=4 from the same starting point as Dynare, with every evaluation of Dynare's run recorded.
+    Measured: the evaluation points agree to 1e-9 for the first 90 (nk) and to 1e-8 for the first 146 (Schorfheide)
+    evaluations, then drift (rounding differences of 1e-15 to 1e-12 in the likelihood divided by the gradient step
+    1e-6); the optima differ by 3e-8 in the objective (convergence criterion 1e-7) and 1e-4 posterior standard
+    deviations in the parameters."""
+    est = post(mod, 1)
+    r = ref(f"{mod}_mode.mat")
+    assert est.options["mode_compute"] == 4 and est.names == r["names"].split(";")
+    np.testing.assert_array_equal(est.x0, r["x0"])
+    # penalties outside the domain: Dynare's info(1) and info(4)
+    for j in range(r["pen_X"].shape[1]):
+        fval, code, pen = est.objective(r["pen_X"][:, j])
+        assert code == r["pen_info"][0, j]
+        np.testing.assert_allclose(pen, r["pen_info"][1, j], rtol=1e-12, atol=1e-18)
+        assert np.isfinite(fval) == np.isfinite(r["pen_f"][j])
+    X, F = [], []
+    original = est.objective
+
+    def logged(x, bounds=None):
+        out = original(x, bounds)
+        X.append(np.array(x))
+        F.append(out[0])
+        return out
+    est.objective = logged
+    cliff = iter(np.atleast_2d(r["c2_cliff_rand"].T))
+    mode = est.mode(rand=lambda n: next(cliff))                 # mode_compute=4 from the .mod file
+    del est.objective
+    res = est.last_csminwel
+    idx = r["c2_Xidx"].astype(int) - 1
+    early = idx[idx < 120]
+    np.testing.assert_allclose(np.array(X)[early].T, r["c2_X"][:, :early.size], rtol=0, atol=1e-7)
+    with np.errstate(invalid="ignore"):
+        np.testing.assert_allclose(F[:120], r["c2_F"][:120], rtol=1e-6)      # steep: looser than the points
+    assert abs(res["iterations"] - r["c2_itct"]) <= 3 and abs(res["fcount"] - r["c2_fcount"]) < 80
+    assert abs(res["f"] - r["c2_fh"]) < 2e-7
+    sd = np.sqrt(np.diag(r["Vmode"]))
+    assert np.max(np.abs(mode.x - r["xparam1"]) / sd) < 2e-3
+    np.testing.assert_array_equal(r["c2_xh"], r["xparam1"])     # Dynare's own run is the recorded one
+    # Hessian, covariance and Laplace approximation at Dynare's mode
+    at = estimation.ModeResult(x=r["xparam1"], names=est.names, log_posterior=est.log_posterior(r["xparam1"]))
+    est.add_hessian(at)
+    np.testing.assert_allclose(at.log_posterior, r["logpost"], rtol=1e-11)
+    np.testing.assert_allclose(at.inv_hessian, r["Vmode"], rtol=2e-4, atol=2e-5 * np.abs(r["Vmode"]).max())
+    np.testing.assert_allclose(at.laplace, r["laplace"], atol=2e-4)
+    np.testing.assert_allclose(mode.laplace, r["laplace"], atol=5e-3)
+    # the other gradient formulas and option values: a few iterations each, same path as Dynare
+    for v in range(1, 6):
+        method, eps, nit, crit = r["variants"][v - 1]
+        X.clear()
+        est.objective = logged
+        m2 = est.mode(optim={"NumgradAlgorithm": int(method), "NumgradEpsilon": eps, "MaxIter": int(nit), "TolFun": crit},
+                      compute_hessian=False)
+        del est.objective
+        res = est.last_csminwel
+        assert (res["iterations"], res["fcount"], res["retcode"]) == (r[f"v{v}_itct"], r[f"v{v}_fcount"], r[f"v{v}_retcode"])
+        k = r[f"v{v}_Xidx"].astype(int) - 1
+        np.testing.assert_allclose(np.array(X)[k].T, r[f"v{v}_X"], rtol=0, atol=1e-7)
+        np.testing.assert_allclose(m2.x, r[f"v{v}_xh"], rtol=0, atol=1e-7)
+        np.testing.assert_allclose(res["H"], r[f"v{v}_H"], rtol=0, atol=1e-5 * np.abs(r[f"v{v}_H"]).max())
+        assert m2.hessian is None and np.all(np.isnan(m2.std)) and np.isnan(m2.laplace)
+
+
+def test_mode_compute_choices(post, tmp_path):
+    r = ref("post_nk_mode.mat")
+    est = post("post_nk", 0)                                    # the .mod file says mode_compute=0, no mode_file
+    assert est.options["mode_compute"] == 0
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="mode_compute=0 without mode_file"):
+        m0 = est.mode()                                         # explicit request: the default optimiser (csminwel) runs
+    assert "csminwel" in m0.message and abs(m0.log_posterior - r["logpost"]) < 1e-6
+    # no mode_compute at all: Dynare's default (5, newrat) is not ported, csminwel runs and a warning says so
+    e = post("post_nk", 0, mode_compute=None)
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="newrat"):
+        dflt = e.mode(compute_hessian=False)
+    assert "csminwel" in dflt.message and abs(dflt.log_posterior - r["logpost"]) < 1e-6
+    sp = e.mode(method="scipy", x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)
+    assert "SLSQP" in sp.message and abs(sp.log_posterior - r["logpost"]) < 1e-5   # pydyn's bounded routine
+    # saving and reloading a mode; Dynare's own mode file
+    est.save_mode(tmp_path / "mode.npz", m0)
+    back = est.mode(mode_compute=0, mode_file=tmp_path / "mode.npz")
+    np.testing.assert_array_equal(back.x, m0.x)
+    np.testing.assert_array_equal(back.hessian, m0.hessian)
+    assert back.laplace == m0.laplace and back.nfev < 5 and "mode read from" in back.message
+    dyn = post("post_nk", 2).mode()                             # mode_compute=0, mode_file=post_nk_mode0 (a Dynare .mat file)
+    np.testing.assert_array_equal(dyn.x, r["xparam1"])
+    np.testing.assert_array_equal(dyn.hessian, r["hh"])
+    np.testing.assert_allclose(dyn.inv_hessian, r["Vmode"], rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(dyn.laplace, r["laplace"], rtol=1e-10)
+    np.savez(tmp_path / "perm.npz", xparam1=m0.x[::-1], parameter_names=np.array(est.names[::-1]), fval=1.0)
+    perm = est.mode(mode_compute=0, mode_file=tmp_path / "perm.npz", compute_hessian=False)
+    np.testing.assert_array_equal(perm.x, m0.x)                 # matched by name; no Hessian in the file
+    assert perm.hessian is None
+    with pytest.raises(estimation.EstimationError, match="no such"):
+        est.mode(mode_compute=0, mode_file=tmp_path / "missing")
+    # scipy stand-ins: one warning each, same optimum
+    e = post("post_nk", 0, mode_compute=1)
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="fmincon.*not a port"):
+        sqp = e.mode(compute_hessian=False)
+    assert abs(sqp.log_posterior - r["logpost"]) < 1e-3
+    e = post("post_nk", 0, mode_compute=3)                      # unbounded, like fminunc: started near the mode
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="fminunc.*not a port"):
+        bfgs = e.mode(x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)
+    assert abs(bfgs.log_posterior - r["logpost"]) < 1e-3
+    e = post("post_nk", 0, mode_compute=7, optim="'MaxIter',120,'TolFun',1e-6")
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="fminsearch"):
+        simplex = e.mode(x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)
+    assert simplex.log_posterior > e.log_posterior(r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])))
+    # additional_optimizer_steps: csminwel stopped early, then continued by a second run
+    e = post("post_nk", 0, mode_compute=4, optim=("MaxIter", 3), additional_optimizer_steps=[4], cova_compute=0)
+    two = e.mode()
+    one = post("post_nk", 0, mode_compute=4, optim=("MaxIter", 3)).mode(compute_hessian=False)
+    assert two.log_posterior > one.log_posterior and two.message.count("csminwel") == 2
+    assert two.hessian is None and two.inv_hessian is None      # cova_compute=0
+    # mode_compute=9 (CMA-ES in Dynare): differential evolution on a box, then L-BFGS-B
+    e = post("post_nk", 0, mode_compute=9, optim="'MaxIter',3")
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="CMA-ES.*not a port"):
+        de = e.mode(x0=r["xparam1"], compute_hessian=False, rand=3)
+    assert "differential_evolution" in de.message and abs(de.log_posterior - r["logpost"]) < 1e-4
+    for code in (2, 5, 6, 10):
+        with pytest.raises(NotImplementedError, match=f"mode_compute={code}"):
+            post("post_nk", 0, mode_compute=code).mode()
+    assert estimation._parse_optim("''MaxIter'',20,''TolFun'',1e-5,''InitialInverseHessian'',''1e-3*eye(12)''") == \
+        {"MaxIter": 20, "TolFun": 1e-5, "InitialInverseHessian": "1e-3*eye(12)"}
+    e = post("post_nk", 0, mode_compute=4, optim="'MaxIter',2,'InitialInverseHessian','1e-3*eye(12)'")
+    h0 = e.mode(compute_hessian=False)                          # a larger first step than with the default 1e-4*I
+    assert e.last_csminwel["iterations"] == 3 and np.isfinite(h0.log_posterior) and not np.allclose(h0.x, one.x)
+    # penalised objective for the Hessian: same result where the objective is defined around the mode
+    a = estimation.ModeResult(x=r["xparam1"], names=est.names, log_posterior=est.log_posterior(r["xparam1"]))
+    est.add_hessian(a, penalized=True)
+    np.testing.assert_allclose(a.hessian, est.hessian(r["xparam1"]), rtol=1e-12)
+
+
+def test_calibration_and_option_report(post):
+    est = post("post_nk", 2)
+    theta = est.x0 * 1.05
+    before = (est.model.params.copy(), np.array(est.model.Sigma_e, float).copy())
+    cal = est.calibration(theta)
+    assert set(cal) == {"params", "Sigma_e", "H"}
+    Q, H = est.covariances(theta)
+    np.testing.assert_array_equal(cal["Sigma_e"], Q)
+    np.testing.assert_array_equal(cal["H"], H)
+    np.testing.assert_array_equal(cal["params"], est.model_params(theta))
+    k = est.model.param_names.index("kappa")
+    assert cal["params"][k] == theta[est.names.index("kappa")] and cal["H"][0, 0] == theta[3] ** 2
+    np.testing.assert_array_equal(est.model.params, before[0])                 # the model is not modified
+    np.testing.assert_array_equal(np.array(est.model.Sigma_e, float), before[1])
+    with pytest.raises(estimation.EstimationError):
+        est.calibration(theta[:3])
+    # every option of this estimation command is acted on
+    assert est.unsupported_options == [] and est.ignored_options == ["nodisplay"]
+    o = est.options
+    assert (o["mh_drop"], o["mh_conf_sig"], o["mh_nblck"], o["sub_draws"], o["mode_file"]) == (0.4, 0.8, 3, 90, "post_nk_mode0")
+    # options that are not: reported once, by name
+    with pytest.warns(pydyn.options.UnsupportedOptionWarning) as rec:
+        e2 = estimation.Estimation(est.model, forecast=8, moments_varendo=True, analytic_derivation=True, mh_recover=True,
+                                   load_mh_file=True, dsge_var=0.5, conditional_likelihood=True, nodiagnostic=True)
+    msg = str(rec[0].message)
+    for name in ("forecast", "moments_varendo", "analytic_derivation", "mh_recover", "load_mh_file", "dsge_var",
+                 "conditional_likelihood"):
+        assert name in msg and name in e2.unsupported_options
+    assert "nodiagnostic" not in msg and "mode_file" not in msg and "sub_draws" not in msg
+    # aliases of the JSON names
+    e3 = estimation.Estimation(est.model, **{"mh_tune_jscale.status": True, "mh_jscale": None,
+                                             "MCMC_jumping_covariance": "identity_matrix",
+                                             "convergence.rafterylewis.indicator": True, "mode_check.number_of_points": 10})
+    assert e3.options["mh_tune_jscale"] == 0.33 and e3.options["mcmc_jumping_covariance"] == "identity_matrix"
+    assert e3.options["raftery_lewis_diagnostics"] is True and e3.options["mode_check_number_of_points"] == 10
+
+
+def test_subclass_hook_for_occbin(post):
+    """A model with occbin_constraints is refused by Estimation, accepted by a subclass that sets handles_occbin."""
+    m = post("post_nk", 2).model
+    saved = getattr(m, "occbin_constraints", None)
+    m.occbin_constraints = [{"name": "zlb"}]
+    try:
+        with pytest.raises(NotImplementedError, match="occbin_constraints"):
+            estimation.Estimation(m)
+
+        class Sub(estimation.Estimation):
+            handles_occbin = True
+
+            def _minus_loglik(self, theta, return_lik=False):        # documented extension point
+                return super()._minus_loglik(theta, return_lik)
+        e = Sub(m)
+        assert m.occbin_constraints == [{"name": "zlb"}] and np.isfinite(e.log_posterior(e.x0))
+    finally:
+        m.occbin_constraints = saved

@@ -1,7 +1,13 @@
 # This file is part of pydyn.
 #
-# It follows, and in places is a Python port of, matlab/estimation/{dsge_likelihood, dynare_estimation_init, dynare_estimation_1, set_prior, initial_estimation_checks, posterior_sampler_core, set_mcmc_prior_bounds}.m, matlab/optimization/hessian.m and the data-set utilities from Dynare 7.2
-# (Copyright (C) 2003-2026 Dynare Team, https://www.dynare.org), modified in 2026.
+# It follows, and in places is a Python port of, matlab/estimation/{dsge_likelihood, dynare_estimation_init,
+# dynare_estimation_1, set_prior, initial_estimation_checks, posterior_sampler_core, posterior_sampler_iteration,
+# posterior_sampler_initialization, set_mcmc_prior_bounds, check_bounds_and_definiteness_estimation}.m,
+# matlab/optimization/{hessian, dynare_minimize_objective, penalty_objective_function}.m, matlab/ispd.m and the
+# data-set utilities from Dynare 7.2 (Copyright (C) 2003-2026 Dynare Team, https://www.dynare.org), modified in 2026.
+# The csminwel optimiser is a port of matlab/optimization/{csminwel1, csminit1, bfgsi1, numgrad2, numgrad3, numgrad5,
+# numgrad3_, numgrad5_, step_length_correction}.m of Dynare 7.2 (Copyright (C) 1993-2009 Christopher Sims,
+# Copyright (C) 2006-2025 Dynare Team; GPL-3.0-or-later; original: http://sims.princeton.edu/yftp/optimize/).
 #
 # This program is free software: you can redistribute it and/or modify it under the terms of the
 # GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -17,6 +23,9 @@ Typical use::
     est.log_likelihood(theta); est.log_prior(theta); est.log_posterior(theta)
     mode = est.mode()                             # posterior mode, Hessian, Laplace approximation
     mc = est.sample(replic=20000, mode=mode)      # random-walk Metropolis-Hastings
+    est.posterior_statistics(mc); est.modified_harmonic_mean(mc); est.convergence_diagnostics(mc)
+    est.posterior_irf(mc)                         # see pydyn.posterior and pydyn.posterior_plots
+    est.calibration(theta)                        # {"params", "Sigma_e", "H"} implied by a parameter vector
 
 The parameter vector is ordered as in Dynare: standard deviations of structural shocks,
 standard deviations of measurement errors, correlations of structural shocks, correlations of
@@ -32,16 +41,38 @@ Implemented, with Dynare's defaults: ``datafile`` (``.m``, ``.mat``, ``.csv``), 
 missing observations (NaN), ``lik_init`` 1 (stationary), 2 (large diagonal covariance) and 3
 (``diffuse_filter``), ``kalman_algo`` 0-4 (multivariate and univariate filters, including the
 automatic switch to the univariate filter when the forecast-error covariance is singular),
-``kalman_tol``, ``diffuse_kalman_tol``, ``riccati_tol``, ``qz_criterium``, ``prior_trunc``,
-``mh_replic``, ``mh_nblocks``, ``mh_jscale`` (and the per-parameter ``jscale``), ``mh_drop``,
-``mh_init_scale_factor``. Priors: beta, gamma, normal, inverse gamma 1 and 2, uniform, Weibull;
-none at all means maximum likelihood.
+``kalman_tol``, ``diffuse_kalman_tol``, ``riccati_tol``, ``qz_criterium``, ``prior_trunc``.
+Priors: beta, gamma, normal, inverse gamma 1 and 2, uniform, Weibull; none at all means maximum
+likelihood.
+
+Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 1, 3, 7, 8, 9 (scipy equivalents),
+0 with ``mode_file``; ``optim``, ``additional_optimizer_steps``, ``cova_compute``,
+``use_penalized_objective_for_hessian``. When the ``.mod`` file gives no ``mode_compute`` (Dynare's
+default is 5, newrat, which is not ported) csminwel is used: see ``mode`` for the reasons.
+
+Sampler (``Estimation.sample``): random-walk Metropolis-Hastings with ``mh_replic``,
+``mh_nblocks``, ``mh_jscale`` (and the per-parameter ``jscale``), ``mh_drop``,
+``mh_init_scale_factor``, ``mcmc_jumping_covariance``, ``mh_tune_jscale``, ``mh_tune_guess``,
+saving and continuing chains (the counterpart of ``load_mh_file``).
+
+Options used by :mod:`pydyn.posterior` and :mod:`pydyn.posterior_plots` when they are given an
+``Estimation``: ``mh_conf_sig``, ``sub_draws``, ``posterior_max_subsample_draws``, ``taper_steps``,
+``geweke_interval``, ``raftery_lewis_diagnostics``, ``raftery_lewis_qrs``,
+``brooks_gelman_plotrows``, ``bayesian_irf``, ``irf``, ``relative_irf``, ``irf_shocks``,
+``mode_check`` and its three settings, ``huge_number``. As everywhere in pydyn a flag such as
+``bayesian_irf`` or ``mode_check`` does not make ``Estimation`` compute anything by itself: the
+corresponding function does, with the settings of the ``.mod`` file as defaults.
+
+Every other option of the ``estimation`` command is listed in ``unsupported_options`` and reported
+once in an ``UnsupportedOptionWarning`` (display-only options excepted).
 
 Not implemented: orders above one, ``lik_init`` 4 and 5, the univariate filters with correlated
 measurement errors, calibrated measurement-error covariances, ``estimated_params_bounds``,
 ``estimated_params_init(use_calibration)``, endogenous priors, prior restrictions,
-``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers,
-the modified harmonic mean estimator and the smoother for non-stationary models.
+``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers
+(slice, TaRB, independent, SMC), ``mode_compute`` 2, 5 (newrat, Dynare's default), 6, 10 and above, ``mh_recover``,
+``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior moments
+of the endogenous variables and the smoother for non-stationary models.
 """
 from __future__ import annotations
 
@@ -60,7 +91,7 @@ from .priors import Prior, PriorError
 from .steady import SteadyStateError, steady_state
 
 __all__ = ["Estimation", "EstimationError", "ModeResult", "MCMCResult", "load_data", "read_m_data",
-           "hessian", "metropolis_hastings", "Prior", "PriorError"]
+           "hessian", "metropolis_hastings", "csminwel", "Prior", "PriorError"]
 
 
 class EstimationError(Exception):
@@ -488,6 +519,288 @@ def hessian(func, x, gstep=(1e-2, 1.0)):
     return hh
 
 
+# ====================================================================== csminwel (mode_compute=4)
+# Port of matlab/optimization/{csminwel1, csminit1, bfgsi1, numgrad2, numgrad3, numgrad5, numgrad3_, numgrad5_,
+# penalty_objective_function, step_length_correction}.m of Dynare 7.2: Copyright (C) 1993-2009 Christopher Sims,
+# Copyright (C) 2006-2025 Dynare Team, GPL-3.0-or-later (original at http://sims.princeton.edu/yftp/optimize/).
+def _csm_numgrad(pfun, f0, x, method, epsilon):
+    """Numerical gradient by the 2, 3 or 5 point formula (``method`` 2, 3, 5; 13 and 15 are the
+    variants that set a component to zero at an apparent local minimum). Returns (g, badg, evaluations)."""
+    n = x.size
+    g = np.zeros(n)
+    badg = False
+    x = x.copy()
+    h = epsilon
+    if method not in (2, 3, 5, 13, 15):
+        raise ValueError("csminwel: unknown method for gradient evaluation (use 2, 3, 5, 13 or 15)")
+    for i in range(n):
+        xiold = x[i]
+        if method == 2:
+            x[i] = x[i] + h
+            g0 = (pfun(x) - f0) / h
+        elif method in (3, 13):
+            x[i] = xiold + h
+            f1 = pfun(x)
+            x[i] = xiold - h
+            f2 = pfun(x)
+            g0 = 0.0 if (method == 13 and f0 < f1 and f0 < f2) else (f1 - f2) / (2 * h)
+        else:
+            x[i] = xiold + h
+            f1 = pfun(x)
+            x[i] = xiold - h
+            f2 = pfun(x)
+            x[i] = xiold + 2 * h
+            f3 = pfun(x)
+            x[i] = xiold - 2 * h
+            f4 = pfun(x)
+            if method == 15 and f0 < f1 and f1 < f3 and f0 < f2 and f2 < f4:
+                g0 = 0.0
+            else:
+                g0 = (8 * (f1 - f2) + f4 - f3) / (12 * h)
+        if abs(g0) < 1e15:
+            g[i] = g0
+        else:
+            g[i] = 0.0
+            badg = True
+        if method != 15:
+            x[i] = xiold
+        # method 15: numgrad5_.m of Dynare 7.2 does not restore x(i), so every later component is
+        # differentiated at a point shifted by -2h in the earlier ones; reproduced as is.
+    return g, badg, {2: 1, 3: 2, 13: 2, 5: 4, 15: 4}[method] * n
+
+
+def _csminit(pfun, x0, f0, g0, badg, H0, log):
+    """Line search of csminwel (``csminit1.m``). Returns (fhat, xhat, evaluations, retcode)."""
+    ANGLE, THETA, FCHANGE, MINLAMB, MINDFAC = 0.005, 0.3, 1000, 1e-9, 0.01
+    fcount = 0
+    lam = 1.0
+    xhat, fhat = x0, f0
+    g = g0
+    gnorm = np.linalg.norm(g)
+    retcode = None
+    if gnorm < 1e-12 and not badg:
+        return fhat, xhat, fcount, 1
+    dx = -H0 @ g
+    dxnorm = np.linalg.norm(dx)
+    if dxnorm > 1e12:
+        log("Near-singular H problem.")
+        dx = dx * FCHANGE / dxnorm
+    dfhat = dx @ g0
+    if not badg:
+        a = -dfhat / (gnorm * dxnorm)
+        if a < ANGLE:
+            dx = dx - (ANGLE * dxnorm / gnorm + dfhat / (gnorm * gnorm)) * g
+            dfhat = dx @ g
+            dxnorm = np.linalg.norm(dx)
+            log(f"Correct for low angle: {a:g}")
+    log(f"Predicted improvement: {-dfhat / 2:18.9f}")
+    done = False
+    factor = 3.0
+    shrink = True
+    lambda_max = np.inf
+    lambda_peak = 0.0
+    f_peak = f0
+    while not done:
+        dxtest = x0 + dx * lam
+        f = pfun(dxtest)
+        log(f"lambda = {lam:10.5g}; f = {f:20.7f}")
+        if f < fhat:
+            fhat, xhat = f, dxtest
+        fcount += 1
+        shrink_signal = ((not badg) and (f0 - f < max(-THETA * dfhat * lam, 0))) or (badg and (f0 - f) < 0)
+        grow_signal = (not badg) and (lam > 0) and (f0 - f > -(1 - THETA) * dfhat * lam)
+        if shrink_signal and (lam > lambda_peak or lam < 0):
+            if lam > 0 and ((not shrink) or lam / factor <= lambda_peak):
+                shrink = True
+                factor = factor ** 0.6
+                while lam / factor <= lambda_peak:
+                    factor = factor ** 0.6
+                if abs(factor - 1) < MINDFAC:
+                    retcode = 2 if abs(lam) < 4 else 7
+                    done = True
+            if lam < lambda_max and lam > lambda_peak:
+                lambda_max = lam
+            lam = lam / factor
+            if abs(lam) < MINLAMB:
+                if lam > 0 and f0 <= fhat:
+                    lam = -lam * factor ** 6
+                else:
+                    retcode = 6 if lam < 0 else 3
+                    done = True
+        elif (grow_signal and lam > 0) or (shrink_signal and lam <= lambda_peak and lam > 0):
+            if shrink:
+                shrink = False
+                factor = factor ** 0.6
+                if abs(factor - 1) < MINDFAC:
+                    retcode = 4 if abs(lam) < 4 else 7
+                    done = True
+            if f < f_peak and lam > 0:
+                f_peak = f
+                lambda_peak = lam
+                if lambda_max <= lambda_peak:
+                    lambda_max = lambda_peak * factor * factor
+            lam = lam * factor
+            if abs(lam) > 1e20:
+                retcode = 5
+                done = True
+        else:
+            done = True
+            retcode = 7 if factor < 1.2 else 0
+    log(f"Norm of dx {dxnorm:10.5g}")
+    return fhat, xhat, fcount, retcode
+
+
+def _bfgsi(H0, dg, dx, log):
+    """BFGS update of the inverse Hessian (``bfgsi1.m``)."""
+    Hdg = H0 @ dg
+    dgdx = dg @ dx
+    if abs(dgdx) > 1e-12:
+        return H0 + (1 + (dg @ Hdg) / dgdx) * np.outer(dx, dx) / dgdx - (np.outer(dx, Hdg) + np.outer(Hdg, dx)) / dgdx
+    log("bfgs update failed.")
+    return H0
+
+
+_CSMINWEL_MESSAGES = {0: "normal step", 1: "zero gradient", 2: "back and forth on step length never finished",
+                      3: "smallest step still improving too slow", 4: "back and forth on step length never finished",
+                      5: "largest step still improving too fast",
+                      6: "smallest step still improving too slow, reversed gradient",
+                      7: "warning: possible inaccuracy in H matrix", 8: "warning: iteration count termination",
+                      -1: "Bad initial parameter."}
+
+
+def csminwel(fcn, x0, H0=None, crit=1e-7, nit=1000, method=2, epsilon=1e-6, rand=None, verbose=False):
+    """Christopher Sims's quasi-Newton minimiser with BFGS updates of the inverse Hessian, as shipped
+    with Dynare 7.2 (``csminwel1.m``, Dynare's ``mode_compute=4``), with numerical gradients.
+
+    ``fcn(x)`` returns ``(value, code, penalty)``: where the function is not defined ``code`` is
+    non-zero and the value used is the function value at the start of the current iteration plus
+    ``penalty`` (Dynare's ``penalty_objective_function``). ``H0`` is the initial inverse Hessian
+    (default ``1e-4 * I``), ``crit`` the convergence criterion on the function value, ``nit`` the
+    maximum number of iterations, ``method`` the gradient formula (2, 3 or 5 points; 13, 15) and
+    ``epsilon`` its step. When the line search hits a "cliff" the search direction is perturbed with
+    uniform random numbers: ``rand(n)`` supplies them (default: a numpy generator seeded with 0, so
+    results are reproducible; Dynare uses MATLAB's stream).
+
+    Returns a dict: ``f``, ``x``, ``g`` (gradient), ``H`` (inverse Hessian approximation),
+    ``iterations``, ``fcount`` (function evaluations as counted by Dynare), ``retcode``, ``message``.
+    The algorithm is deterministic and reproduces Dynare's iterates evaluation by evaluation as
+    long as the two objective functions agree to rounding error."""
+    x0 = np.array(x0, float).ravel()
+    nx = x0.size
+    H = 1e-4 * np.eye(nx) if H0 is None else np.array(H0, float)
+    if rand is None:
+        rand = np.random.default_rng(0).random
+    log = print if verbose else (lambda *_: None)
+    state = {"penalty": 1e8}
+
+    def pfun(x):
+        fval, code, pen = fcn(x)
+        return state["penalty"] + pen if code else fval
+
+    def numgrad(f, x):
+        return _csm_numgrad(pfun, f, x, method, epsilon)
+
+    out = {"f": None, "x": None, "g": None, "H": None, "iterations": 0, "fcount": 0, "retcode": None, "message": ""}
+    f0, code0, _ = fcn(x0)
+    fcount = 1
+    if code0:
+        out.update(retcode=-1, message=_CSMINWEL_MESSAGES[-1], fcount=fcount)
+        return out
+    g, badg, fc = numgrad(f0, x0)
+    fcount += fc
+    x, f = x0, f0
+    gh = None
+    itct = 0
+    done = False
+    while not done:
+        state["penalty"] = f
+        g1 = g2 = g3 = None
+        log("-----------------")
+        log(f"f at the beginning of new iteration, {f:20.10f}")
+        itct += 1
+        f1, x1, fc, retcode1 = _csminit(pfun, x, f, g, badg, H, log)
+        fcount += fc
+        badg1 = badg2 = badg3 = None
+        x2 = x3 = None
+        if retcode1 != 1:
+            if retcode1 in (2, 4):
+                wall1, badg1 = True, True
+            else:
+                g1, badg1, fc = numgrad(f1, x1)
+                fcount += fc
+                wall1 = badg1
+            if wall1:
+                Hcliff = H + np.diag(np.diag(H) * np.asarray(rand(nx), float))
+                log("Cliff.  Perturbing search direction.")
+                f2, x2, fc, retcode2 = _csminit(pfun, x, f, g, badg, Hcliff, log)
+                fcount += fc
+                if f2 < f:
+                    if retcode2 in (2, 4):
+                        wall2, badg2 = True, True
+                    else:
+                        g2, badg2, fc = numgrad(f2, x2)
+                        fcount += fc
+                        wall2 = badg2
+                    if wall2:
+                        log("Cliff again.  Try traversing")
+                        if np.linalg.norm(x2 - x1) < 1e-13:
+                            f3, x3, badg3, retcode3 = f, x, True, 101
+                        else:
+                            gcliff = ((f2 - f1) / (np.linalg.norm(x2 - x1) ** 2)) * (x2 - x1)
+                            f3, x3, fc, retcode3 = _csminit(pfun, x, f, gcliff, False, np.eye(nx), log)
+                            fcount += fc
+                            if retcode3 in (2, 4):
+                                badg3 = True
+                            else:
+                                g3, badg3, fc = numgrad(f3, x3)
+                                fcount += fc
+                    else:
+                        f3, x3, badg3, retcode3 = f, x, True, 101
+                else:
+                    f3, x3, badg3, retcode3 = f, x, True, 101
+            else:
+                f2, f3, badg2, badg3, retcode2, retcode3 = f, f, True, True, 101, 101
+        else:
+            f2, f3, f1, retcode2, retcode3 = f, f, f, retcode1, retcode1
+        # how to pick gh and xh
+        if f3 < f - crit and badg3 is False and f3 < f2 and f3 < f1:
+            fh, xh, gh, badgh, retcodeh = f3, x3, g3, badg3, retcode3
+        elif f2 < f - crit and badg2 is False and f2 < f1:
+            fh, xh, gh, badgh, retcodeh = f2, x2, g2, badg2, retcode2
+        elif f1 < f - crit and badg1 is False:
+            fh, xh, gh, badgh, retcodeh = f1, x1, g1, badg1, retcode1
+        else:                                     # stuck or bad gradient
+            ih = int(np.argmin([f1, f2, f3]))
+            fh = (f1, f2, f3)[ih]
+            xh = (x1, x2, x3)[ih]
+            retcodeh = (retcode1, retcode2, retcode3)[ih]
+            badgh = True
+            if gh is None:                        # recompute the gradient (only if none was ever accepted)
+                gh, badgh, fc = numgrad(fh, xh)
+                fcount += fc
+        stuck = abs(fh - f) < crit
+        if (not badg) and (not badgh) and (not stuck):
+            H = _bfgsi(H, gh - g, xh - x, log)
+        log("----")
+        log(f"Improvement on iteration {itct} = {f - fh:18.9f}")
+        if itct > nit:
+            log("iteration count termination")
+            done = True
+            retcodeh = 8
+        elif stuck:
+            log("improvement < crit termination")
+            done = True
+        if retcodeh not in _CSMINWEL_MESSAGES or retcodeh == -1:
+            raise EstimationError("csminwel: unaccounted case (Dynare stops with the same error)")
+        message = _CSMINWEL_MESSAGES[retcodeh]
+        if verbose or done:
+            log(message)
+        f, x, g, badg = fh, xh, gh, badgh
+    out.update(f=float(fh), x=np.array(xh), g=np.array(gh), H=H, iterations=itct, fcount=fcount, retcode=int(retcodeh),
+               message=message)
+    return out
+
+
 # ====================================================================== results
 @dataclass
 class ModeResult:
@@ -523,6 +836,9 @@ class MCMCResult:
     x0: np.ndarray                    # initial point of each chain
     drop: float = 0.5
     accepted: np.ndarray = field(default=None, repr=False)   # (chains, replic) booleans
+    jscale: float = None              # scale of the jumping distribution (after tuning, if any)
+    jscale_vector: np.ndarray = field(default=None, repr=False)    # scale per parameter (bayestopt_.jscale)
+    proposal_chol: np.ndarray = field(default=None, repr=False)    # upper Cholesky factor of the jumping covariance
 
     def kept(self, drop=None):
         """Draws after discarding the first ``drop`` share of every chain, pooled."""
@@ -547,13 +863,18 @@ class MCMCResult:
         return np.column_stack([d[j, cols], d[j + m, cols]])
 
 
-def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations, uniforms):
+def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations, uniforms, uniform_stream=False):
     """One random-walk Metropolis-Hastings chain driven by given random numbers.
 
     ``chol_upper`` is the upper Cholesky factor of the proposal covariance (already scaled);
     the proposal is ``last + innovations[i] @ chol_upper``. As in Dynare a proposal is evaluated
     only if it lies strictly inside the bounds, and accepted if its log posterior is finite and
     ``log(u) < log_post(proposal) - log_post(last)``.
+
+    ``uniforms[i]`` is used for draw ``i``. With ``uniform_stream=True`` the uniforms are instead
+    consumed in order, one for every proposal with a finite log posterior: that is how Dynare's
+    ``posterior_sampler_iteration.m`` uses its random-number stream (``log(rand)`` is only evaluated
+    then), so a chain can be reproduced from Dynare's seeds.
     Returns (draws, log posteriors, accepted flags).
     """
     n_draws, n = innovations.shape
@@ -561,6 +882,7 @@ def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations,
     logpo = np.empty(n_draws)
     acc = np.zeros(n_draws, bool)
     last, last_lp = np.array(x0, float), float(logpost0)
+    used = 0
     for i in range(n_draws):
         par = last + innovations[i] @ chol_upper
         if np.all(par > lb) and np.all(par < ub):
@@ -570,9 +892,12 @@ def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations,
                 lp = -np.inf
         else:
             lp = -np.inf
-        if lp > -np.inf and np.log(uniforms[i]) < lp - last_lp:
-            last, last_lp = par, lp
-            acc[i] = True
+        if lp > -np.inf:
+            u = uniforms[used] if uniform_stream else uniforms[i]
+            used += 1
+            if np.log(u) < lp - last_lp:
+                last, last_lp = par, lp
+                acc[i] = True
         draws[i] = last
         logpo[i] = last_lp
     return draws, logpo, acc
@@ -584,14 +909,100 @@ _DEFAULTS = dict(
     lik_init=1, diffuse_filter=False, kalman_algo=0, kalman_tol=1e-10, diffuse_kalman_tol=1e-6,
     riccati_tol=1e-6, qz_criterium=None, prior_trunc=0.0, Harvey_scale_factor=10.0,
     lyapunov_complex_threshold=1e-15, rescale_prediction_error_covariance=False,
-    mode_compute=5, mh_replic=20000, mh_nblck=2, mh_jscale=None, mh_drop=0.5, mh_init_scale_factor=2.0,
     gstep=(1e-2, 1.0), order=1, use_univariate_filters_if_singularity_is_detected=True,
+    # posterior mode (Estimation.mode); mode_compute=None means "not given in the .mod file"
+    mode_compute=None, mode_file=None, optim=None, additional_optimizer_steps=(), cova_compute=True,
+    use_penalized_objective_for_hessian=False, gradient_method=2, gradient_epsilon=1e-6,
+    # Metropolis-Hastings (Estimation.sample)
+    mh_replic=20000, mh_nblck=2, mh_jscale=None, mh_drop=0.5, mh_init_scale_factor=2.0, mh_init_scale=None,
+    mcmc_jumping_covariance="hessian", mh_tune_jscale=None, mh_tune_guess=None,
+    posterior_sampling_method="random_walk_metropolis_hastings", posterior_sampler_options=None,
+    # posterior analysis (pydyn.posterior, pydyn.posterior_plots)
+    mh_conf_sig=0.9, sub_draws=None, posterior_max_subsample_draws=1200,
+    taper_steps=(4, 8, 15), geweke_interval=(0.2, 0.5), raftery_lewis_diagnostics=False,
+    raftery_lewis_qrs=(0.025, 0.005, 0.95), brooks_gelman_plotrows=3,
+    bayesian_irf=False, irf=40, relative_irf=False, irf_shocks=None,
+    mode_check=False, mode_check_neighbourhood_size=0.5, mode_check_symmetric_plots=True,
+    mode_check_number_of_points=20, huge_number=1e7,
 )
-_ALIASES = {"mh_nblocks": "mh_nblck", "mh_init_scale": None, "harvey_scale_factor": "Harvey_scale_factor"}
+#: names used in the preprocessor's JSON (or old names) -> option names of the manual used here
+_ALIASES = {"mh_nblocks": "mh_nblck", "harvey_scale_factor": "Harvey_scale_factor",
+            "MCMC_jumping_covariance": "mcmc_jumping_covariance", "optim_opt": "optim",
+            "hessian.use_penalized_objective": "use_penalized_objective_for_hessian",
+            "convergence.geweke.geweke_interval": "geweke_interval", "convergence.geweke.taper_steps": "taper_steps",
+            "convergence.rafterylewis.indicator": "raftery_lewis_diagnostics",
+            "convergence.rafterylewis.qrs": "raftery_lewis_qrs",
+            "convergence.brooksgelman.plotrows": "brooks_gelman_plotrows",
+            "mode_check.status": "mode_check", "mode_check.neighbourhood_size": "mode_check_neighbourhood_size",
+            "mode_check.symmetric_plots": "mode_check_symmetric_plots",
+            "mode_check.number_of_points": "mode_check_number_of_points",
+            "posterior_sampler_options.posterior_sampling_method": "posterior_sampling_method",
+            "posterior_sampler_options.sampling_opt": "posterior_sampler_options",
+            "mh_tune_jscale.target": "mh_tune_jscale", "mh_tune_jscale.guess": "mh_tune_guess"}
+#: options that must keep their list form
+_VECTOR_OPTIONS = {"gstep", "additional_optimizer_steps", "taper_steps", "geweke_interval", "raftery_lewis_qrs", "irf_shocks"}
+#: who acts on an option when it is not Estimation itself (documentation and option_report())
+_HONOURED_BY = {
+    "mode()": ["mode_compute", "mode_file", "optim", "additional_optimizer_steps", "cova_compute",
+               "use_penalized_objective_for_hessian", "gradient_method", "gradient_epsilon", "gstep"],
+    "sample()": ["mh_replic", "mh_nblck", "mh_jscale", "mh_drop", "mh_init_scale_factor", "mh_init_scale",
+                 "mcmc_jumping_covariance", "mh_tune_jscale", "mh_tune_guess", "posterior_sampling_method",
+                 "posterior_sampler_options"],
+    "pydyn.posterior": ["mh_conf_sig", "sub_draws", "posterior_max_subsample_draws", "taper_steps", "geweke_interval",
+                        "raftery_lewis_diagnostics", "raftery_lewis_qrs", "bayesian_irf", "irf", "relative_irf",
+                        "irf_shocks", "mode_check", "mode_check_neighbourhood_size", "mode_check_symmetric_plots",
+                        "mode_check_number_of_points", "huge_number"],
+    "pydyn.posterior_plots": ["brooks_gelman_plotrows"],
+}
+#: mode_compute values: ported algorithm, scipy stand-in, or not available
+_MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"), 7: ("Nelder-Mead", "fminsearch"),
+                             8: ("Nelder-Mead", "Dynare's simplex routine"),
+                             9: ("differential_evolution", "CMA-ES (cmaes.m)")}
+
+
+def _parse_optim(spec) -> dict:
+    """The ``optim`` option: Dynare's ``('NAME', VALUE, ...)`` string from the JSON, a dict, or a
+    sequence of names and values."""
+    if not spec:
+        return {}
+    if isinstance(spec, dict):
+        return dict(spec)
+    if isinstance(spec, str):
+        items = [t.strip() for t in re.split(r",(?![^\[\(]*[\]\)])", spec.replace("''", "'")) if t.strip()]
+    else:
+        items = list(spec)
+    if len(items) % 2:
+        raise EstimationError(f"optim: expected pairs of names and values, got {spec!r}")
+    out = {}
+    for name, val in zip(items[::2], items[1::2]):
+        name = str(name).strip().strip("'\"")
+        if isinstance(val, str):
+            v = val.strip().strip("'\"")
+            try:
+                val = float(v)
+                val = int(val) if val == int(val) and "." not in v and "e" not in v.lower() else val
+            except ValueError:
+                val = v
+        out[name] = val
+    return out
 
 
 class _Rejected(Exception):
-    """Raised inside an evaluation when the parameter vector cannot be used (Dynare's info code)."""
+    """Raised inside an evaluation when the parameter vector cannot be used. ``code`` and ``penalty``
+    are Dynare's ``info(1)`` and ``info(4)`` of ``dsge_likelihood.m`` (the penalty is what csminwel
+    adds to the last function value outside the domain)."""
+
+    def __init__(self, message, code=0, penalty=0.1):
+        super().__init__(message)
+        self.code, self.penalty = int(code), float(penalty)
+
+
+def _pd_penalty(A):
+    """``ispd.m``: minus the sum of the negative eigenvalues."""
+    if not np.all(np.isfinite(A)):
+        return 1.0
+    ev = np.linalg.eigvalsh(A)
+    return float(np.sum(-ev[ev < 0]))
 
 
 class Estimation:
@@ -609,32 +1020,69 @@ class Estimation:
         names: ``first_obs``, ``nobs``, ``loglinear``, ``logdata``, ``prefilter``, ``presample``,
         ``lik_init``, ``diffuse_filter``, ``kalman_tol``, ``riccati_tol``, ``qz_criterium``,
         ``prior_trunc``, ``mh_replic``, ``mh_nblocks``, ``mh_jscale``, ``mh_drop``, ...
+
+    Subclassing
+    -----------
+    Two methods are documented extension points; subclasses (e.g. ``pydyn.occbin_estimation``) may
+    override them, and their names and signatures are kept stable:
+
+    ``_minus_loglik(theta, return_lik=False)``
+        minus the log likelihood at ``theta`` (with ``return_lik=True``: ``(minus log likelihood,
+        log density of each observation after the presample)``); raise ``_Rejected(message, code,
+        penalty)`` where the likelihood is not defined. ``log_likelihood``, ``log_posterior``,
+        ``objective``, ``mode`` and ``sample`` all go through it.
+    ``smoother(theta)``
+        smoothed variables, shocks and measurement errors at ``theta`` (see its docstring).
+
+    A model with ``occbin_constraints`` is refused unless the subclass sets the class attribute
+    ``handles_occbin = True``.
     """
 
     def __init__(self, model, data=None, **options):
         from . import options as _opt
-        _opt.refuse_occbin(model, "Estimation")
+        if not getattr(type(self), "handles_occbin", False):
+            _opt.refuse_occbin(model, "Estimation")
         self.model = model
         opts = dict(_DEFAULTS)
         raw = dict(model.options.get("estimation", {}))
         raw.update(options)
         self.ignored_options = []
+        tune_status = bool(raw.pop("mh_tune_jscale.status", False))
         for k, v in raw.items():
-            k = _ALIASES.get(k, k) if k in _ALIASES else k
-            if isinstance(v, (list, tuple)) and len(v) == 1 and k != "gstep":
+            k = _ALIASES.get(k, k)
+            if isinstance(v, dict) and "symbol_list" in v:
+                v = list(v["symbol_list"])
+            if isinstance(v, (list, tuple)) and len(v) == 1 and k not in _VECTOR_OPTIONS:
                 v = v[0]
             if k in ("nobs", "first_obs") and isinstance(v, (list, tuple)):
                 raise NotImplementedError(f"recursive estimation ({k} given as a vector) is not supported")
             if k in opts:
                 opts[k] = v
-            elif k is not None:
+            else:
                 self.ignored_options.append(k)
+        if opts["mh_tune_jscale"] is True or (tune_status and opts["mh_tune_jscale"] is None):
+            opts["mh_tune_jscale"] = 0.33                     # Dynare's default target acceptance rate
+        elif opts["mh_tune_jscale"] is False:
+            opts["mh_tune_jscale"] = None
+        if opts["mh_tune_jscale"] is not None and opts["mh_jscale"] is not None:
+            raise EstimationError("the mh_tune_jscale and mh_jscale options are incompatible")
         self.options = opts
-        unused = sorted(set(self.ignored_options) - _opt.COSMETIC)
-        if unused:
-            _opt.warn_once(model, "Estimation does not act on these estimation options: " + ", ".join(unused)
-                           + " (mode() uses its own optimiser and sample() is random-walk Metropolis-Hastings; "
-                           "smoothing, forecasts and posterior IRFs are separate calls or not available)")
+        #: variables listed after the estimation command (used for posterior IRFs)
+        self.var_list = next((list(st.get("symbol_list", [])) for st in model.statements
+                              if st.get("statementName") == "estimation"), [])
+        self.unsupported_options = sorted(set(self.ignored_options) - _opt.COSMETIC)
+        notes = []
+        if opts["posterior_sampling_method"] != "random_walk_metropolis_hastings":
+            self.unsupported_options.append("posterior_sampling_method")
+            notes.append(f"posterior_sampling_method={opts['posterior_sampling_method']}: only random-walk "
+                         "Metropolis-Hastings is implemented, sample() will refuse to run")
+        if opts["posterior_sampler_options"]:
+            self.unsupported_options.append("posterior_sampler_options")
+        if self.unsupported_options:
+            _opt.warn_once(model, "Estimation does not act on these estimation options: "
+                           + ", ".join(self.unsupported_options)
+                           + " (smoothing and forecasts are separate calls or not available"
+                           + ("; " + "; ".join(notes) if notes else "") + ")")
         if int(opts["order"]) != 1:
             raise NotImplementedError("estimation is implemented for order=1 only")
         if opts["diffuse_filter"] or opts["kalman_algo"] in (3, 4):
@@ -664,7 +1112,7 @@ class Estimation:
         self._setup_state_space()
         self._setup_trends()
         self._setup_data(data)
-        self.last_info = ""
+        self.last_info, self.last_code, self.last_penalty = "", 0, 0.0
         self.last_filter = ""
         if opts["prefilter"]:
             try:
@@ -825,6 +1273,47 @@ class Estimation:
             p[k] = theta[o + i]
         return p
 
+    def calibration(self, theta) -> dict:
+        """Calibration implied by ``theta`` as plain arrays, without touching the model:
+        ``params`` (the model's parameter vector with the estimated parameters replaced; parameters
+        that the steady state computes are as stored in the model: see ``state_space(theta)["params"]``
+        for the values after the steady state), ``Sigma_e`` (covariance matrix of the structural
+        shocks) and ``H`` (covariance matrix of the measurement errors, in ``varobs`` order)."""
+        theta = np.asarray(theta, float)
+        if theta.shape != (self.n,):
+            raise EstimationError(f"theta must have {self.n} elements (ordered as Estimation.names)")
+        Q, H = self.covariances(theta)
+        return {"params": self.model_params(theta), "Sigma_e": Q, "H": H}
+
+    def _bk_penalty(self, theta):
+        """Dynare's info code and penalty when the Blanchard-Kahn conditions fail
+        (``dyn_first_order_solver.m``): 3 (no stable solution) or 4 (indeterminacy), with the squared
+        distances ``|lambda| - 1 - qz_criterium`` of the eigenvalues on the wrong side."""
+        try:
+            m = self.model
+            ys, params = steady_state(m, self.model_params(theta))
+            n = m.n_endo
+            J = m.dynamic_jac(np.tile(ys, 3), m.exo_steady(), np.array(params, float), ys)
+            fm, f0, fp = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n]
+            I, Z0 = np.eye(n), np.zeros((n, n))
+            alpha, beta = linalg.eigvals(np.block([[Z0, I], [-fm, Z0]]), np.block([[I, Z0], [f0, fp]]),
+                                         homogeneous_eigvals=True)
+            qz = self.options["qz_criterium"]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mod = np.sort(np.abs(alpha / beta))
+            stable = np.abs(alpha) < qz * np.abs(beta)
+            ns = int(stable.sum())
+            if ns < n:                            # too many unstable roots
+                code, temp = 3, mod[ns:ns + (n - ns)] - 1 - qz
+            elif ns > n:
+                code, temp = 4, mod[n:ns] - 1 - qz
+            else:
+                return 5, 0.1
+            pen = float(temp @ temp)
+            return code, (pen if np.isfinite(pen) else 0.1)
+        except Exception:                         # noqa: BLE001
+            return 3, 0.1
+
     # ------------------------------------------------------------------ state space
     def _setup_state_space(self):
         m = self.model
@@ -960,19 +1449,22 @@ class Estimation:
         theta = np.asarray(theta, float)
         Q, Hm = self.covariances(theta)
         if self._groups["cx"] and not _ispd(Q[np.ix_(self._Q_check, self._Q_check)]):
-            raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)")
+            raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)",
+                            43, _pd_penalty(Q[np.ix_(self._Q_check, self._Q_check)]))
         if self._groups["cn"] and not _ispd(Hm[np.ix_(self._H_check, self._H_check)]):
-            raise _Rejected("covariance matrix of the measurement errors is not positive definite (info 44)")
+            raise _Rejected("covariance matrix of the measurement errors is not positive definite (info 44)",
+                            44, _pd_penalty(Hm[np.ix_(self._H_check, self._H_check)]))
         try:
             ys, G, Hs, params = self.solve(theta)
         except SteadyStateError as exc:
-            raise _Rejected(f"steady state: {exc}") from None
+            raise _Rejected(f"steady state: {exc}", 20) from None
         except BlanchardKahnError as exc:
-            raise _Rejected(f"solution: {exc}") from None
+            code, pen = self._bk_penalty(theta)
+            raise _Rejected(f"solution: {exc}", code, pen) from None
         r = self._restrict
         T, R, z = G[np.ix_(r, r)], Hs[r, :], self._mf
         if not (np.all(np.isfinite(T)) and np.all(np.isfinite(R))):
-            raise _Rejected("the decision rule contains NaN or Inf")
+            raise _Rejected("the decision rule contains NaN or Inf", 6)
         const = ys[self._obs_decl]
         if o["loglinear"]:
             const = np.log(const)
@@ -992,7 +1484,7 @@ class Estimation:
 
         def Zmat():
             if np.any(np.abs(Hm - np.diag(np.diag(Hm))) >= 1e-14):
-                raise _Rejected("the univariate filter with correlated measurement errors is not implemented")
+                raise _Rejected("the univariate filter with correlated measurement errors is not implemented", 50)
             Zm = np.zeros((len(z), mm))
             Zm[np.arange(len(z)), z] = 1.0
             return Zm, np.diag(Hm).copy()
@@ -1019,10 +1511,10 @@ class Estimation:
                 Zm, Hd = Zmat()
                 dLIK, dlik, a, P = kalman.univariate_kalman_filter_d(Y, np.zeros(mm), Pinf, Pstar, T, QQ, Hd, Zm, **dkw)
             if np.isnan(dLIK):
-                raise _Rejected("the diffuse filter did not leave the diffuse stage, or a variance is negative (info 45)")
+                raise _Rejected("the diffuse filter did not leave the diffuse stage, or a variance is negative (info 45)", 45)
             dp = len(dlik)
         if not np.all(np.isfinite(P)):
-            raise _Rejected("initial state covariance is not finite")
+            raise _Rejected("initial state covariance is not finite", 45)
         di = None if self._data_index is None else self._data_index[dp:]
         nmm = max(self._no_more_missing - dp, 0)
         lik = None
@@ -1033,7 +1525,7 @@ class Estimation:
             LIK, lik = out
             if np.isinf(LIK):
                 if not o["use_univariate_filters_if_singularity_is_detected"]:
-                    raise _Rejected("the forecast-error covariance is singular (info 50)")
+                    raise _Rejected("the forecast-error covariance is singular (info 50)", 50)
                 algo = 2 if algo == 1 else 4
         if algo in (2, 4):
             Zm, Hd = Zmat()
@@ -1042,10 +1534,10 @@ class Estimation:
         self.last_filter = {1: "multivariate", 2: "univariate", 3: "multivariate (diffuse)",
                             4: "univariate (diffuse)"}[algo]
         if np.isinf(LIK):
-            raise _Rejected("the forecast-error covariance is singular (info 50)")
+            raise _Rejected("the forecast-error covariance is singular (info 50)", 50)
         LIK = LIK + dLIK
         if np.isnan(LIK) or np.iscomplexobj(LIK):
-            raise _Rejected("the likelihood is NaN or complex (info 45/46)")
+            raise _Rejected("the likelihood is NaN or complex (info 45/46)", 45)
         if return_lik:
             return LIK, np.concatenate([dlik, lik])[pre:]
         return LIK
@@ -1053,12 +1545,13 @@ class Estimation:
     def log_likelihood(self, theta) -> float:
         """Log likelihood of the data at ``theta``; ``-inf`` if the steady state or the solution
         fails, or the filter breaks down (the reason is kept in ``last_info``)."""
-        self.last_info = ""
+        self.last_info, self.last_code, self.last_penalty = "", 0, 0.0
         try:
             with np.errstate(all="ignore"):
                 return -float(self._minus_loglik(theta))
         except (_Rejected, FloatingPointError, np.linalg.LinAlgError) as exc:
             self.last_info = str(exc)
+            self.last_code, self.last_penalty = getattr(exc, "code", 45), getattr(exc, "penalty", 0.1)
             return -np.inf
 
     def log_likelihood_contributions(self, theta) -> np.ndarray:
@@ -1080,12 +1573,16 @@ class Estimation:
         because that is what Dynare's Metropolis-Hastings uses."""
         theta = np.asarray(theta, float)
         lb, ub = (self.lb, self.ub) if bounds is None else bounds
-        self.last_info = ""
+        self.last_info, self.last_code, self.last_penalty = "", 0, 0.0
         if np.any(theta < lb):
-            self.last_info = "below the lower bound (info 41)"
+            k = theta < lb
+            self.last_info, self.last_code = "below the lower bound (info 41)", 41
+            self.last_penalty = float(np.sum((lb[k] - theta[k]) ** 2))
             return -np.inf
         if np.any(theta > ub):
-            self.last_info = "above the upper bound (info 42)"
+            k = theta > ub
+            self.last_info, self.last_code = "above the upper bound (info 42)", 42
+            self.last_penalty = float(np.sum((theta[k] - ub[k]) ** 2))
             return -np.inf
         ll = self.log_likelihood(theta)
         if not np.isfinite(ll):
@@ -1093,8 +1590,20 @@ class Estimation:
         lp = self.log_prior(theta)
         if not np.isfinite(lp):
             self.last_info = "the prior density is zero, infinite or NaN (info 40/47)"
+            self.last_code, self.last_penalty = 40, 0.1
             return -np.inf
         return ll + lp
+
+    def objective(self, theta, bounds=None):
+        """Dynare's objective function: ``(fval, code, penalty)`` with ``fval`` minus the log posterior
+        kernel (``inf`` where it is not defined), and Dynare's ``info(1)`` and ``info(4)``. The
+        penalty is exact for bound violations and non-positive-definite covariance matrices and for
+        Blanchard-Kahn failures; for a failing steady state Dynare uses the squared residuals, here
+        0.1 is returned (as Dynare does for all other failures)."""
+        lp = self.log_posterior(theta, bounds)
+        if np.isfinite(lp):
+            return -lp, 0, 0.0
+        return np.inf, (self.last_code or 45), (self.last_penalty if self.last_code else 0.1)
 
     # ------------------------------------------------------------------ mode, Hessian, Laplace
     def hessian(self, theta, gstep=None):
@@ -1116,18 +1625,75 @@ class Estimation:
         logdet = np.log(np.linalg.det(inv_hessian / np.outer(stdh, stdh))) + 2 * np.sum(np.log(stdh))
         return 0.5 * self.n * np.log(2 * np.pi) + 0.5 * logdet + self.log_posterior(theta)
 
-    def mode(self, x0=None, method="auto", compute_hessian=True, tol=1e-9, maxiter=5000, polish=False):
-        """Maximise the log posterior (the log likelihood for ML) starting from ``x0`` (default:
-        the initial values of the ``estimated_params`` block, else the prior means).
+    def mode(self, x0=None, method=None, compute_hessian=None, tol=1e-9, maxiter=5000, polish=False,
+             mode_compute=None, mode_file=None, optim=None, additional_optimizer_steps=None, rand=None,
+             verbose=False):
+        """Posterior mode (maximum-likelihood estimate without priors), its Hessian and the Laplace
+        approximation, starting from ``x0`` (default: the initial values of the ``estimated_params``
+        block, else the prior means).
 
-        ``method='auto'`` runs two quasi-Newton searches with numerical gradients inside the
-        bounds, scipy's SLSQP and then L-BFGS-B from its solution, and keeps the best point. They
-        are the counterparts of Dynare's ``mode_compute=1`` (fmincon) and ``mode_compute=4``
-        (csminwel, a BFGS method). ``polish=True`` adds restarts of a derivative-free simplex
-        search (as ``mode_compute=7``/``8``). Any scipy ``minimize`` method name can be given
-        instead of ``'auto'``. The path of the optimiser is not that of any Dynare optimiser; only
-        the optimum is comparable.
+        Which optimiser runs is decided by ``method``/``mode_compute`` (keyword, else the
+        ``mode_compute`` option of the ``estimation`` command if the ``.mod`` file gives one):
+
+        ``4`` (the default when nothing is specified)
+            :func:`csminwel`, a port of Dynare's ``csminwel1.m``. It follows Dynare's iterates
+            (see :func:`csminwel` for how closely). ``optim`` options: ``MaxIter``, ``TolFun``,
+            ``NumgradAlgorithm``, ``NumgradEpsilon``, ``InitialInverseHessian`` (a matrix, or a
+            string of the form ``'c*eye(n)'``), ``verbosity``; ``SaveFiles`` has no effect.
+            Dynare's own default, ``mode_compute=5`` (newrat), is not ported; csminwel is used in
+            its place (a one-time warning says so) because it is a Dynare algorithm validated
+            evaluation by evaluation against Dynare, and because on the two reference models it
+            needed 2-3 times fewer evaluations than the ``"scipy"`` routine and stopped within
+            1e-4 posterior standard deviations of Dynare's csminwel optimum (``"scipy"``: 3e-3).
+            Like Dynare it does not enforce bounds: outside them the objective returns Dynare's
+            penalty.
+        ``"scipy"``
+            Two bounded quasi-Newton searches with numerical gradients, scipy's SLSQP and then
+            L-BFGS-B from its solution, keeping the best point: pydyn's own routine (the default of
+            earlier versions), not a Dynare algorithm; it keeps every iterate inside the bounds of
+            the ``estimated_params`` block. ``polish=True`` adds restarts of a simplex search. The
+            old name ``"auto"`` is accepted.
+        ``1``, ``3``, ``7``, ``8``, ``9``
+            scipy stand-ins for MATLAB's ``fmincon`` (SLSQP with the bounds), ``fminunc`` (BFGS),
+            ``fminsearch`` and Dynare's simplex routine (both Nelder-Mead), and Dynare's CMA-ES
+            (``differential_evolution``, another population-based global search, followed by
+            L-BFGS-B; it needs a box: infinite bounds are replaced by the start plus or minus ten
+            prior standard deviations, or ten times the start's magnitude). These are *equivalents,
+            not ports*: same class of algorithm, different iterates, and a warning says so once.
+            ``optim`` options ``MaxIter``, ``MaxFunEvals``, ``TolFun``, ``TolX`` are passed on
+            (for 9: ``MaxIter`` generations; ``seed`` from ``rand`` if it is an integer, else 0).
+        ``0``
+            No optimisation. With ``mode_file`` the mode (and Hessian, if stored) are read from an
+            ``.npz`` file written by :meth:`save_mode` or from a Dynare ``_mode.mat`` file; the
+            Hessian is recomputed only if the file has none. Without ``mode_file`` Dynare would
+            take the initial values as the mode: ``mode()`` being an explicit request for a mode,
+            pydyn then runs csminwel and says so in a warning.
+        any other scipy ``minimize`` method name
+            used as is, without bounds.
+
+        Other values of ``mode_compute`` (2, 5, 6, 10, ...) raise ``NotImplementedError``.
+        ``additional_optimizer_steps``: further ``mode_compute`` values run one after the other from
+        the previous optimum. ``cova_compute=0`` (or ``compute_hessian=False``) skips the Hessian:
+        the result then has no standard deviations and no Laplace approximation.
+        ``use_penalized_objective_for_hessian`` is honoured. ``rand`` supplies csminwel's random
+        numbers (see :func:`csminwel`).
         """
+        from . import options as _opt
+        o = self.options
+        if method == "auto":
+            method = "scipy"
+        first = method if method is not None else (mode_compute if mode_compute is not None else o["mode_compute"])
+        if first is None:
+            _opt.warn_once(self.model, "mode_compute not given: Dynare's default is 5 (newrat), which is not ported; "
+                           "Estimation.mode() uses 4 (csminwel, ported from Dynare) instead")
+            first = 4
+        steps = [first]
+        extra = additional_optimizer_steps if additional_optimizer_steps is not None else o["additional_optimizer_steps"]
+        steps += list(np.atleast_1d(extra)) if extra is not None and np.size(extra) else []
+        mode_file = mode_file if mode_file is not None else o["mode_file"]
+        opt = _parse_optim(optim if optim is not None else o["optim"])
+        if compute_hessian is None:
+            compute_hessian = bool(o["cova_compute"])
         x = np.array(self.x0 if x0 is None else x0, float)
         nfev = [0]
         big = 1e12
@@ -1137,60 +1703,225 @@ class Estimation:
             val = -self.log_posterior(v)
             return val if np.isfinite(val) else big
 
-        fx = f(x)
-        if fx >= big:
-            raise EstimationError(f"the log posterior is not finite at the initial values: {self.last_info}")
-        msgs, ok = [], True
-        if method == "auto":
-            width = np.where(np.isfinite(self.ub - self.lb), self.ub - self.lb, 1.0)
-            bnds = [(lo + 1e-10 * w if np.isfinite(lo) else None, hi - 1e-10 * w if np.isfinite(hi) else None)
-                    for lo, hi, w in zip(self.lb, self.ub, width)]
-            stages = [("SLSQP", {"ftol": 1e-12, "eps": 1e-7, "maxiter": maxiter}),
-                      ("L-BFGS-B", {"ftol": 1e-13, "gtol": 1e-7, "eps": 1e-7, "maxiter": maxiter, "maxls": 40})]
-            for name, opt in stages:
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        res = optimize.minimize(f, x, method=name, bounds=bnds, options=opt)
-                except (ValueError, FloatingPointError) as exc:
-                    msgs.append(f"{name}: failed ({exc})")
+        msgs, ok, loaded_hessian = [], True, None
+        niter = 0
+        for istep, step in enumerate(steps):
+            if isinstance(step, (float, np.floating, np.integer)) or (isinstance(step, str) and step.lstrip("-").isdigit()):
+                step = int(step)
+            if step is None:
+                step = 4
+            if step == 0:
+                if mode_file:
+                    x, loaded_hessian = self.load_mode(mode_file)
+                    msgs.append(f"mode read from {mode_file}")
                     continue
-                fr = f(res.x)
-                if fr < fx:
-                    x, fx = np.array(res.x), fr
+                if x0 is None and istep == 0:
+                    _opt.warn_once(self.model, "mode_compute=0 without mode_file: Dynare would use the initial values "
+                                   "as the mode; Estimation.mode() runs its default optimiser (4, csminwel) instead")
+                step = 4
+            fx = f(x)
+            if fx >= big:
+                raise EstimationError(f"the log posterior is not finite at the initial values: {self.last_info}")
+            if step == "scipy":
+                width = np.where(np.isfinite(self.ub - self.lb), self.ub - self.lb, 1.0)
+                bnds = [(lo + 1e-10 * w if np.isfinite(lo) else None, hi - 1e-10 * w if np.isfinite(hi) else None)
+                        for lo, hi, w in zip(self.lb, self.ub, width)]
+                stages = [("SLSQP", {"ftol": 1e-12, "eps": 1e-7, "maxiter": maxiter}),
+                          ("L-BFGS-B", {"ftol": 1e-13, "gtol": 1e-7, "eps": 1e-7, "maxiter": maxiter, "maxls": 40})]
+                for name, sopt in stages:
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            res = optimize.minimize(f, x, method=name, bounds=bnds, options=sopt)
+                    except (ValueError, FloatingPointError) as exc:
+                        msgs.append(f"{name}: failed ({exc})")
+                        continue
+                    fr = f(res.x)
+                    if fr < fx:
+                        x, fx = np.array(res.x), fr
+                    msgs.append(f"{name}: {res.message}")
+                if polish:
+                    for _ in range(8):
+                        res = optimize.minimize(f, x, method="Nelder-Mead",
+                                                options={"xatol": 1e-10, "fatol": tol, "maxiter": 4 * maxiter,
+                                                         "maxfev": 4 * maxiter, "adaptive": True})
+                        improved = fx - res.fun
+                        if res.fun < fx:
+                            x, fx = np.array(res.x), res.fun
+                        if improved < tol:
+                            break
+                    msgs.append(f"Nelder-Mead: {res.message}")
+            elif step == 4:
+                H0 = opt.get("InitialInverseHessian")
+                if isinstance(H0, str):
+                    mt = re.fullmatch(r"\s*([-+0-9.eE]+)\s*\*\s*eye\(\s*(\d+)\s*\)\s*", H0)
+                    if not mt or int(mt.group(2)) != self.n:
+                        raise NotImplementedError(f"optim: InitialInverseHessian={H0!r} must be a matrix or 'c*eye({self.n})'")
+                    H0 = float(mt.group(1)) * np.eye(self.n)
+                unknown = set(opt) - {"MaxIter", "InitialInverseHessian", "TolFun", "NumgradAlgorithm", "NumgradEpsilon",
+                                      "verbosity", "SaveFiles"}
+                if unknown:
+                    warnings.warn(f"csminwel: unknown option(s) {sorted(unknown)}")      # as Dynare
+                if "SaveFiles" in opt and opt["SaveFiles"]:
+                    _opt.warn_once(self.model, "optim: SaveFiles has no effect (csminwel writes no files in pydyn)")
+
+                def counted(v):
+                    nfev[0] += 1
+                    return self.objective(v)
+                res = csminwel(counted, x, H0=H0, crit=float(opt.get("TolFun", 1e-7)), nit=int(opt.get("MaxIter", 1000)),
+                               method=int(opt.get("NumgradAlgorithm", o["gradient_method"])),
+                               epsilon=float(opt.get("NumgradEpsilon", o["gradient_epsilon"])), rand=rand,
+                               verbose=verbose)
+                if res["retcode"] == -1:
+                    raise EstimationError(f"csminwel: bad initial parameter ({self.last_info})")
+                x = res["x"]
+                niter += res["iterations"]
+                self.last_csminwel = res
+                msgs.append(f"csminwel: {res['message']} ({res['iterations']} iterations, {res['fcount']} evaluations)")
+            elif step in _MODE_COMPUTE_EQUIVALENTS:
+                name, matlab = _MODE_COMPUTE_EQUIVALENTS[step]
+                _opt.warn_once(self.model, f"mode_compute={step}: Dynare uses {matlab}; pydyn uses scipy's {name}, "
+                               "an equivalent method and not a port: the path and possibly the local optimum differ")
+                if step == 9:
+                    res = self._evolutionary_mode(f, x, opt, rand)
+                    if f(res.x) < fx:
+                        x = np.array(res.x)
+                    ok = ok and bool(res.success)
+                    msgs.append(f"differential_evolution: {res.message}")
+                    continue
+                sopt = {"maxiter": int(opt.get("MaxIter", 6000 if step in (7, 8) else maxiter))}
+                kw = {}
+                if step == 1:
+                    width = np.where(np.isfinite(self.ub - self.lb), self.ub - self.lb, 1.0)
+                    kw["bounds"] = [(lo + 1e-10 * w if np.isfinite(lo) else None, hi - 1e-10 * w if np.isfinite(hi) else None)
+                                    for lo, hi, w in zip(self.lb, self.ub, width)]
+                    sopt.update(ftol=float(opt.get("TolFun", 1e-8)), eps=1e-7)
+                elif step == 3:
+                    sopt.update(gtol=float(opt.get("TolFun", 1e-8)) * 10, eps=1e-7)
+                else:
+                    sopt.update(xatol=float(opt.get("TolX", 1e-6)), fatol=float(opt.get("TolFun", 1e-8)),
+                                maxfev=int(opt.get("MaxFunEvals", 1000000)), adaptive=(step == 8))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    res = optimize.minimize(f, x, method=name, options=sopt, **kw)
+                    if step == 8:                 # Dynare's routine restarts the simplex; do so until no gain
+                        for _ in range(5):
+                            res2 = optimize.minimize(f, res.x, method=name, options=sopt)
+                            gain = res.fun - res2.fun
+                            if res2.fun < res.fun:
+                                res = res2
+                            if gain < float(opt.get("TolFun", 1e-8)):
+                                break
+                if f(res.x) < fx:
+                    x = np.array(res.x)
+                ok = ok and bool(res.success)
                 msgs.append(f"{name}: {res.message}")
-            if polish:
-                for _ in range(8):
-                    res = optimize.minimize(f, x, method="Nelder-Mead",
-                                            options={"xatol": 1e-10, "fatol": tol, "maxiter": 4 * maxiter,
-                                                     "maxfev": 4 * maxiter, "adaptive": True})
-                    improved = fx - res.fun
-                    if res.fun < fx:
-                        x, fx = np.array(res.x), res.fun
-                    if improved < tol:
-                        break
-                msgs.append(f"Nelder-Mead: {res.message}")
-        else:
-            res = optimize.minimize(f, x, method=method, tol=tol, options={"maxiter": maxiter})
-            if f(res.x) < fx:
-                x = np.array(res.x)
-            ok = bool(res.success)
-            msgs.append(str(res.message))
+            elif isinstance(step, str):
+                res = optimize.minimize(f, x, method=step, tol=tol, options={"maxiter": maxiter})
+                if f(res.x) < fx:
+                    x = np.array(res.x)
+                ok = ok and bool(res.success)
+                msgs.append(str(res.message))
+            else:
+                raise NotImplementedError(
+                    f"mode_compute={step} is not implemented: use 4 (csminwel, ported from Dynare), 1, 3, 7, 8 or 9 "
+                    "(scipy equivalents), 0 with mode_file, or method='scipy'")
         out = ModeResult(x=np.array(x), names=list(self.names), log_posterior=self.log_posterior(x),
                          success=ok, message="; ".join(msgs), nfev=nfev[0])
-        if compute_hessian:
+        if loaded_hessian is not None:
+            out.hessian = loaded_hessian
+            self._finish_hessian(out)
+        elif compute_hessian:
             self.add_hessian(out)
         return out
 
-    def add_hessian(self, mode: ModeResult):
-        """Compute the Hessian, its inverse and the Laplace approximation at ``mode.x``."""
+    def _evolutionary_mode(self, f, x, opt, seed):
+        """Stand-in for mode_compute=9 (Dynare's CMA-ES): scipy's differential evolution on a box, then
+        L-BFGS-B. Finite bounds are those of the estimated_params block and the priors; an infinite bound
+        becomes the start plus or minus ten prior standard deviations (ten times max(|start|, 1) without
+        a finite prior standard deviation). The start is put in the initial population."""
+        p2 = np.asarray(self.prior.p2, float) if self.prior.is_bayesian else np.full(self.n, np.nan)
+        half = np.where(np.isfinite(p2) & (p2 > 0), 10 * p2, 10 * np.maximum(np.abs(x), 1.0))
+        lo = np.where(np.isfinite(self.lb), self.lb, x - half)
+        hi = np.where(np.isfinite(self.ub), self.ub, x + half)
+        width = hi - lo
+        lo, hi = lo + 1e-10 * width, hi - 1e-10 * width
+        rng = np.random.default_rng(int(seed) if isinstance(seed, (int, np.integer)) else 0)
+        popsize = 15
+        init = lo + (hi - lo) * rng.random((popsize * self.n, self.n))
+        init[0] = np.clip(x, lo, hi)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return optimize.differential_evolution(
+                f, list(zip(lo, hi)), maxiter=int(opt.get("MaxIter", 1000)), tol=float(opt.get("TolFun", 1e-8)),
+                init=init, polish=True, seed=rng, updating="immediate")
+
+    def add_hessian(self, mode: ModeResult, penalized=None):
+        """Compute the Hessian, its inverse and the Laplace approximation at ``mode.x``.
+        ``penalized`` (default: the ``use_penalized_objective_for_hessian`` option): where the
+        objective is not defined use its value at the mode plus Dynare's penalty instead of
+        infinity."""
+        penalized = self.options["use_penalized_objective_for_hessian"] if penalized is None else penalized
         with np.errstate(invalid="ignore"):
-            mode.hessian = self.hessian(mode.x)
+            if penalized:
+                base = -mode.log_posterior
+
+                def fun(x):
+                    fval, code, pen = self.objective(x)
+                    return base + pen if code else fval
+                mode.hessian = hessian(fun, mode.x, self.options["gstep"])
+            else:
+                mode.hessian = self.hessian(mode.x)
+        return self._finish_hessian(mode)
+
+    def _finish_hessian(self, mode: ModeResult):
         if np.all(np.isfinite(mode.hessian)) and np.all(np.diag(mode.hessian) > 0):
             mode.inv_hessian = self.inverse_hessian(mode.hessian)
             if self.prior.is_bayesian:
                 mode.laplace = self.laplace(mode.x, mode.inv_hessian)
         return mode
+
+    def save_mode(self, path, mode: ModeResult):
+        """Write a mode to an ``.npz`` file that ``mode(mode_compute=0, mode_file=path)`` reads back:
+        arrays ``xparam1``, ``hh`` (Hessian of minus the log posterior; absent if not computed),
+        ``fval`` (minus the log posterior) and ``parameter_names``: the names of Dynare's mode files."""
+        data = {"xparam1": np.asarray(mode.x, float), "fval": -float(mode.log_posterior),
+                "parameter_names": np.array(list(mode.names))}
+        if mode.hessian is not None:
+            data["hh"] = np.asarray(mode.hessian, float)
+        np.savez(path, **data)
+
+    def load_mode(self, path):
+        """Mode and Hessian (or None) from an ``.npz`` file written by :meth:`save_mode` or from a
+        Dynare mode file (``<model>/Output/<model>_mode.mat``, also ``_mh_mode.mat``). The file is
+        looked up as given, with ``.npz`` or ``.mat`` appended, and next to the ``.mod`` file.
+        Parameters are matched by name."""
+        base = self.model.json_dir.parents[2] if hasattr(self.model, "json_dir") else Path(".")
+        cands = [Path(path)] + [Path(str(path) + ext) for ext in (".npz", ".mat")]
+        cands += [base / c for c in cands if not c.is_absolute()]
+        found = next((c for c in cands if c.is_file()), None)
+        if found is None:
+            raise EstimationError(f"mode_file {path}: no such .npz or .mat file")
+        if found.suffix.lower() == ".npz":
+            with np.load(found, allow_pickle=False) as z:
+                data = {k: z[k] for k in z.files}
+        else:
+            from scipy.io import loadmat
+            data = loadmat(found, squeeze_me=True)
+        if "xparam1" not in data:
+            raise EstimationError(f"mode_file {found}: no xparam1 in the file")
+        x = np.atleast_1d(np.asarray(data["xparam1"], float)).ravel()
+        hh = np.atleast_2d(np.asarray(data["hh"], float)) if "hh" in data and np.size(data["hh"]) else None
+        names = [str(v).strip() for v in np.atleast_1d(data["parameter_names"])] if "parameter_names" in data else None
+        if x.size != self.n:
+            raise EstimationError(f"mode_file {found}: {x.size} parameters in the file, {self.n} are estimated")
+        if names is not None and names != self.names:
+            if sorted(names) != sorted(self.names):
+                raise EstimationError(f"mode_file {found}: the parameter names do not match the estimated parameters")
+            k = [names.index(v) for v in self.names]
+            x = x[k]
+            hh = None if hh is None else hh[np.ix_(k, k)]
+        return x, hh
 
     # ------------------------------------------------------------------ Metropolis-Hastings
     def jscale(self, mh_jscale=None):
@@ -1203,63 +1934,136 @@ class Estimation:
         return js, float(base)
 
     def sample(self, replic=None, nblocks=None, mode=None, cov=None, jscale=None, seed=0, x0=None,
-               drop=None, init_scale_factor=None, innovations=None, uniforms=None) -> MCMCResult:
+               drop=None, init_scale_factor=None, innovations=None, uniforms=None, uniform_stream=False,
+               init_innovations=None, jumping_covariance=None, tune_jscale=None, tune_guess=None,
+               tune_options=None, load=None, save=None) -> MCMCResult:
         """Random-walk Metropolis-Hastings sampler (Dynare's default posterior sampler).
 
-        The proposal is Gaussian, ``last + N(0, J V J)`` with ``V`` the inverse Hessian at the
-        mode (``cov``, or ``mode.inv_hessian``) and ``J = diag(jscale)``. As in Dynare the chains
-        are confined to the support of the priors (``prior_trunc`` applies); the bounds given in
-        the ``estimated_params`` block restrict the mode search only. With several chains
-        each one starts from a draw ``N(mode, (init_scale_factor * mh_jscale)^2 V)`` inside the
-        bounds with a finite posterior; a single chain starts at the mode. ``x0`` (chains x
-        parameters) overrides the starting points. ``seed`` seeds a numpy ``Generator``; every
-        chain gets its own stream. ``innovations`` (chains, replic, n) and ``uniforms`` (chains,
-        replic) replace the random numbers (for tests and replication).
+        The proposal is Gaussian, ``last + N(0, J V J)`` with ``J = diag(jscale)`` and ``V`` the
+        jumping covariance: ``cov`` if given, else what ``jumping_covariance`` (default: the
+        ``mcmc_jumping_covariance`` option) selects: ``'hessian'`` (the inverse Hessian at the mode,
+        ``mode.inv_hessian``), ``'prior_variance'``, ``'identity_matrix'``, a matrix, or a file
+        holding one (see :func:`pydyn.posterior.jumping_covariance`). As in Dynare the chains are
+        confined to the support of the priors (``prior_trunc`` applies); the bounds given in the
+        ``estimated_params`` block restrict the mode search only.
+
+        Starting points, as ``posterior_sampler_initialization.m``: a single chain starts at the
+        mode; with several chains each starts from the first draw
+        ``N(mode, (mh_init_scale_factor * mh_jscale)^2 V)`` that lies inside the bounds and has a
+        finite posterior (after 100 failures the scale is cut by 10 percent per further failure, and
+        the search is abandoned after 10 cuts). ``x0`` (chains x parameters) overrides the starting
+        points.
+
+        ``tune_jscale`` (default: the ``mh_tune_jscale`` option): target acceptance rate; the scale
+        is then calibrated before sampling (:func:`pydyn.posterior.tune_jscale`, ``tune_guess`` and
+        ``tune_options`` are passed on) and used for all parameters. The scale used is stored in
+        the result (``jscale``).
+
+        ``drop`` (``mh_drop``) is the share of every chain treated as burn-in by the statistics; all
+        draws are returned. ``save``: file name; the chains are written with
+        :func:`pydyn.posterior.save_chains`. ``load``: file written that way (or an ``MCMCResult``);
+        the chains are continued from their last draws with the stored proposal (Dynare's
+        ``load_mh_file``) and the result holds the old and the new draws. ``replic=0`` with ``load``
+        just returns the stored chains.
+
+        Random numbers: ``seed`` seeds a numpy ``Generator``; every chain gets its own stream
+        (a continued run derives new streams from the seed and the number of draws already made).
+        ``innovations`` (chains, replic, n), ``uniforms`` (chains, replic) and ``init_innovations``
+        (rows of standard normals for the starting points) replace them; with ``uniform_stream=True``
+        the uniforms are consumed as Dynare consumes its stream (see :func:`metropolis_hastings`),
+        which reproduces a Dynare chain draw for draw from the same random numbers.
         """
+        from . import posterior as _post
         o = self.options
         if not self.prior.is_bayesian:
             raise EstimationError("the sampler needs priors")
+        if o["posterior_sampling_method"] != "random_walk_metropolis_hastings":
+            raise NotImplementedError(f"posterior_sampling_method={o['posterior_sampling_method']!r} is not implemented: "
+                                      "only 'random_walk_metropolis_hastings' is")
         replic = int(o["mh_replic"] if replic is None else replic)
-        nblocks = int(o["mh_nblck"] if nblocks is None else nblocks)
         drop = o["mh_drop"] if drop is None else drop
-        xmode = np.asarray(mode.x if isinstance(mode, ModeResult) else (self.x0 if mode is None else mode), float)
-        if cov is None:
-            if not isinstance(mode, ModeResult) or mode.inv_hessian is None:
-                raise EstimationError("pass cov=... or a ModeResult with an inverse Hessian")
-            cov = mode.inv_hessian
-        js, base = self.jscale(jscale)
-        d = np.linalg.cholesky(np.asarray(cov, float)).T          # upper factor, d' d = cov
-        chol_prop = d * js[None, :]                               # d * diag(jscale)
+        previous = None
+        if load is not None:
+            previous = load if isinstance(load, MCMCResult) else _post.load_chains(load)
+            if list(previous.names) != list(self.names):
+                raise EstimationError("load: the stored chains are for other parameters")
+            if previous.proposal_chol is None:
+                raise EstimationError("load: the stored chains carry no proposal density")
+            nblocks = previous.draws.shape[0]          # as Dynare: the previous number of chains is kept
+            if replic == 0:
+                return previous
+        nblocks = int(o["mh_nblck"] if nblocks is None else nblocks)
         lb, ub = self.prior.bounds(o["prior_trunc"])              # set_mcmc_prior_bounds.m
-        if np.any(xmode < lb) or np.any(xmode > ub):
-            raise EstimationError("the mode is outside the prior bounds")
 
         def log_post(x):                          # Dynare evaluates the posterior with these bounds
             return self.log_posterior(x, bounds=(lb, ub))
-        rngs = [np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(nblocks)]
-        scale0 = (o["mh_init_scale_factor"] if init_scale_factor is None else init_scale_factor) * base
-        starts, lp0 = np.empty((nblocks, self.n)), np.empty(nblocks)
-        for j in range(nblocks):
-            if x0 is not None:
-                starts[j] = np.asarray(x0, float).reshape(nblocks, self.n)[j]
-                lp0[j] = log_post(starts[j])
-                if not np.isfinite(lp0[j]):
-                    raise EstimationError(f"chain {j}: the log posterior is not finite at the starting point")
-            elif nblocks == 1:
-                starts[j], lp0[j] = xmode, log_post(xmode)
+        ss = np.random.SeedSequence(seed if previous is None else [int(seed), previous.draws.shape[1]])
+        children = ss.spawn(nblocks + 2)
+        rngs = [np.random.default_rng(c) for c in children[:nblocks]]
+        rng_init, rng_tune = np.random.default_rng(children[nblocks]), np.random.default_rng(children[nblocks + 1])
+        if previous is not None:
+            d, js, base = previous.proposal_chol, np.asarray(previous.jscale_vector, float), previous.jscale
+            starts, lp0 = previous.draws[:, -1, :].copy(), previous.log_posterior[:, -1].copy()
+        else:
+            xmode = np.asarray(mode.x if isinstance(mode, ModeResult) else (self.x0 if mode is None else mode), float)
+            if cov is None:
+                kind = o["mcmc_jumping_covariance"] if jumping_covariance is None else jumping_covariance
+                inv_h = mode.inv_hessian if isinstance(mode, ModeResult) else None
+                cov = _post.jumping_covariance(self, kind, inv_h)
+            d = np.linalg.cholesky(np.asarray(cov, float)).T          # upper factor, d' d = cov
+            if np.any(xmode < lb) or np.any(xmode > ub):
+                raise EstimationError("the mode is outside the prior bounds")
+            target = o["mh_tune_jscale"] if tune_jscale is None else tune_jscale
+            if target is not None and target is not False:
+                if jscale is not None:
+                    raise EstimationError("the mh_tune_jscale and mh_jscale options are incompatible")
+                guess = o["mh_tune_guess"] if tune_guess is None else tune_guess
+                tuned = _post.tune_jscale(self, xmode, np.asarray(cov, float), target=float(0.33 if target is True else target),
+                                          guess=guess, rng=rng_tune, **(tune_options or {}))
+                js, base = np.full(self.n, tuned), float(tuned)   # bayestopt_.jscale(:) = options_.mh_jscale
             else:
-                scale = scale0
-                for trial in range(1, 1001):
-                    cand = xmode + rngs[j].standard_normal(self.n) @ (d * scale)
-                    if np.all(cand >= lb) and np.all(cand <= ub):
-                        lp = log_post(cand)
-                        if np.isfinite(lp):
-                            starts[j], lp0[j] = cand, lp
-                            break
-                    if trial % 100 == 0:
-                        scale *= 0.9              # Dynare (nointeractive): reduce the scale by 10 percent
-                else:
-                    raise EstimationError(f"chain {j}: no valid starting point found")
+                js, base = self.jscale(jscale)
+            starts, lp0 = np.empty((nblocks, self.n)), np.empty(nblocks)
+            if x0 is not None:
+                for j in range(nblocks):
+                    starts[j] = np.asarray(x0, float).reshape(nblocks, self.n)[j]
+                    lp0[j] = log_post(starts[j])
+                    if not np.isfinite(lp0[j]):
+                        raise EstimationError(f"chain {j}: the log posterior is not finite at the starting point")
+            elif nblocks == 1:
+                starts[0], lp0[0] = xmode, log_post(xmode)
+                if not np.isfinite(lp0[0]):
+                    raise EstimationError("the log posterior is not finite at the mode")
+            else:
+                factor = o["mh_init_scale_factor"] if init_scale_factor is None else init_scale_factor
+                fixed = o["mh_init_scale"] if init_scale_factor is None else None     # deprecated option
+                used = 0
+                for j in range(nblocks):
+                    validate, init_iter, trial = False, 0, 1
+                    while not validate and trial <= 10:
+                        if init_innovations is not None:
+                            if used >= len(init_innovations):
+                                raise EstimationError("init_innovations: not enough rows")
+                            z = np.asarray(init_innovations, float)[used]
+                            used += 1
+                        else:
+                            z = rng_init.standard_normal(self.n)
+                        scale = fixed if fixed is not None else factor * base
+                        cand = xmode + z @ (d * scale)
+                        if np.all(cand >= lb) and np.all(cand <= ub):
+                            lp = log_post(cand)
+                            if np.isfinite(lp):
+                                starts[j], lp0[j], validate = cand, lp, True
+                        init_iter += 1
+                        if not validate and init_iter > 100:
+                            if fixed is not None:
+                                fixed *= 0.9
+                            else:
+                                factor *= 0.9
+                            trial += 1
+                    if not validate:
+                        raise EstimationError(f"chain {j}: no valid starting point found (reduce mh_init_scale_factor)")
+        chol_prop = d * js[None, :]                               # d * diag(jscale)
         draws = np.empty((nblocks, replic, self.n))
         logpo = np.empty((nblocks, replic))
         acc = np.empty((nblocks, replic), bool)
@@ -1267,9 +2071,46 @@ class Estimation:
             eps = rngs[j].standard_normal((replic, self.n)) if innovations is None else np.asarray(innovations)[j]
             u = rngs[j].random(replic) if uniforms is None else np.asarray(uniforms)[j]
             draws[j], logpo[j], acc[j] = metropolis_hastings(log_post, starts[j], lp0[j], chol_prop,
-                                                             lb, ub, eps, u)
-        return MCMCResult(draws=draws, log_posterior=logpo, acceptance_rate=acc.mean(axis=1),
-                          names=list(self.names), x0=starts, drop=drop, accepted=acc)
+                                                             lb, ub, eps, u, uniform_stream=uniform_stream)
+        x_init = starts
+        if previous is not None:
+            draws = np.concatenate([previous.draws, draws], axis=1)
+            logpo = np.concatenate([previous.log_posterior, logpo], axis=1)
+            if previous.accepted is not None:
+                acc = np.concatenate([previous.accepted, acc], axis=1)
+            x_init = previous.x0
+        out = MCMCResult(draws=draws, log_posterior=logpo, acceptance_rate=acc.mean(axis=1),
+                         names=list(self.names), x0=x_init, drop=drop, accepted=acc, jscale=float(base),
+                         jscale_vector=np.array(js, float), proposal_chol=np.array(d))
+        if save is not None:
+            _post.save_chains(save, out)
+        return out
+
+    # ------------------------------------------------------------------ posterior analysis (pydyn.posterior)
+    def posterior_statistics(self, mc, **kw):
+        """:func:`pydyn.posterior.posterior_statistics` with this estimation's priors and ``mh_conf_sig``."""
+        from . import posterior as _post
+        return _post.posterior_statistics(mc, self, **kw)
+
+    def modified_harmonic_mean(self, mc, **kw):
+        """Log marginal data density from the draws (:func:`pydyn.posterior.modified_harmonic_mean`)."""
+        from . import posterior as _post
+        return _post.modified_harmonic_mean(mc, **kw)
+
+    def convergence_diagnostics(self, mc, **kw):
+        """:func:`pydyn.posterior.convergence_diagnostics` with the options of the ``estimation`` command."""
+        from . import posterior as _post
+        return _post.convergence_diagnostics(mc, self, **kw)
+
+    def posterior_irf(self, mc=None, **kw):
+        """Posterior impulse responses (:func:`pydyn.posterior.posterior_irf`)."""
+        from . import posterior as _post
+        return _post.posterior_irf(self, mc, **kw)
+
+    def mode_check(self, mode, **kw):
+        """Data of the mode-check plots (:func:`pydyn.posterior.mode_check`)."""
+        from . import posterior as _post
+        return _post.mode_check(self, mode, **kw)
 
     # ------------------------------------------------------------------ smoother
     def smoother(self, theta):
