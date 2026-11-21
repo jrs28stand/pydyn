@@ -442,10 +442,13 @@ def test_sampler_on_model_with_fixed_random_numbers(load):
     np.testing.assert_allclose(js ** 2 * (L @ L.T), js ** 2 * V, rtol=1e-12)
 
 
-def test_sampler_uses_prior_support_not_estimated_params_bounds(load):
-    """Dynare's sampler evaluates the posterior with the prior bounds only (set_mcmc_prior_bounds.m);
-    the bounds of the estimated_params block apply to the mode search. est_nk: phipi has a normal
-    prior and the bounds [1.01, 4]."""
+def test_sampler_rejects_proposals_outside_estimated_params_bounds(load):
+    """Dynare's sampler evaluates the posterior with the prior bounds only (set_mcmc_prior_bounds.m), but
+    posterior_sampler_iteration.m checks the proposal against sampler_options.bounds, the bounds of the mode search
+    (prior support intersected with the estimated_params bounds): a proposal outside the estimated_params bounds is
+    rejected without being evaluated (Dynare's own chain under tight bounds is replayed in
+    tests/test_samplers.py::test_rwmh_estimated_params_bounds_match_dynare). est_nk: phipi has a normal prior and the
+    bounds [1.01, 4]."""
     est = estimation.Estimation(load("est_nk"))
     i = est.names.index("phipi")
     assert (est.lb[i], est.ub[i]) == (1.01, 4.0)
@@ -458,13 +461,16 @@ def test_sampler_uses_prior_support_not_estimated_params_bounds(load):
     assert est.log_posterior(below) == -np.inf and "lower bound" in est.last_info
     lp = est.log_posterior(below, bounds=(plb, pub))
     assert np.isfinite(lp) and lp == est.log_likelihood(below) + est.log_prior(below)
-    # one proposal that moves phipi from 1.012 to 1.007 is accepted by the sampler
+    # a proposal that moves phipi from 1.012 to 1.007 is rejected, one to 1.017 accepted
     V = np.diag((0.01 * np.abs(est.x0)) ** 2)
-    eps = np.linalg.solve(np.linalg.cholesky(V), below - x)[None, None, :]
-    mc = est.sample(replic=1, nblocks=1, mode=x, cov=V, jscale=1.0, x0=x[None, :], innovations=eps,
-                    uniforms=np.array([[1e-300]]))
-    assert mc.accepted[0, 0] and abs(mc.draws[0, 0, i] - 1.007) < 1e-12
-    assert mc.log_posterior[0, 0] == pytest.approx(lp, abs=1e-9)
+    for target, moved in ((1.007, False), (1.017, True)):
+        y = x.copy()
+        y[i] = target
+        eps = np.linalg.solve(np.linalg.cholesky(V), y - x)[None, None, :]
+        mc = est.sample(replic=1, nblocks=1, mode=x, cov=V, jscale=1.0, x0=x[None, :], innovations=eps,
+                        uniforms=np.array([[1e-300]]))
+        assert bool(mc.accepted[0, 0]) == moved
+        assert abs(mc.draws[0, 0, i] - (target if moved else 1.012)) < 1e-12
 
 
 def test_sampler_smoke(load):
@@ -700,7 +706,7 @@ def test_mode_compute_choices(post, tmp_path):
     with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="mode_compute=0 without mode_file"):
         m0 = est.mode()                                         # explicit request: the default optimiser (csminwel) runs
     assert "csminwel" in m0.message and abs(m0.log_posterior - r["logpost"]) < 1e-6
-    # no mode_compute at all: Dynare's default (5, newrat) is not ported, csminwel runs and a warning says so
+    # no mode_compute at all: Dynare's default is 5 (newrat), pydyn's stays csminwel and a warning says so
     e = post("post_nk", 0, mode_compute=None)
     with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="newrat"):
         dflt = e.mode(compute_hessian=False)
@@ -748,7 +754,7 @@ def test_mode_compute_choices(post, tmp_path):
     with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="CMA-ES.*not a port"):
         de = e.mode(x0=r["xparam1"], compute_hessian=False, rand=3)
     assert "differential_evolution" in de.message and abs(de.log_posterior - r["logpost"]) < 1e-4
-    for code in (2, 5, 6, 10):
+    for code in (2, 6, 10):                                                     # 5: tests/test_newrat.py
         with pytest.raises(NotImplementedError, match=f"mode_compute={code}"):
             post("post_nk", 0, mode_compute=code).mode()
     assert estimation._parse_optim("''MaxIter'',20,''TolFun'',1e-5,''InitialInverseHessian'',''1e-3*eye(12)''") == \

@@ -417,10 +417,10 @@ def test_jumping_covariance_tuning_and_chain_files(load, tmp_path):
     assert t.jscale != pytest.approx(2.38 / np.sqrt(12)) and np.all(t.jscale_vector == t.jscale)
     with pytest.raises(estimation.EstimationError, match="incompatible"):
         estimation.Estimation(est.model, mh_tune_jscale=0.3)                   # the .mod file sets mh_jscale
-    with pytest.raises(NotImplementedError, match="slice"):
+    with pytest.raises(NotImplementedError, match="DIME"):                     # samplers: tests/test_samplers.py
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            estimation.Estimation(est.model, posterior_sampling_method="slice").sample(replic=5, mode=mode)
+            estimation.Estimation(est.model, posterior_sampling_method="dime_mcmc").sample(replic=5, mode=mode)
 
 
 def test_tuning_reaches_target_acceptance(load):

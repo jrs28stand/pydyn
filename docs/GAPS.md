@@ -731,3 +731,8 @@ Quotes are from `/home/claude/audit/snap/README.md`.
 ## Update 2026-11-21: estimation at order 2
 
 Done: `pydyn.NonlinearEstimation` (filters sis, apf, cpf, gf, nlkf; pruning; resampling options; `mode_compute=8`), validated against Dynare 7.2 in tests/test_nonlinear_estimation.py. Refused: order 3, `gmf`, OccBin with order 2, `dsge_var`/`heteroskedastic_filter`/`endogenous_prior` at order 2, missing data, `observation_trends`, `prefilter`, `nonlinear_filter_initialization=2`, combinations that stop in Dynare; no smoother at order 2 (as in Dynare). Dynare quirks reproduced are listed in `pydyn.nonlinear_filters.DYNARE_QUIRKS`.
+
+
+## Update 2026-11-21: samplers and newrat
+
+Done: `pydyn.samplers` (slice incl. rotated/multimodal, TaRB, independent MH, Student proposals, hssmc, dsmh, `posterior_sampler_options`) and `pydyn.newrat` (`mode_compute=5`, Hessian=1), validated in tests/test_samplers.py and tests/test_newrat.py. Refused: `dime_mcmc`, `online`, slice `draw_init_state_*`/`maximize`, TaRB with mode_compute other than 4, newrat Hessian 0/2. Open: TaRB whole-chain statistics are inconclusive (needs longer runs); `pydyn.octave_rng` and `pydyn.random_streams` overlap and should be consolidated; default optimiser is still csminwel (newrat would match Dynare).

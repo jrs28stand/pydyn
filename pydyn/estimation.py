@@ -45,15 +45,17 @@ automatic switch to the univariate filter when the forecast-error covariance is 
 Priors: beta, gamma, normal, inverse gamma 1 and 2, uniform, Weibull; none at all means maximum
 likelihood.
 
-Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 1, 3, 7, 8, 9 (scipy equivalents),
+Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 5 (newrat, ported), 1, 3, 7, 8, 9 (scipy equivalents),
 0 with ``mode_file``; ``optim``, ``additional_optimizer_steps``, ``cova_compute``,
 ``use_penalized_objective_for_hessian``. When the ``.mod`` file gives no ``mode_compute`` (Dynare's
-default is 5, newrat, which is not ported) csminwel is used: see ``mode`` for the reasons.
+default is 5, newrat) csminwel is used: see ``mode`` for the reasons.
 
 Sampler (``Estimation.sample``): random-walk Metropolis-Hastings with ``mh_replic``,
 ``mh_nblocks``, ``mh_jscale`` (and the per-parameter ``jscale``), ``mh_drop``,
 ``mh_init_scale_factor``, ``mcmc_jumping_covariance``, ``mh_tune_jscale``, ``mh_tune_guess``,
 saving and continuing chains (the counterpart of ``load_mh_file``).
+Other samplers (slice, TaRB, independent Metropolis-Hastings, the SMC samplers hssmc and dsmh), the
+``posterior_sampler_options`` and Dynare's random numbers (``rng='octave'``): :mod:`pydyn.samplers`.
 
 Options used by :mod:`pydyn.posterior` and :mod:`pydyn.posterior_plots` when they are given an
 ``Estimation``: ``mh_conf_sig``, ``sub_draws``, ``posterior_max_subsample_draws``, ``taper_steps``,
@@ -70,7 +72,7 @@ Not implemented: orders above one, ``lik_init`` 4 and 5, the univariate filters 
 measurement errors, calibrated measurement-error covariances, ``estimated_params_bounds``,
 ``estimated_params_init(use_calibration)``, endogenous priors, prior restrictions,
 ``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers
-(slice, TaRB, independent, SMC), ``mode_compute`` 2, 5 (newrat, Dynare's default), 6, 10 and above, ``mh_recover``,
+(DIME, online), ``mode_compute`` 2, 6, 10 and above, ``mh_recover``,
 ``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior moments
 of the endogenous variables and the smoother for non-stationary models.
 """
@@ -1076,12 +1078,15 @@ class Estimation:
                               if st.get("statementName") == "estimation"), [])
         self.unsupported_options = sorted(set(self.ignored_options) - _opt.COSMETIC)
         notes = []
-        if opts["posterior_sampling_method"] != "random_walk_metropolis_hastings":
+        from . import samplers as _samplers      # samplers other than RWMH, posterior_sampler_options (pydyn.samplers)
+        if opts["posterior_sampling_method"] not in _samplers.IMPLEMENTED:
             self.unsupported_options.append("posterior_sampling_method")
-            notes.append(f"posterior_sampling_method={opts['posterior_sampling_method']}: only random-walk "
-                         "Metropolis-Hastings is implemented, sample() will refuse to run")
-        if opts["posterior_sampler_options"]:
-            self.unsupported_options.append("posterior_sampler_options")
+            notes.append(f"posterior_sampling_method={opts['posterior_sampling_method']}: not implemented, sample() "
+                         "will refuse to run")
+        else:
+            _samplers.sampler_options(opts["posterior_sampling_method"], opts["posterior_sampler_options"])
+            if opts["posterior_sampling_method"] == "slice" and not opts["prior_trunc"]:
+                opts["prior_trunc"] = 1e-10       # dynare_estimation_init.m: slice requires bounded support
         if self.unsupported_options:
             _opt.warn_once(model, "Estimation does not act on these estimation options: "
                            + ", ".join(self.unsupported_options)
@@ -1734,8 +1739,8 @@ class Estimation:
             (see :func:`csminwel` for how closely). ``optim`` options: ``MaxIter``, ``TolFun``,
             ``NumgradAlgorithm``, ``NumgradEpsilon``, ``InitialInverseHessian`` (a matrix, or a
             string of the form ``'c*eye(n)'``), ``verbosity``; ``SaveFiles`` has no effect.
-            Dynare's own default, ``mode_compute=5`` (newrat), is not ported; csminwel is used in
-            its place (a one-time warning says so) because it is a Dynare algorithm validated
+            Dynare's own default is ``mode_compute=5`` (newrat, ported, see below); csminwel stays
+            pydyn's default (a one-time warning says so) because it is a Dynare algorithm validated
             evaluation by evaluation against Dynare, and because on the two reference models it
             needed 2-3 times fewer evaluations than the ``"scipy"`` routine and stopped within
             1e-4 posterior standard deviations of Dynare's csminwel optimum (``"scipy"``: 3e-3).
@@ -1765,7 +1770,11 @@ class Estimation:
         any other scipy ``minimize`` method name
             used as is, without bounds.
 
-        Other values of ``mode_compute`` (2, 5, 6, 10, ...) raise ``NotImplementedError``.
+        ``5``
+            newrat (Dynare's default optimiser), ported in :mod:`pydyn.newrat` (``optim``: ``TolFun``,
+            ``MaxIter``, ``TolGstep``, ``TolGstepRel``, ``robust``; ``Hessian=1`` only).
+
+        Other values of ``mode_compute`` (2, 6, 10, ...) raise ``NotImplementedError``.
         ``additional_optimizer_steps``: further ``mode_compute`` values run one after the other from
         the previous optimum. ``cova_compute=0`` (or ``compute_hessian=False``) skips the Hessian:
         the result then has no standard deviations and no Laplace approximation.
@@ -1778,8 +1787,8 @@ class Estimation:
             method = "scipy"
         first = method if method is not None else (mode_compute if mode_compute is not None else o["mode_compute"])
         if first is None:
-            _opt.warn_once(self.model, "mode_compute not given: Dynare's default is 5 (newrat), which is not ported; "
-                           "Estimation.mode() uses 4 (csminwel, ported from Dynare) instead")
+            _opt.warn_once(self.model, "mode_compute not given: Dynare's default is 5 (newrat, available as "
+                           "mode_compute=5); Estimation.mode() uses 4 (csminwel) as its default")
             first = 4
         steps = [first]
         extra = additional_optimizer_steps if additional_optimizer_steps is not None else o["additional_optimizer_steps"]
@@ -1872,6 +1881,13 @@ class Estimation:
                 niter += res["iterations"]
                 self.last_csminwel = res
                 msgs.append(f"csminwel: {res['message']} ({res['iterations']} iterations, {res['fcount']} evaluations)")
+            elif step == 5:                       # newrat, Dynare's default (pydyn.newrat)
+                from . import newrat as _newrat
+                res = _newrat.run_mode(self, x, opt, nfev, verbose)
+                x = res["x"]
+                niter += res["iterations"]
+                self.last_newrat = res
+                msgs.append(f"newrat: {res['message']} ({res['iterations']} iterations, {res['fcount']} evaluations)")
             elif step in _MODE_COMPUTE_EQUIVALENTS:
                 name, matlab = _MODE_COMPUTE_EQUIVALENTS[step]
                 _opt.warn_once(self.model, f"mode_compute={step}: Dynare uses {matlab}; pydyn uses scipy's {name}, "
@@ -2030,7 +2046,7 @@ class Estimation:
     def sample(self, replic=None, nblocks=None, mode=None, cov=None, jscale=None, seed=0, x0=None,
                drop=None, init_scale_factor=None, innovations=None, uniforms=None, uniform_stream=False,
                init_innovations=None, jumping_covariance=None, tune_jscale=None, tune_guess=None,
-               tune_options=None, load=None, save=None) -> MCMCResult:
+               tune_options=None, load=None, save=None, **sampler_kw) -> MCMCResult:
         """Random-walk Metropolis-Hastings sampler (Dynare's default posterior sampler).
 
         The proposal is Gaussian, ``last + N(0, J V J)`` with ``J = diag(jscale)`` and ``V`` the
@@ -2038,8 +2054,14 @@ class Estimation:
         ``mcmc_jumping_covariance`` option) selects: ``'hessian'`` (the inverse Hessian at the mode,
         ``mode.inv_hessian``), ``'prior_variance'``, ``'identity_matrix'``, a matrix, or a file
         holding one (see :func:`pydyn.posterior.jumping_covariance`). As in Dynare the chains are
-        confined to the support of the priors (``prior_trunc`` applies); the bounds given in the
-        ``estimated_params`` block restrict the mode search only.
+        confined to the support of the priors (``prior_trunc`` applies) and, as Dynare 7.2's code does
+        (its manual says otherwise), proposals outside the bounds of the ``estimated_params`` block are
+        rejected too.
+
+        Other samplers (``posterior_sampling_method``: ``'slice'``, ``'tailored_random_block_metropolis_hastings'``,
+        ``'independent_metropolis_hastings'``, ``'hssmc'``, ``'dsmh'``), ``posterior_sampler_options`` (e.g. a Student
+        proposal) and Dynare's own random numbers (``rng='octave'``) are handled by :func:`pydyn.samplers.sample`;
+        its extra keywords (``rng``, ``random``, ``sampler_options``, ``method``, ...) are passed through.
 
         Starting points, as ``posterior_sampler_initialization.m``: a single chain starts at the
         mode; with several chains each starts from the first draw
@@ -2068,12 +2090,16 @@ class Estimation:
         which reproduces a Dynare chain draw for draw from the same random numbers.
         """
         from . import posterior as _post
+        from . import samplers as _samplers
         o = self.options
         if not self.prior.is_bayesian:
             raise EstimationError("the sampler needs priors")
-        if o["posterior_sampling_method"] != "random_walk_metropolis_hastings":
-            raise NotImplementedError(f"posterior_sampling_method={o['posterior_sampling_method']!r} is not implemented: "
-                                      "only 'random_walk_metropolis_hastings' is")
+        if _samplers.dispatch(self, sampler_kw):  # other samplers, Student proposal, Dynare's random numbers
+            return _samplers.sample(self, replic=replic, nblocks=nblocks, mode=mode, cov=cov, jscale=jscale, seed=seed,
+                                    x0=x0, drop=drop, init_scale_factor=init_scale_factor,
+                                    jumping_covariance=jumping_covariance, load=load, save=save, innovations=innovations,
+                                    uniforms=uniforms, init_innovations=init_innovations, tune_jscale=tune_jscale,
+                                    **sampler_kw)
         replic = int(o["mh_replic"] if replic is None else replic)
         drop = o["mh_drop"] if drop is None else drop
         previous = None
@@ -2164,8 +2190,10 @@ class Estimation:
         for j in range(nblocks):
             eps = rngs[j].standard_normal((replic, self.n)) if innovations is None else np.asarray(innovations)[j]
             u = rngs[j].random(replic) if uniforms is None else np.asarray(uniforms)[j]
+            # proposals are checked against the bounds of the mode search (self.lb/ub: prior support and
+            # estimated_params bounds), the kernel against the prior support: posterior_sampler_iteration.m
             draws[j], logpo[j], acc[j] = metropolis_hastings(log_post, starts[j], lp0[j], chol_prop,
-                                                             lb, ub, eps, u, uniform_stream=uniform_stream)
+                                                             self.lb, self.ub, eps, u, uniform_stream=uniform_stream)
         x_init = starts
         if previous is not None:
             draws = np.concatenate([previous.draws, draws], axis=1)

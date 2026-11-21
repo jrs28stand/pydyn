@@ -125,4 +125,4 @@ def test_estimation_reports_options_it_does_not_act_on(tmp_path):
         warnings.simplefilter("ignore")
         m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "est_nk.mod"))
     with pytest.warns(UnsupportedOptionWarning, match="posterior_sampling_method"):
-        Estimation(m, posterior_sampling_method="slice")
+        Estimation(m, posterior_sampling_method="dime_mcmc")                   # slice etc.: pydyn.samplers
