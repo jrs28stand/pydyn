@@ -235,7 +235,11 @@ def _resolve_options(model, pfwee, kw):
 
 
 def _statement_options(model, name):
-    """Options of the last statement ``name`` of the .mod file."""
+    """Options of the last statement ``name`` of the .mod file (in the results mode, ``pydyn.results``: the
+    options of options_ that the live workspace holds, in ``model._live_statement_options``)."""
+    live = getattr(model, "_live_statement_options", None)
+    if live is not None:
+        return dict(live.get(name, {}))
     out = {}
     for st in model.statements:
         if st.get("statementName") == name:
@@ -363,17 +367,24 @@ def steady_command_algo(model):
     return DYNARE_SOLVE_ALGO if algo is None else int(algo)
 
 
-def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learnt_endval=()):
-    """Replay the statements of the .mod file up to the last perfect_foresight_setup."""
+def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learnt_endval=(), upto=None, live=None):
+    """Replay the statements of the .mod file up to the last perfect_foresight_setup.
+
+    ``upto`` (the results mode, ``pydyn.results``): only the statements up to that index are replayed, and
+    ``live`` (a dict with ``ss``, ``xss``, ``ss0``, ``xss0``: the contents of oo_.steady_state,
+    oo_.exo_steady_state, oo_.initial_steady_state, oo_.initial_exo_steady_state when the command runs) replaces
+    the steady states the replay would compute: the steady-state commands of the file are not replayed."""
     if getattr(model, "n_exo_det", 0):
         raise NotImplementedError("perfect foresight with varexo_det variables is not supported; declare them "
                                   "with varexo (in a perfect foresight model they behave like any exogenous variable)")
     sts = model.statements
-    idx = [i for i, st in enumerate(sts) if _is_setup(st)]
-    last = idx[-1] if idx else len(sts) - 1
+    idx = [i for i, st in enumerate(sts) if _is_setup(st) and (upto is None or i <= upto)]
+    last = idx[-1] if idx else (len(sts) - 1 if upto is None else upto)
     ws = _Workspace(model, params)
     ws.has_setup = bool(idx)
     force = (not idx) if steady is None else bool(steady)
+    if live is not None:
+        steady, force = False, False
     never = steady is False
     ie, ix = model._ie, model._ix
     stored_values = getattr(model, "_stmt_values", {})
@@ -501,6 +512,11 @@ def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learn
             apply_events(i)
     if force and ws.dirty:
         run_steady()
+    if live is not None:
+        ws.ss, ws.xss = np.array(live["ss"], float), np.array(live["xss"], float)
+        ws.ss0 = None if live.get("ss0") is None else np.array(live["ss0"], float)
+        ws.xss0 = None if live.get("xss0") is None else np.array(live["xss0"], float)
+        ws.dirty = False
     for d in extra_learnt_shocks:
         d = dict(d)
         p = d.pop("periods", None)

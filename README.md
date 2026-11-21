@@ -171,6 +171,18 @@ or `stoch_simul` command (as `M_.params` does in Dynare), and `initval`/`endval`
 refer to other variables are evaluated as Dynare does (values set so far, zero if unset, the
 computed steady state after `steady`).
 
+## MATLAB-style results: `pydyn.dynare()`
+
+`pydyn.dynare("model.mod")` runs the statements of a .mod file in file order and fills `M_`, `options_` and `oo_` with Dynare's
+field names and shapes (`oo_.dr.ghx` in DR order, `oo_.steady_state` a column in declaration order, `oo_.irfs.y_e` a row,
+`oo_.endo_simul` n x T). MATLAB lines of the file see and may change the structs between commands, so Dynare's own self-checks and
+lines such as `irf1 = oo_.irfs.y_e;` run unchanged; `set_param_value`, `steady`, `check`, `stoch_simul` (also the functional form
+`[info, oo_, options_, M_] = stoch_simul(M_, options_, oo_, var_list)`), `perfect_foresight_setup` and `perfect_foresight_solver`
+re-run on the live workspace. Simulated paths use Octave's `randn` stream, so they equal Dynare's run under Octave.
+A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
+supported (estimation, forecast, OccBin, ...) stop the run with an error that names them. `pydyn.Model` is unchanged.
+Validation: `tests/test_results.py` against `reference/oo/*.mat` (Dynare 7.2 under Octave 8.4).
+
 ## Dynare's shipped examples
 
 `tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's

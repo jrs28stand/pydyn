@@ -59,14 +59,18 @@ class Model:
     """
 
     def __init__(self, json_dir: str | Path, functions: dict | None = None, steady_state_fn=None,
-                 cache: bool | None = None):
+                 cache: bool | None = None, run_statements: bool = True):
         """``functions`` maps names of external functions used in the model or in the
         ``steady_state_model`` block to Python callables. ``steady_state_fn`` is the Python
         counterpart of a Dynare ``_steadystate.m`` file: ``fn(model, params, exo) -> ys`` or
         ``(ys, params)``; it may raise ``SteadyStateError``. ``cache`` (default: on unless the
         environment variable PYDYN_CACHE is 0) keeps the compiled model functions in
         the user cache folder (``~/.cache/pydyn`` or ``$PYDYN_CACHE_DIR``), keyed by a hash of the JSON files,
-        so that loading the same model again skips translation and compilation."""
+        so that loading the same model again skips translation and compilation.
+
+        ``run_statements=False`` (used by ``pydyn.results.dynare``) builds the model and its empty
+        state but does not run the statements of the .mod file: the caller runs them, one at a time,
+        through ``_exec_statement`` (see ``pydyn.results``)."""
         json_dir = Path(json_dir)
         self.functions = dict(functions or {})
         self.steady_state_fn = steady_state_fn
@@ -143,7 +147,9 @@ class Model:
         self.steady_state_file = mod_dir / f"{name}_steadystate.m"
         if not self.steady_state_file.exists():
             self.steady_state_file = None
-        self._run_statements()
+        self._init_state()
+        if run_statements:
+            self._run_statements()
 
     # ------------------------------------------------------------------ compilation
     def _tr_dynamic(self):
@@ -419,10 +425,8 @@ class Model:
         computations start from (and use the exogenous values of) the new content, as in Dynare."""
         (self.endval if self._endval_seen else self.initval).update(values)
 
-    def _run_statements(self):
-        """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
-        ``pydyn.matlab`` together with the Dynare statements, so that MATLAB control flow around
-        parameter assignments (``if calib == 1 ... end``) behaves as in Dynare."""
+    def _init_state(self):
+        """The state the statements of the .mod file fill (parameters NaN, no shocks, no options)."""
         self.params = np.full(len(self.param_names), np.nan)
         self.workspace: dict[str, float] = {}      # scalar MATLAB variables of the .mod file
         self.initval: dict[str, float] = {}
@@ -452,6 +456,11 @@ class Model:
         #: set when MATLAB code read a numerically computed steady state: the calibration from that
         #: point on is only as accurate as the steady-state solver (Dynare's tolerance)
         self.calibration_tolerance = None
+
+    def _run_statements(self):
+        """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
+        ``pydyn.matlab`` together with the Dynare statements, so that MATLAB control flow around
+        parameter assignments (``if calib == 1 ... end``) behaves as in Dynare."""
         # every file goes through the session, with or without MATLAB lines: it also follows which
         # parameters and steady-state values an earlier steady/stoch_simul has changed in Dynare
         self._matlab = matlab.ModSession(self, ModelError)
