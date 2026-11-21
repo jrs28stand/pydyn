@@ -93,8 +93,14 @@ def _mod(x, y):
     return np.float64(_fmod(float(x), float(y)))
 
 
+#: Python builtins visible to generated and evaluated code. Without an explicit "__builtins__" entry,
+#: eval/exec would insert the real builtins and model expressions could call exit(), input(), open()...
+SAFE_BUILTINS = {"float": float, "int": int, "bool": bool, "len": len, "range": range, "tuple": tuple,
+                 "list": list, "zip": zip}
+
 #: names available to generated code
 NAMESPACE = {
+    "__builtins__": SAFE_BUILTINS,
     "exp": np.exp, "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2,
     "sqrt": np.sqrt, "cbrt": np.cbrt, "abs": np.abs, "sign": np.sign,
     "sin": np.sin, "cos": np.cos, "tan": np.tan, "asin": np.arcsin, "acos": np.arccos,
@@ -177,6 +183,7 @@ def _get_power_deriv_fast(x, p, k):
 import operator as _op  # noqa: E402
 
 FAST_NAMESPACE = {
+    "__builtins__": SAFE_BUILTINS,
     "exp": math.exp, "log": math.log, "ln": math.log, "log10": math.log10, "log2": math.log2,
     "sqrt": math.sqrt, "cbrt": math.cbrt, "abs": math.fabs, "sign": _fsign,
     "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos,
