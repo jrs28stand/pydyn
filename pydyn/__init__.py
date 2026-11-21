@@ -4,7 +4,7 @@ from .model import Model, ModelError
 from .steady import steady_state, SteadyStateError
 from .simulate import simulate, irf
 from .perturbation import first_order, FirstOrderSolution
-from . import estimation, kalman, korder, matlab, moments, posterior, posterior_plots, priors, smoother
+from . import estimation, kalman, korder, matlab, moments, optimal_policy, posterior, posterior_plots, priors, smoother
 from .korder import k_order
 from .perfect_foresight import (perfect_foresight, PerfectForesightError, PerfectForesightResult,
                                 unanticipated_shocks)
