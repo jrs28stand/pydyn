@@ -726,3 +726,8 @@ Quotes are from `/home/claude/audit/snap/README.md`.
 - `OccBin` run time on large models; `adl()`, `get_shock_skew_by_name`, `@#include`/`@#echo`/`@#error`/`@#includepath` individually; `trend_component_model` and `var_expectation_model` statements individually (only via the PAC example and the Dynare test-suite files, which fail at `pac.initialize` / `var_expectation.initialize`).
 - Numerical agreement with Dynare of the individual math functions (other than max/min derivatives) and of `differentiate_forward_vars`, `var_remove`, `model_replace`.
 - Dynare's own behaviour for the options marked IGN0 (assumed numerically neutral from the manual text).
+
+
+## Update 2026-11-21: estimation at order 2
+
+Done: `pydyn.NonlinearEstimation` (filters sis, apf, cpf, gf, nlkf; pruning; resampling options; `mode_compute=8`), validated against Dynare 7.2 in tests/test_nonlinear_estimation.py. Refused: order 3, `gmf`, OccBin with order 2, `dsge_var`/`heteroskedastic_filter`/`endogenous_prior` at order 2, missing data, `observation_trends`, `prefilter`, `nonlinear_filter_initialization=2`, combinations that stop in Dynare; no smoother at order 2 (as in Dynare). Dynare quirks reproduced are listed in `pydyn.nonlinear_filters.DYNARE_QUIRKS`.

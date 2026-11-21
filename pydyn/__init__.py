@@ -11,6 +11,7 @@ from .perfect_foresight import (perfect_foresight, PerfectForesightError, Perfec
 from .occbin import Occbin, OccbinResult, OccbinError
 from . import occbin_filter
 from .occbin_estimation import OccbinEstimation
+from .nonlinear_estimation import NonlinearEstimation
 
 __all__ = ["run_preprocessor", "Model", "ModelError", "steady_state", "first_order", "FirstOrderSolution",
-           "k_order", "simulate", "irf", "SteadyStateError", "perfect_foresight", "PerfectForesightError", "PerfectForesightResult", "unanticipated_shocks", "Occbin", "OccbinResult", "OccbinError", "OccbinEstimation"]
+           "k_order", "simulate", "irf", "SteadyStateError", "perfect_foresight", "PerfectForesightError", "PerfectForesightResult", "unanticipated_shocks", "Occbin", "OccbinResult", "OccbinError", "OccbinEstimation", "NonlinearEstimation"]

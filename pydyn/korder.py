@@ -58,13 +58,14 @@ def load_library(path: str | os.PathLike | None = None):
 
 
 def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, library=None,
-            qz_criterium=None, loglinear=None) -> dict:
+            qz_criterium=None, loglinear=None, Sigma_e=None) -> dict:
     """Solve the model by perturbation at ``order`` (1 to 3) with Dynare's C++ solver.
 
     Returns a dict with Dynare's decision-rule arrays (``ghx``, ``ghu``, ``ghxx``, ``ghxu``,
     ``ghuu``, ``ghs2``, ... as in ``oo_.dr``), the folded tensors ``g_0`` ... ``g_k``, plus
     ``ys``, ``order_var`` and ``state_var`` (0-based declaration indices).
     Rows are in decision-rule order; state columns are (state variables, shocks).
+    ``Sigma_e`` replaces ``model.Sigma_e`` (the covariance matrix of the shocks, which enters ``ghs2``).
     """
     from . import options as _opt
     so = _opt.stoch_options(model)
@@ -93,7 +94,8 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
     ys = np.ascontiguousarray(ys, dtype=float)
     order_var, state_var, cnt = dr_ordering(model.lead_lag_incidence)
 
-    if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(params)) and np.all(np.isfinite(model.Sigma_e))):
+    Sigma_e = np.asarray(model.Sigma_e if Sigma_e is None else Sigma_e, dtype=float)
+    if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(params)) and np.all(np.isfinite(Sigma_e))):
         raise KOrderError("steady state, parameters or Sigma_e contain NaN or Inf")
     yy, x0 = np.tile(ys, 3), model.exo_steady()
     nnz, rows, cols, vals = [], [], [], []
@@ -108,7 +110,7 @@ def k_order(model, order=None, ys=None, params=None, pruning=None, threads=1, li
     rows = np.ascontiguousarray(np.concatenate(rows), dtype=np.int32)
     cols = np.ascontiguousarray(np.concatenate(cols), dtype=np.int32)
     vals = np.ascontiguousarray(np.concatenate(vals), dtype=float)
-    sigma = np.asfortranarray(model.Sigma_e, dtype=float)
+    sigma = np.asfortranarray(Sigma_e, dtype=float)
     dr = np.ascontiguousarray(order_var, dtype=np.int32)
 
     dp, ip = ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_int)
