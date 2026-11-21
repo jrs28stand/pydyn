@@ -34,7 +34,6 @@ and returns a float; when the .mod file declares that the function returns its o
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 

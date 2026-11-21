@@ -23,8 +23,8 @@ Particles are columns (``n`` state variables x ``N`` particles), as in Dynare.
 
 Every filter returns ``(LIK, lik)``: minus the log likelihood summed from period ``start`` (1-based)
 and the log density of every period (``NaN``/``-inf`` where Dynare stops early). Random numbers come
-from a stream (:mod:`pydyn.random_streams`) with MATLAB's ``randn(r, c)``/``rand(r, c)`` calls, so the
-filters consume them in Dynare's order; with :class:`~pydyn.random_streams.OctaveRandomStream` they
+from a stream (:mod:`pydyn.octave_rng`) with MATLAB's ``randn(r, c)``/``rand(r, c)`` calls, so the
+filters consume them in Dynare's order; with :class:`~pydyn.octave_rng.OctaveRandomStream` they
 reproduce Dynare under Octave exactly.
 
 ``resampling_method=smooth`` cannot be reproduced bit for bit: Dynare orthogonalises the particles

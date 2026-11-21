@@ -1,3 +1,9 @@
+# This file is part of pydyn.
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
+# GNU General Public License (file LICENSE) for details.
 """Corpus harness for pydyn.matlab.
 
     python tools/sweep_matlab.py collect <dynare-src> <scratch>   copy tests/ and examples/, run the preprocessor
@@ -163,7 +169,7 @@ def classify_stmt(s):
 
 def stats(scratch):
     corpus = scratch / "corpus"
-    cls, flow, per_file = collections.Counter(), collections.Counter(), {}
+    cls, flow = collections.Counter(), collections.Counter()
     nfiles = nnative = parse_fail = flow_with_dyn = 0
     for k in ok_mods(scratch):
         mod = corpus / k
@@ -252,7 +258,7 @@ def load_one(args):
     signal.signal(signal.SIGALRM, _alarm)
     signal.alarm(120)
     try:
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             m = pydyn.Model(mod.parent / mod.stem / "model" / "json")
         out.update(status="loaded", params=m.params.tolist(), param_names=m.param_names, Sigma_e=m.Sigma_e.tolist(),

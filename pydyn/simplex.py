@@ -82,7 +82,6 @@ def simplex_optimization_routine(fun, x, options=None) -> SimplexResult:
     DELTA = delta
     zero_delta = delta / 200
     max_no_improvements = n * 10
-    eps = np.finfo(float).eps
     iter_count_total = 0
     func_count_total = 0
     initial_score, ok = fun(x)

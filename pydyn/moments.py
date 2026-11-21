@@ -49,9 +49,7 @@ import numpy as np
 from scipy import linalg, sparse
 from scipy.sparse.linalg import spsolve
 
-from .perturbation import dr_ordering
-
-QZ_CRITERIUM = 1.0 + 1e-6
+from .perturbation import QZ_CRITERIUM, dr_ordering
 
 
 # ------------------------------------------------------------------------------------ linear algebra
@@ -547,7 +545,7 @@ def _th_autocovariances(R, Sigma, ivar, o, nodecomposition):
     else:
         ngrid = int(o["filtered_theoretical_moments_grid"])
         freqs = np.arange(ngrid) * (2 * np.pi / ngrid)
-        tpos, tneg = np.exp(1j * freqs), np.exp(-1j * freqs)
+        tneg = np.exp(-1j * freqs)
         if o["bandpass"]:
             gain = np.zeros(ngrid)
             low, high = o["passband"][1], max(2, o["passband"][0])
@@ -676,7 +674,6 @@ def _pruned_order2(R, Sigma, ivar, o):
     Var_z[id1, id3] = 0
     Var_z[id2, id1] = 0
     Var_z[id3, id1] = 0
-    nvar = len(indy)
     Var_y = C @ Var_z @ C.T + D @ Varinov @ D.T
     Var_y = np.where(np.abs(Var_y) < 1e-12, 0.0, Var_y)
     sd = np.sqrt(np.diag(Var_y))
@@ -1214,7 +1211,7 @@ def stoch_simul_moments(m, var_list=None, dr=None, *, shocks=None, rng=None, H=N
     order = o["order"]
     if dr is None:
         dr = solve(m, order)
-    R = _Rules(m, dr)
+    _Rules(m, dr)                                 # checks that dr matches the model
     ivar = _var_indices(m, var_list)
     periods = int(o["periods"])
     if periods <= o["drop"]:

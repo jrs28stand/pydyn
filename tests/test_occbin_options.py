@@ -120,7 +120,7 @@ def test_borrcon_curb_retrench(bc):
 def test_borrcon_endo_init(bc):
     ob, r, _ = bc
     init = np.asarray(r["init"], float)
-    res = check_case(ob, r, "endo_init", S_of(r), periods=80, init=init)
+    check_case(ob, r, "endo_init", S_of(r), periods=80, init=init)
     assert np.max(np.abs(r["endo_init_piecewise"] - r["default_piecewise"])) > 1e-3     # the option matters
     # linear path starts from the same deviations (declaration order)
     check_case(ob, r, "endo_init_noshock", np.zeros((1, 2)), periods=80, init=init)

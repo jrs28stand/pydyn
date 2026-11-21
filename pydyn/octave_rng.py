@@ -1,38 +1,50 @@
 # This file is part of pydyn.
 #
 # It reproduces the random-number generators of GNU Octave (liboctave/numeric/randmtzig.cc and the state handling of
-# liboctave/numeric/oct-rand.cc, Copyright (C) 2006-2023 The Octave Project Developers, GPL-3.0-or-later; the Mersenne
-# Twister MT19937 and its init_by_array seeding are by Makoto Matsumoto and Takuji Nishimura, 1997-2002, BSD licence;
-# the ziggurat method is that of Marsaglia and Tsang, 2000) as used by Dynare 7.2 under Octave
-# (matlab/set_dynare_seed_local_options.m, matlab/set_dynare_random_generator_state.m, Copyright (C) 2010-2026 Dynare
-# Team, GPL-3.0-or-later). Written in 2026 from the published algorithms and checked against Octave 8.4.
+# liboctave/numeric/oct-rand.cc, Copyright (C) 2006-2024 The Octave Project Developers, GPL-3.0-or-later; the Mersenne
+# Twister MT19937 and its init_by_array seeding are by Makoto Matsumoto and Takuji Nishimura, 1997-2002, BSD-3-Clause;
+# the ziggurat method is that of Marsaglia and Tsang, 2000, as implemented in Octave by David Bateman) as used by
+# Dynare 7.2 under Octave (matlab/set_dynare_seed_local_options.m, matlab/set_dynare_random_generator_state.m,
+# Copyright (C) 2010-2026 Dynare Team, GPL-3.0-or-later). Written in 2026 from the published algorithms and checked
+# against Octave 8.4.
 #
 # This program is free software: you can redistribute it and/or modify it under the terms of the
 # GNU General Public License as published by the Free Software Foundation, either version 3 of the
 # License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
 # GNU General Public License (file LICENSE) for details.
-"""Octave's ``rand``, ``randn`` and ``randperm``, bit for bit, so that pydyn's samplers can reproduce Dynare's chains
-(run under Octave) from Dynare's seeds alone.
+"""Octave's ``rand``, ``randn`` and ``randperm``, bit for bit, so that pydyn reproduces Dynare's random numbers
+(run under Octave) from Dynare's seeds alone. This is pydyn's only port of Octave's generator; it has two front ends.
 
-Under Octave Dynare seeds a chain with ``rand('state', s); randn('state', s)``. Octave keeps one Mersenne Twister
-state per distribution, so the uniform and the normal stream are two independent MT19937 generators that start from
-the same state (``init_by_array([s])``). :class:`OctaveRandom` holds both::
+Under Octave Dynare seeds with ``rand('state', s); randn('state', s)``. Octave keeps one Mersenne Twister state per
+distribution, so the uniform and the normal stream are two independent MT19937 generators that start from the same
+state (``init_by_array([s])``). :class:`MTStream` is one such generator:
+
+* uniforms: 53-bit ``(a 2^26 + b) / 2^53`` with ``a``, ``b`` the top 27 and 26 bits of two MT outputs (never 0);
+* normals: Octave's 256-level ziggurat (64-bit variant, 54 random bits per try; the tail and wedge tests draw
+  uniforms from the normal generator).
+
+Both have a scalar and a vectorised path that consume the generator identically.
+
+Front end for the posterior samplers (:mod:`pydyn.samplers`), Octave-shaped calls::
 
     r = OctaveRandom(seed)          # rand('state', seed); randn('state', seed)
-    r.rand(3); r.randn(4); r.randperm(6)
+    r.rand(3); r.randn((4, 2)); r.randperm(6)
 
-* ``rand``: 53-bit uniforms ``(a 2^26 + b) / 2^53`` with ``a``, ``b`` the top 27 and 26 bits of two MT outputs (never 0);
-* ``randn``: Octave's 256-level ziggurat (64-bit variant, 54 random bits per try; the tail and wedge tests draw
-  uniforms from the normal generator);
-* ``randperm(n, m)``: ``m`` uniforms from the uniform stream and a Knuth shuffle.
+with :class:`NumpyRandom` (the same interface on a numpy generator: statistically equivalent, not Dynare's numbers),
+:class:`ArrayRandom` (recorded numbers) and :func:`dynare_chain_seeds` (chain ``j`` of a run with seed ``k`` is seeded
+with ``k + 1 + 2 + ... + j``, posterior_sampler_initialization.m). ``randperm(n, m)`` takes ``m`` uniforms from the
+uniform stream and does a Knuth shuffle.
 
-Checked against Octave 8.4 on 2 million uniforms and 2 million normals (seed 1) and on ``randperm`` interleaved with
-``rand``/``randn`` (tests/test_samplers.py). Only integer seeds 0 <= s < 2^32 - 1 are emulated; a 625-element state
-vector as returned by ``rand('state')`` (Dynare's ``record.InitialSeeds``/``LastSeeds``) can also be set.
+Front end for the particle filters (:mod:`pydyn.nonlinear_filters`), MATLAB's ``randn(r, c)``/``rand(r, c)`` calls:
+:class:`OctaveRandomStream` (seed converted as Octave's ``double2uint32`` does; Dynare's filters reseed with 0 before
+each likelihood evaluation, so a pydyn likelihood equals Dynare's under Octave bit for bit),
+:class:`NumpyRandomStream` (numpy's PCG64), :class:`ReplayStream` (recorded numbers) and :func:`make_stream`.
 
-:func:`dynare_chain_seeds` gives the seeds of Dynare's chains (chain ``j`` of a run with seed ``k`` is seeded with
-``k + 1 + 2 + ... + j``, posterior_sampler_initialization.m) and :class:`NumpyRandom` the same interface on a numpy
-generator (pydyn's default: statistically equivalent, not Dynare's numbers).
+Checked against Octave 8.4 on 2 million uniforms and 2 million normals (seeds 1 and 7), on generator state vectors,
+on ``randperm`` interleaved with ``rand``/``randn`` (tests/test_samplers.py) and on four seeds of
+reference/r_octave_rng.m (tests/test_nonlinear_estimation.py). :class:`OctaveRandom` emulates only integer seeds
+0 <= s < 2^32 - 1; a 625-element state vector as returned by ``rand('state')`` (Dynare's
+``record.InitialSeeds``/``LastSeeds``) can also be set.
 """
 from __future__ import annotations
 
@@ -40,7 +52,8 @@ import math
 
 import numpy as np
 
-__all__ = ["OctaveRandom", "NumpyRandom", "ArrayRandom", "MTStream", "dynare_chain_seeds", "init_by_array"]
+__all__ = ["OctaveRandom", "NumpyRandom", "ArrayRandom", "MTStream", "dynare_chain_seeds", "init_by_array",
+           "OctaveRandomStream", "NumpyRandomStream", "ReplayStream", "make_stream"]
 
 _M32 = 0xFFFFFFFF
 
@@ -76,7 +89,7 @@ def init_by_array(key) -> np.ndarray:
 _NOR_R = 3.6541528853610088
 _NOR_INV_R = 0.27366123732975828
 _NOR_AREA = 0.00492867323399
-_NMANTISSA = 9007199254740992.0
+_NMANTISSA = 9007199254740992.0           # 2^53
 
 
 def _ziggurat_tables():
@@ -97,30 +110,48 @@ def _ziggurat_tables():
     return ki, wi, fi
 
 
-_KI, _WI, _FI = _ziggurat_tables()
+_KI, _WI, _FI = _ziggurat_tables()                       # Python lists (scalar path)
+_KI_A, _WI_A = np.array(_KI, dtype=np.int64), np.array(_WI)   # arrays (vectorised path)
 
 
 def _seed_word(seed) -> int:
+    """Strict seed check of :class:`OctaveRandom`: only the seeds whose Octave behaviour was verified."""
     s = float(seed)
     if not (np.isfinite(s) and s == int(s) and 0 <= s < 4294967295.0):
         raise ValueError(f"Octave seed {seed!r}: only integers 0 <= seed < 2^32 - 1 are emulated")
     return int(s)
 
 
+def _double2uint32(d) -> int:
+    """Octave's conversion of a seed value to a 32-bit word (oct-rand.cc)."""
+    if not math.isfinite(d):
+        return 0
+    top = float(_M32)
+    d = math.fmod(float(d), top)
+    if d < 0:
+        d += top
+    return int(d)
+
+
 class MTStream:
-    """One MT19937 generator with Octave's conversions (one Octave distribution state)."""
+    """One MT19937 generator with Octave's conversions (one Octave distribution state).
 
-    _BLOCK = 4096
+    Words are drawn from numpy's MT19937 in blocks; the generator state at the start of the current block is kept so
+    that :meth:`get_state` is exact at any point."""
 
-    def __init__(self, seed=None, state=None):
+    _BLOCK = 65536
+    _SMALL = 8                  # below this many numbers the scalar path is faster than the vectorised one
+
+    def __init__(self, seed=None, state=None, *, word=None):
         self._bg = np.random.MT19937(0)
-        self._buf = np.empty(0, np.uint64)
-        self._p = 0
         if state is not None:
             self.set_state(state)
+        elif word is not None:
+            self._set(init_by_array([int(word) & _M32]), 624)
         else:
             self.seed(0 if seed is None else seed)
 
+    # -- state
     def seed(self, seed):
         """``rand('state', seed)``."""
         self._set(init_by_array([_seed_word(seed)]), 624)
@@ -134,43 +165,54 @@ class MTStream:
 
     def get_state(self) -> np.ndarray:
         """The state vector Octave would return now (625 doubles)."""
-        st = self._bg.state["state"]
-        key, pos = np.array(st["key"], np.uint32), int(st["pos"])
-        unread = len(self._buf) - self._p
-        if unread:                                # step the numpy generator back over the prefetched words
-            pos -= unread
-            if pos < 0:
-                raise RuntimeError("cannot recover the state across a regeneration; call get_state before drawing")
-        return np.concatenate([key.astype(float), [625 - pos]])
+        bg = np.random.MT19937(0)
+        bg.state = self._origin
+        if self._p:
+            bg.random_raw(self._p)
+        st = bg.state["state"]
+        return np.concatenate([np.asarray(st["key"], np.uint32).astype(float), [625 - int(st["pos"])]])
 
     def _set(self, key, pos):
         st = self._bg.state
         st["state"]["key"] = np.asarray(key, np.uint32)
         st["state"]["pos"] = int(pos)
         self._bg.state = st
+        self._origin = self._bg.state             # generator state at self._buf[0]
         self._buf = np.empty(0, np.uint64)
         self._p = 0
 
-    def _fill(self):
-        # prefetch at most up to the next regeneration of the MT state, so that get_state stays exact
-        pos = int(self._bg.state["state"]["pos"])
-        n = 624 - pos if pos < 624 else 624
-        self._buf = self._bg.random_raw(n)
+    # -- raw words
+    def _refill(self, need):
+        """Make at least ``need`` unread words available: rewind to the first unread word and draw a new block."""
+        if self._p < len(self._buf):              # unread words: put the generator back at the first of them
+            self._bg.state = self._origin
+            if self._p:
+                self._bg.random_raw(self._p)
+        self._origin = self._bg.state
+        self._buf = self._bg.random_raw(max(int(need), self._BLOCK))
         self._p = 0
+
+    def _take(self, k):
+        if self._p + k > len(self._buf):
+            self._refill(k)
+        out = self._buf[self._p:self._p + k]
+        self._p += k
+        return out
 
     def r32(self) -> int:
         if self._p >= len(self._buf):
-            self._fill()
+            self._refill(1)
         v = int(self._buf[self._p])
         self._p += 1
         return v
 
+    # -- scalar path
     def u53(self) -> float:
         while True:
             a = self.r32() >> 5
             b = self.r32() >> 6
             if a or b:
-                return (a * 67108864.0 + b) / 9007199254740992.0
+                return (a * 67108864.0 + b) / _NMANTISSA
 
     def normal(self) -> float:
         ki, wi, fi = _KI, _WI, _FI
@@ -193,20 +235,73 @@ class MTStream:
             if (fi[idx - 1] - fi[idx]) * self.u53() + fi[idx] < math.exp(-0.5 * x * x):
                 return x
 
+    # -- vectorised path (same consumption of words as the scalar path)
+    def uniforms(self, k: int) -> np.ndarray:
+        """``k`` uniforms (1-D array)."""
+        k = int(k)
+        if k < self._SMALL:
+            return np.array([self.u53() for _ in range(k)], float)
+        out = np.empty(k)
+        got = 0
+        while got < k:
+            m = k - got
+            w = self._take(2 * m)
+            a = (w[0::2] >> np.uint64(5)).astype(np.float64)
+            b = (w[1::2] >> np.uint64(6)).astype(np.float64)
+            bad = (a == 0) & (b == 0)
+            if bad.any():                       # u53 rejects a zero (probability 2^-53)
+                f = int(np.argmax(bad))
+                self._p -= 2 * (m - f) - 2      # the rejected pair stays consumed
+                out[got:got + f] = (a[:f] * 67108864.0 + b[:f]) / _NMANTISSA
+                got += f
+                continue
+            out[got:] = (a * 67108864.0 + b) / _NMANTISSA
+            got = k
+        return out
 
+    def normals(self, k: int) -> np.ndarray:
+        """``k`` standard normals (1-D array)."""
+        k = int(k)
+        if k < self._SMALL:
+            return np.array([self.normal() for _ in range(k)], float)
+        out = np.empty(k)
+        got = 0
+        while got < k:
+            m = min(k - got, 4096)
+            w = self._take(2 * m)
+            lo = w[0::2]
+            hi = w[1::2] & np.uint64(0x3FFFFF)
+            r = (hi << np.uint64(32)) | lo
+            rabs = (r >> np.uint64(1)).astype(np.int64)
+            idx = rabs & 0xFF
+            x = np.where((r & np.uint64(1)) == 1, -rabs, rabs).astype(np.float64) * _WI_A[idx]
+            ok = rabs < _KI_A[idx]
+            if ok.all():
+                out[got:got + m] = x
+                got += m
+                continue
+            f = int(np.argmin(ok))               # first number that needs the slow path
+            out[got:got + f] = x[:f]
+            got += f
+            self._p -= 2 * (m - f)               # give back its words; the scalar path redraws it
+            out[got] = self.normal()
+            got += 1
+        return out
+
+
+# ====================================================================== sampler front end (Octave-shaped calls)
 def _shape(size):
     if size is None:
         return ()
     return (int(size),) if np.isscalar(size) else tuple(int(s) for s in size)
 
 
-def _octave_fill(shape, gen):
-    """Arrays are filled in column-major order, as Octave does."""
-    n = int(np.prod(shape)) if shape else 1
-    vals = np.array([gen() for _ in range(n)], float)
-    if not shape:
-        return float(vals[0])
-    return vals.reshape(shape, order="F")
+def _knuth_shuffle(rv, n, m):
+    iv = list(range(n))
+    for i in range(m):
+        k = i + int(math.floor(rv[i] * (n - i)))
+        iv[i], iv[k] = iv[k], iv[i]
+    return np.array(iv[:m], int)                  # 0-based
 
 
 class OctaveRandom:
@@ -219,20 +314,21 @@ class OctaveRandom:
         self.u = MTStream(seed, state_u)
         self.n = MTStream(seed, state_n)
 
+    @staticmethod
+    def _fill(shape, stream_vec, scalar):
+        if not shape:
+            return scalar()
+        return stream_vec(int(np.prod(shape))).reshape(shape, order="F")
+
     def rand(self, size=None):
-        return _octave_fill(_shape(size), self.u.u53)
+        return self._fill(_shape(size), self.u.uniforms, self.u.u53)
 
     def randn(self, size=None):
-        return _octave_fill(_shape(size), self.n.normal)
+        return self._fill(_shape(size), self.n.normals, self.n.normal)
 
     def randperm(self, n, m=None):
         m = n if m is None else m
-        rv = [self.u.u53() for _ in range(m)]
-        iv = list(range(n))
-        for i in range(m):
-            k = i + int(math.floor(rv[i] * (n - i)))
-            iv[i], iv[k] = iv[k], iv[i]
-        return np.array(iv[:m], int)               # 0-based
+        return _knuth_shuffle([self.u.u53() for _ in range(m)], n, m)
 
     def get_state(self):
         return self.u.get_state(), self.n.get_state()
@@ -254,12 +350,7 @@ class NumpyRandom:
 
     def randperm(self, n, m=None):
         m = n if m is None else m
-        rv = self.rng.random(m)
-        iv = list(range(n))
-        for i in range(m):
-            k = i + int(math.floor(rv[i] * (n - i)))
-            iv[i], iv[k] = iv[k], iv[i]
-        return np.array(iv[:m], int)
+        return _knuth_shuffle(self.rng.random(m), n, m)
 
 
 class ArrayRandom:
@@ -289,12 +380,7 @@ class ArrayRandom:
     def randperm(self, n, m=None):
         m = n if m is None else m
         rv = self.rand(m) if m else np.zeros(0)
-        rv = np.atleast_1d(rv)
-        iv = list(range(n))
-        for i in range(m):
-            k = i + int(math.floor(rv[i] * (n - i)))
-            iv[i], iv[k] = iv[k], iv[i]
-        return np.array(iv[:m], int)
+        return _knuth_shuffle(np.atleast_1d(rv), n, m)
 
 
 def dynare_chain_seeds(seed: int, nblocks: int) -> list:
@@ -305,3 +391,76 @@ def dynare_chain_seeds(seed: int, nblocks: int) -> list:
         s += j
         out.append(s)
     return out
+
+
+# ====================================================================== particle-filter front end (randn(r, c) calls)
+class OctaveRandomStream:
+    """The numbers of Octave's ``rand(r, c)`` and ``randn(r, c)`` after ``rand('state', seed)`` and
+    ``randn('state', seed)`` (two independent Mersenne Twisters), filled in column-major order. Any finite seed is
+    reduced to 32 bits as Octave does (``double2uint32``)."""
+
+    def __init__(self, seed=0):
+        word = _double2uint32(seed)
+        self._u = MTStream(word=word)
+        self._n = MTStream(word=word)
+
+    def randn(self, r, c=1):
+        return self._n.normals(int(r) * int(c)).reshape((int(r), int(c)), order="F")
+
+    def rand(self, r, c=1):
+        return self._u.uniforms(int(r) * int(c)).reshape((int(r), int(c)), order="F")
+
+
+class NumpyRandomStream:
+    """numpy's PCG64 generators (one for uniform, one for normal numbers), column-major fill."""
+
+    def __init__(self, seed=0):
+        su, sn = np.random.SeedSequence(seed).spawn(2)
+        self._u = np.random.default_rng(su)
+        self._n = np.random.default_rng(sn)
+
+    def randn(self, r, c=1):
+        return self._n.standard_normal((int(c), int(r))).T
+
+    def rand(self, r, c=1):
+        return self._u.random((int(c), int(r))).T
+
+
+class ReplayStream:
+    """Replays recorded normal and uniform numbers in order (column-major fill); raises ``RuntimeError`` when more
+    are requested than were recorded."""
+
+    def __init__(self, normals=(), uniforms=()):
+        self.normals = np.asarray(normals, float).ravel(order="F")
+        self.uniforms = np.asarray(uniforms, float).ravel(order="F")
+        self.i_n = self.i_u = 0
+
+    def randn(self, r, c=1):
+        k = int(r) * int(c)
+        if self.i_n + k > self.normals.size:
+            raise RuntimeError("ReplayStream: not enough recorded normal numbers")
+        out = self.normals[self.i_n:self.i_n + k]
+        self.i_n += k
+        return out.reshape((int(r), int(c)), order="F")
+
+    def rand(self, r, c=1):
+        k = int(r) * int(c)
+        if self.i_u + k > self.uniforms.size:
+            raise RuntimeError("ReplayStream: not enough recorded uniform numbers")
+        out = self.uniforms[self.i_u:self.i_u + k]
+        self.i_u += k
+        return out.reshape((int(r), int(c)), order="F")
+
+
+def make_stream(spec, seed=0):
+    """A fresh stream from ``spec``: ``'octave'`` (default), ``'numpy'``, a callable returning a stream
+    (called with no argument), or a stream instance (returned as is)."""
+    if spec is None or spec == "octave":
+        return OctaveRandomStream(seed)
+    if spec == "numpy":
+        return NumpyRandomStream(seed)
+    if callable(spec) and not hasattr(spec, "randn"):
+        return spec()
+    if hasattr(spec, "randn") and hasattr(spec, "rand"):
+        return spec
+    raise ValueError(f"unknown random stream {spec!r}: use 'octave', 'numpy', a stream or a factory")

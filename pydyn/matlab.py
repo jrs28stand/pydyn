@@ -1,3 +1,9 @@
+# This file is part of pydyn.
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
+# GNU General Public License (file LICENSE) for details.
 """A small interpreter for the subset of MATLAB that Dynare ``.mod`` files and steady-state files use
 to set up a calibration.
 
@@ -74,7 +80,12 @@ MAX_ELEMENTS = 20_000_000
 
 
 class MatlabError(Exception):
-    """An error MATLAB itself would raise (``error(...)``, bad index, size mismatch, ...)."""
+    """An error MATLAB itself would raise (``error(...)``, bad index, size mismatch, ...).
+    ``identifier`` is the message identifier (``error('pkg:id', ...)``), empty if none."""
+
+    def __init__(self, msg="", identifier=""):
+        super().__init__(msg)
+        self.identifier = identifier
 
 
 class Unsupported(Exception):
@@ -95,6 +106,21 @@ class TranslationError(Exception):
 
 #: exceptions that correspond to a MATLAB run-time error (what a MATLAB try/catch would catch)
 MATLAB_ERRORS = (MatlabError,)
+#: Python exceptions that numpy, scipy or Python itself raise on input a built-in or an indexing
+#: operation cannot handle; they are MATLAB errors (``_matlab_error``), so that a MATLAB try/catch
+#: catches them.  pydyn's own exceptions (Unsupported, ModelError, SteadyStateError, ...) and
+#: arithmetic events (FloatingPointError: the translated code's signal) are never converted.
+PY_ERRORS = (IndexError, ValueError, KeyError, TypeError, AttributeError, ZeroDivisionError, OverflowError)
+
+
+def _matlab_error(exc, where):
+    """The MatlabError for a raw Python exception ``exc`` (one of PY_ERRORS) raised in ``where``, or
+    None when ``exc`` is one of pydyn's own exceptions and must propagate unchanged."""
+    if type(exc).__module__.split(".")[0] == "pydyn":
+        return None
+    err = MatlabError(f"{where}: {exc}" if str(exc) else f"{where}: {type(exc).__name__}")
+    err.__cause__ = exc
+    return err
 
 _F = np.float64
 #: the interpreter follows IEEE arithmetic as MATLAB does (0/0 is NaN, 1/0 is Inf); operations whose
@@ -345,7 +371,10 @@ def mrdivide(a, b):
         raise MatlabError("operator /: nonconformant arguments")
     if y.shape[0] != y.shape[1]:
         raise Unsupported("least-squares solution with a non-square matrix")
-    return ret(np.linalg.solve(y.T, x.T).T)
+    try:
+        return ret(np.linalg.solve(y.T, x.T).T)
+    except np.linalg.LinAlgError:
+        raise Unsupported("linear system with a singular matrix") from None
 
 
 def mldivide(a, b):
@@ -378,6 +407,12 @@ def mpower(a, b):
             except np.linalg.LinAlgError:
                 raise Unsupported("negative power of a singular matrix") from None
         raise Unsupported("non-integer power of a matrix")
+    if x.size == 1 and y.shape[0] == y.shape[1]:
+        s = float(x.flat[0])
+        if not s > 0 or not np.all(np.isfinite(y)):
+            raise Unsupported("scalar ^ matrix with a base that is not positive or a matrix that is not finite")
+        from scipy.linalg import expm
+        return ret(expm(math.log(s) * y) if y.size else np.zeros((0, 0)))     # s^A = expm(log(s)*A)
     raise MatlabError("operator ^: one argument must be a square matrix and the other a scalar; use .^ for element-wise power")
 
 
@@ -468,58 +503,74 @@ def colon(a, b, c=None):
     return (start + step * np.arange(n)).reshape(1, n)
 
 
-def hcat(vals):
-    vals = [v for v in vals if not (isinstance(v, np.ndarray) and v.size == 0) and not (isinstance(v, str) and v == "")]
-    if not vals:
-        return np.zeros((0, 0))
-    if any(isinstance(v, str) for v in vals):
-        if all(isinstance(v, str) for v in vals):
-            return "".join(vals)
-        raise Unsupported("concatenation of char arrays with numbers")
+def _cat_dims(dims, d, what):
+    """Result dimensions of concatenating along ``d`` (0 = vertical) operands of the given 2-D
+    dimensions, by Octave's rules (tm_row_const / dim_vector::hvcat): 0x0 operands are skipped; a
+    1x0 or 0x1 operand that does not fit is skipped; any other mismatch is an error."""
+    cur = None
+    for dv in dims:
+        if dv == (0, 0):
+            continue
+        if cur is None:
+            cur = dv
+            continue
+        o = 1 - d
+        if cur[o] == dv[o]:
+            cur = (cur[0] + dv[0], cur[1]) if d == 0 else (cur[0], cur[1] + dv[1])
+        elif dv[0] + dv[1] == 1:
+            if cur[0] + cur[1] == 1:
+                cur = (0, 0)
+        elif cur[0] + cur[1] == 1:
+            cur = dv
+        else:
+            raise MatlabError(f"{what} dimensions mismatch ({cur[0]}x{cur[1]} vs {dv[0]}x{dv[1]})")
+    return cur if cur is not None else (0, 0)
+
+
+def _concat(vals, d):
+    what = "vertical" if d == 0 else "horizontal"
     if any(isinstance(v, Cell) for v in vals):
+        vals = [v for v in vals if not (isinstance(v, np.ndarray) and v.size == 0) and not (isinstance(v, str) and v == "")]
         items = []
         for v in vals:
             if isinstance(v, Cell):
-                if v.shape[0] > 1:
-                    raise Unsupported("horizontal concatenation of cell columns")
+                if v.shape[d] > 1:
+                    raise Unsupported(f"{what} concatenation of cell {'rows' if d == 0 else 'columns'}")
                 items += v.items
             else:
                 items.append(v)
-        return Cell(items, (1, len(items)))
-    if len(vals) == 1:
+        return Cell(items, (len(items), 1) if d == 0 else (1, len(items)))
+    for v in vals:
+        if isinstance(v, Tainted):
+            arr(v)
+        if not (is_num(v) or isinstance(v, str)):
+            raise Unsupported(f"concatenation of a {_class(v)} value (struct arrays and the like)")
+    shape = _cat_dims([shape_of(v) for v in vals], d, what)
+    content = [v for v in vals if 0 not in shape_of(v)]
+    if any(isinstance(v, str) for v in vals):
+        if all(isinstance(v, str) for v in content) and (d == 1 or len(content) <= 1):
+            return "".join(content)
+        raise Unsupported("concatenation of char arrays with numbers" if d == 1 else "char matrices (vertical concatenation of char arrays)")
+    logical = all(arr(v).dtype == bool for v in vals)
+    if len(content) == 1 and shape_of(content[0]) == shape:
+        out = arr(content[0])
+    elif content:
+        out = np.concatenate([arr(v) for v in content], axis=d)
+    else:
+        out = np.zeros(shape)
+    return ret(out if logical else out.astype(float))
+
+
+def hcat(vals):
+    if len(vals) == 1 and not isinstance(vals[0], Tainted):
         return vals[0]
-    parts = [arr(v) for v in vals]
-    r = parts[0].shape[0]
-    if any(p.shape[0] != r for p in parts):
-        raise MatlabError("horizontal dimensions mismatch")
-    out = np.concatenate(parts, axis=1)
-    return ret(out if all(p.dtype == bool for p in parts) else out.astype(float))
+    return _concat(vals, 1)
 
 
 def vcat(vals):
-    vals = [v for v in vals if not (isinstance(v, np.ndarray) and v.size == 0) and not (isinstance(v, str) and v == "")]
-    if not vals:
-        return np.zeros((0, 0))
-    if len(vals) == 1:
+    if len(vals) == 1 and not isinstance(vals[0], Tainted):
         return vals[0]
-    if any(isinstance(v, str) for v in vals):
-        raise Unsupported("char matrices (vertical concatenation of char arrays)")
-    if any(isinstance(v, Cell) for v in vals):
-        items = []
-        for v in vals:
-            if isinstance(v, Cell):
-                if v.shape[1] > 1:
-                    raise Unsupported("vertical concatenation of cell rows")
-                items += v.items
-            else:
-                items.append(v)
-        return Cell(items, (len(items), 1))
-    parts = [arr(v) for v in vals]
-    c = parts[0].shape[1]
-    if any(p.shape[1] != c for p in parts):
-        raise MatlabError("vertical dimensions mismatch")
-    out = np.concatenate(parts, axis=0)
-    return ret(out if all(p.dtype == bool for p in parts) else out.astype(float))
+    return _concat(vals, 0)
 
 
 # ---------------------------------------------------------------------- indexing
@@ -542,6 +593,34 @@ def _lin_index(ix, n, grow=False):
     if not grow and k.size and k.max() >= n:
         raise MatlabError(f"index ({int(k.max()) + 1}) out of bounds (dimension has {n} element(s))")
     return k
+
+
+def _is_vec(shape):
+    """Exactly one dimension differs from 1 (1x0 and 0x1 are vectors, 1x1 and 0x0 are not)."""
+    return (shape[0] != 1) != (shape[1] != 1)
+
+
+def _index_dims(ia, n):
+    """Dimensions of a linear index ``ia`` selecting ``n`` elements, as Octave's idx_vector records
+    them: a numeric index has its own shape; a logical mask is a row if it is a row vector, a 1x1
+    mask is n-by-n (0x0 or 1x1), any other mask gives a column."""
+    if ia.dtype != bool:
+        return ia.shape
+    if ia.shape == (1, 1):
+        return (n, n)
+    if _is_vec(ia.shape):
+        return (1, n) if ia.shape[0] == 1 else (n, 1)
+    return (n, 1)
+
+
+def _lin_result_shape(src, ia, n):
+    """Shape of ``A(I)``: the shape of the index, except that a vector index into a vector (not a
+    scalar) takes the orientation of the source (MATLAB's rule, implemented as in Octave's
+    Array<T>::index)."""
+    rd = _index_dims(ia, n)
+    if src[0] * src[1] != 1 and _is_vec(src) and n != 1 and _is_vec(rd):
+        return (n, 1) if src[1] == 1 else (1, n)
+    return rd
 
 
 def index(v, args):
@@ -584,13 +663,7 @@ def _index_arr(a, args, keep=False):
         out = flat[k]
         if ix is COLON:
             return out.reshape(-1, 1)
-        ia = arr(ix)
-        if ia.dtype == bool:
-            # logical mask: column result unless the source is a row vector
-            return out.reshape(1, -1) if (a.shape[0] == 1 and a.shape[1] != 1) else out.reshape(-1, 1)
-        if min(ia.shape) != 1 or (a.shape[0] != 1 and a.shape[1] != 1):
-            return out.reshape(ia.shape, order="F")     # shape of the index
-        return out.reshape(1, -1) if a.shape[0] == 1 else out.reshape(-1, 1)   # orientation of the source vector
+        return out.reshape(_lin_result_shape(a.shape, arr(ix), k.size), order="F")
     if n == 2:
         r = _lin_index(args[0], a.shape[0])
         c = _lin_index(args[1], a.shape[1])
@@ -611,8 +684,101 @@ def index_brace(v, args):
     return sub.items[0]
 
 
+def _idx_info(ix, n):
+    """(0-based positions, extent, is_scalar) of one subscript along a dimension of length ``n``
+    (positions may lie beyond ``n``: growth)."""
+    if ix is COLON:
+        return np.arange(n), n, False
+    k = _lin_index(ix, n, grow=True)
+    ext = max(n, int(k.max()) + 1) if k.size else n
+    return k, ext, (not isinstance(ix, (bool, np.bool_)) and not (isinstance(ix, np.ndarray) and ix.dtype == bool)
+                    and arr(ix).size == 1)
+
+
+def _chop(shape):
+    """Octave's dim_vector::chop_all_singletons for a 2-D shape (padded back to two dimensions)."""
+    d = [x for x in shape if x != 1]
+    return tuple(d + [1] * (2 - len(d)))
+
+
+def _to_class_of(a, r, v_defined):
+    """Convert the right-hand side of an indexed assignment to the class of the array assigned into:
+    a logical array stays logical (non-zero -> true, NaN is an error); an undefined variable takes
+    the class of the right-hand side."""
+    if not v_defined:
+        return np.zeros((0, 0), r.dtype), r
+    if a.dtype == bool and r.dtype != bool:
+        if np.isnan(r).any():
+            raise MatlabError("logical: NaN can't be converted to logical value")
+        return a, r != 0
+    if a.dtype != bool and r.dtype == bool:
+        return a, r.astype(float)
+    return a, r
+
+
+def _delete(a, args):
+    """``a(args) = []`` (Octave's Array<T>::delete_elements, restricted to what MATLAB does alike)."""
+    if len(args) == 1:
+        ix = args[0]
+        n = a.size
+        if ix is COLON:
+            return np.zeros((0, 0), a.dtype)
+        k, ext, is_scalar = _idx_info(ix, n)
+        if k.size == 0:
+            return a
+        if ext != n:
+            raise MatlabError(f"A(I) = []: index out of bounds: value {ext} out of bound {n}")
+        keep = np.ones(n, bool)
+        keep[k] = False
+        out = a.ravel(order="F")[keep]
+        if a.shape[0] == 1 or a.shape[1] == 1:          # vector (or scalar): keeps its orientation
+            return out.reshape(-1, 1) if (a.shape[1] == 1 and a.shape[0] != 1) else out.reshape(1, -1)
+        if is_scalar:
+            return out.reshape(1, -1)                    # MATLAB and Octave: a row
+        # Octave gives a column or a row depending on how the index was built, MATLAB a row
+        raise Unsupported("deleting several elements of a matrix with a linear index")
+    if len(args) != 2:
+        raise Unsupported("arrays with more than two dimensions")
+    cols = [x is COLON for x in args]
+    if all(cols):
+        return np.zeros((0, a.shape[1]), a.dtype)
+    if any(cols):
+        d = 0 if not cols[0] else 1
+        n = a.shape[d]
+        k, ext, _ = _idx_info(args[d], n)
+        if k.size == 0:
+            return a
+        if ext != n:
+            raise MatlabError(f"A(..,I,..) = []: index out of bounds: value {ext} out of bound {n}")
+        keep = np.ones(n, bool)
+        keep[k] = False
+        return a[keep, :] if d == 0 else a[:, keep]
+    info = [_idx_info(x, a.shape[d]) for d, x in enumerate(args)]
+    if any(k.size == 0 for k, _, _ in info):
+        return a                                          # an empty slice: nothing to delete
+    if any(np.array_equal(np.unique(k), np.arange(a.shape[d])) for d, (k, _, _) in enumerate(info)):
+        # MATLAB treats a subscript covering its whole dimension like ':'; Octave 8 raises an error
+        raise Unsupported("null assignment with a subscript that covers a whole dimension (MATLAB and Octave differ)")
+    raise MatlabError("a null assignment can only have one non-colon index")
+
+
 def assign_index(v, args, rhs):
-    """``v(args) = rhs``; ``v`` may be ``None`` (undefined).  Returns the new value."""
+    """``v(args) = rhs``; ``v`` may be ``None`` (undefined).  Returns the new value.  Follows Octave's
+    Array<T>::assign (growth, the shape rules of an empty array, deletion with ``[]``)."""
+    if type(v) is np.ndarray and v.dtype == float and type(rhs) is np.float64:
+        # fast path: x(k) = s or x(i, j) = s inside the array (loops of steady-state files)
+        if len(args) == 1 and type(args[0]) is np.float64:
+            k = args[0]
+            if k == int(k) and 1 <= k <= v.size:
+                a = v.copy()
+                a.reshape(-1, order="F")[int(k) - 1] = rhs
+                return ret(a)
+        elif len(args) == 2 and type(args[0]) is np.float64 and type(args[1]) is np.float64:
+            i, j = args
+            if i == int(i) and j == int(j) and 1 <= i <= v.shape[0] and 1 <= j <= v.shape[1]:
+                a = v.copy()
+                a[int(i) - 1, int(j) - 1] = rhs
+                return ret(a)
     if isinstance(v, Tainted):
         arr(v)
     if isinstance(v, Cell) or isinstance(rhs, Cell):
@@ -623,73 +789,78 @@ def assign_index(v, args, rhs):
         raise Unsupported("indexed assignment with char arrays, structs or handles")
     a = np.zeros((0, 0)) if v is None else arr(v)
     r = arr(rhs)
-    deleting = r.size == 0 and isinstance(rhs, np.ndarray)
-    if a.dtype == bool and r.dtype != bool:
-        a = a.astype(float)
-    elif a.dtype != bool and r.dtype == bool:
-        r = r.astype(float)
     n = len(args)
-    if n == 1:
-        k = _lin_index(args[0], a.size, grow=True)
-        if deleting:
-            if min(a.shape) > 1 and args[0] is not COLON:
-                raise Unsupported("deleting elements of a matrix with a linear index")
-            keep = np.ones(a.size, bool)
-            keep[k] = False
-            out = a.ravel(order="F")[keep]
-            return ret(out.reshape(1, -1) if a.shape[0] == 1 else out.reshape(-1, 1))
-        need = int(k.max()) + 1 if k.size else 0
-        if need > a.size:
-            if a.size == 0:
-                a = np.zeros((1, need), a.dtype)
-            elif a.shape[0] == 1:
-                a = np.concatenate([a, np.zeros((1, need - a.shape[1]), a.dtype)], axis=1)
-            elif a.shape[1] == 1:
-                a = np.concatenate([a, np.zeros((need - a.shape[0], 1), a.dtype)], axis=0)
-            else:
-                raise MatlabError("a matrix cannot be resized with a linear index")
+    if n > 2:
+        if all(type(x) in _SCALT and x == 1 for x in args[2:]):
+            args, n = args[:2], 2
         else:
-            a = a.copy()
-        if r.size != 1 and r.size != k.size:
-            raise MatlabError(f"A(I) = X: X must have the same size as I ({k.size} element(s) on the left, {r.size} on the right)")
-        flat = a.reshape(-1, order="F")
-        flat[k] = r.ravel(order="F") if r.size != 1 else r.flat[0]
-        return ret(flat.reshape(a.shape, order="F"))
-    if n == 2:
-        ri = _lin_index(args[0], a.shape[0], grow=True) if args[0] is not COLON else None
-        ci = _lin_index(args[1], a.shape[1], grow=True) if args[1] is not COLON else None
-        if deleting:
-            if ri is None and ci is not None:
-                keep = np.ones(a.shape[1], bool)
-                keep[ci] = False
-                return ret(a[:, keep])
-            if ci is None and ri is not None:
-                keep = np.ones(a.shape[0], bool)
-                keep[ri] = False
-                return ret(a[keep, :])
-            raise MatlabError("a null assignment can only have one non-colon index")
-        if ri is None:
-            ri = np.arange(a.shape[0] if a.size or ci is None else r.shape[0])
-        if ci is None:
-            ci = np.arange(a.shape[1] if a.size else r.shape[1])
-        nr = max(a.shape[0], int(ri.max()) + 1 if ri.size else 0)
-        nc = max(a.shape[1], int(ci.max()) + 1 if ci.size else 0)
-        if (nr, nc) != a.shape:
-            b = np.zeros((nr, nc), a.dtype)
-            b[:a.shape[0], :a.shape[1]] = a
+            raise Unsupported("arrays with more than two dimensions")
+    if isinstance(rhs, np.ndarray) and r.shape == (0, 0):         # A(I) = []: deletion
+        return ret(_delete(a, args))
+    a, r = _to_class_of(a, r, v is not None)
+    if n == 1:
+        ix = args[0]
+        na = a.size
+        k, nx, _ = _idx_info(ix, na)
+        if r.size != 1 and k.size != r.size:
+            raise MatlabError(f"=: nonconformant arguments (op1 is 1x{k.size}, op2 is {r.shape[0]}x{r.shape[1]})")
+        if nx != na:
+            if a.shape[0] in (0, 1):
+                shape = (1, nx)
+            elif a.shape[1] == 1:
+                shape = (nx, 1)
+            else:
+                raise MatlabError("A(I) = X: resizing a matrix with a linear index is ambiguous")
+            if nx > MAX_ELEMENTS:
+                raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+            b = np.zeros(shape, a.dtype)
+            b.reshape(-1, order="F")[:na] = a.reshape(-1, order="F")
             a = b
         else:
             a = a.copy()
-        if r.size == 1:
-            a[np.ix_(ri, ci)] = r.flat[0]
-        elif r.shape == (ri.size, ci.size):
-            a[np.ix_(ri, ci)] = r
-        elif r.size == ri.size * ci.size and (min(r.shape) == 1 and (ri.size == 1 or ci.size == 1)):
-            a[np.ix_(ri, ci)] = r.reshape(ri.size, ci.size, order="F")
+        flat = a.reshape(-1, order="F")
+        flat[k] = r.ravel(order="F") if r.size != 1 else r.flat[0]
+        return ret(flat.reshape(a.shape, order="F"))
+    (i, iext, isc), (j, jext, jsc) = _idx_info(args[0], a.shape[0]), _idx_info(args[1], a.shape[1])
+    icol, jcol = args[0] is COLON, args[1] is COLON
+    if a.shape == (0, 0):
+        # Octave's zero_dims_inquire: only a 0x0 array takes the extent of a ':' from the right-hand side
+        if icol and jcol:
+            rdv = r.shape
+        elif not isc and not jsc:
+            rdv = (r.shape[0] if icol else iext, r.shape[1] if jcol else jext)
         else:
-            raise MatlabError(f"A(I,J) = X: dimensions mismatch ({ri.size}x{ci.size} on the left, {r.shape[0]}x{r.shape[1]} on the right)")
-        return ret(a)
-    raise Unsupported("arrays with more than two dimensions")
+            rh0, kk = _chop(r.shape), 0
+            d0 = iext
+            if icol:
+                d0, kk = rh0[kk], kk + 1
+            elif not isc:
+                kk += 1
+            d1 = jext
+            if jcol:
+                d1 = rh0[kk]
+            rdv = (d0, d1)
+        if icol:
+            i = np.arange(rdv[0])
+        if jcol:
+            j = np.arange(rdv[1])
+    else:
+        rdv = (iext, jext)
+    il, jl = i.size, j.size
+    rh = _chop(r.shape)
+    if not (r.size == 1 or (il == rh[0] and jl == rh[1]) or (il == 1 and jl == rh[0] and rh[1] == 1)):
+        raise MatlabError(f"=: nonconformant arguments (op1 is {il}x{jl}, op2 is {r.shape[0]}x{r.shape[1]})")
+    if tuple(rdv) != a.shape:
+        if rdv[0] * rdv[1] > MAX_ELEMENTS:
+            raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+        b = np.zeros(rdv, a.dtype)
+        b[:a.shape[0], :a.shape[1]] = a
+        a = b
+    else:
+        a = a.copy()
+    if il and jl:
+        a[np.ix_(i, j)] = r.flat[0] if r.size == 1 else r.reshape(il, jl, order="F")
+    return ret(a)
 
 
 def assign_brace(v, args, rhs):
@@ -1920,10 +2091,16 @@ _minmax("min", np.min, np.argmin, np.fmin)
 def _anyall(name, fn):
     def f(I, a, nout):
         _nargs(a, 1, 2, name)
-        x = _logical(a[0])
+        x = arr(a[0])
+        ax = _dim_arg(x, a, 1)
+        if x.dtype != bool:                 # NaN is ignored: neither true for any nor false for all
+            nan = np.isnan(x)
+            if name == "all" and ax == 1 and x.shape[0] > 1 and nan.any():
+                # Octave 8 counts NaN as false along rows of a matrix (and as true everywhere else)
+                raise Unsupported("all(X, 2) of a matrix containing NaN (MATLAB and Octave differ)")
+            x = (x != 0) & ~nan if name == "any" else (x != 0)
         if x.size == 0 and x.shape == (0, 0):
             return np.bool_(name == "all")
-        ax = _dim_arg(x, a, 1)
         return ret(x) if ax is None else ret(fn(x, axis=ax, keepdims=True))
     BUILTINS[name] = f
 
@@ -1934,15 +2111,30 @@ _anyall("all", np.all)
 
 @bi("find")
 def _find(I, a, nout):
-    _nargs(a, 1, 2, "find")
+    _nargs(a, 1, 3, "find")
     if nout > 1:
         raise Unsupported("find with several outputs")
     x = arr(a[0])
+    if x.dtype != bool and np.isnan(x).any():
+        x = np.where(np.isnan(x), 1.0, x)               # NaN is non-zero
     k = np.flatnonzero(x.ravel(order="F") != 0) + 1.0
-    if len(a) == 2:
-        k = k[:as_index_int(a[1])]
-    return ret(k.reshape(1, -1) if (x.shape[0] == 1 and x.shape[1] != 1) else k.reshape(-1, 1)) if k.size else \
-        (np.zeros((1, 0)) if (x.shape[0] == 1 and x.shape[1] != 1) else np.zeros((0, 1)))
+    if len(a) >= 2:
+        n = as_index_int(a[1], "find: N")
+        if n < 0:
+            raise MatlabError("find: N must be a non-negative integer")
+        last = False
+        if len(a) == 3:
+            d = _str(a[2], "find").lower()
+            if d not in ("first", "last"):
+                raise MatlabError('find: DIRECTION must be "first" or "last"')
+            last = d == "last"
+        k = k[max(k.size - n, 0):] if last else k[:n]
+    row = x.shape[0] == 1 and x.shape[1] != 1
+    if k.size:
+        return ret(k.reshape(1, -1) if row else k.reshape(-1, 1))
+    if x.shape == (0, 0) or x.shape == (1, 1):
+        return np.zeros((0, 0))
+    return np.zeros((1, 0)) if row else np.zeros((0, 1))
 
 
 @bi("sort")
@@ -1967,9 +2159,18 @@ def _sort(I, a, nout):
 def _unique(I, a, nout):
     if nout > 1 or len(a) != 1 or not is_num(a[0]):
         raise Unsupported("unique with several outputs or non-numeric input")
-    x = farr(a[0])
-    u = np.unique(x.ravel())
-    return ret(u.reshape(1, -1) if x.shape[0] == 1 else u.reshape(-1, 1))
+    x = arr(a[0])
+    if x.size == 0:
+        if x.shape == (0, 0):
+            return np.zeros((0, 0), x.dtype)
+        raise Unsupported("unique of an empty array that is not 0x0 (MATLAB and Octave differ on its shape)")
+    if x.size == 1:
+        return ret(x)
+    f = np.sort(x.ravel(order="F"), kind="stable")       # NaN sorts last; every NaN is kept (NaN ~= NaN)
+    keep = np.ones(f.size, bool)
+    keep[1:] = f[1:] != f[:-1]
+    u = f[keep]
+    return ret(u.reshape(1, -1) if (x.shape[0] == 1) else u.reshape(-1, 1))
 
 
 @bi("fliplr")
@@ -2279,13 +2480,78 @@ BUILTINS["strcmp"] = _strcmp(lambda p, q, n: p == q)
 BUILTINS["strcmpi"] = _strcmp(lambda p, q, n: p.lower() == q.lower())
 BUILTINS["strncmp"] = _strcmp(lambda p, q, n: len(p) >= n and len(q) >= n and p[:n] == q[:n])
 BUILTINS["strncmpi"] = _strcmp(lambda p, q, n: len(p) >= n and len(q) >= n and p[:n].lower() == q[:n].lower())
-BUILTINS["upper"] = BUILTINS["toupper"] = lambda I, a, nout: _str(a[0], "upper").upper()
-BUILTINS["lower"] = BUILTINS["tolower"] = lambda I, a, nout: _str(a[0], "lower").lower()
+def _cellwise(name, fn):
+    """A string function applied to a char array or to each element of a cell array of strings."""
+    def f(I, a, nout):
+        _nargs(a, 1, 1, name)
+        x = a[0]
+        if isinstance(x, Cell):
+            return Cell([fn(_str(c, name)) if isinstance(c, str) else _unsup(f"{name} of a cell element that is not a string")
+                         for c in x.items], x.shape)
+        if not isinstance(x, str):
+            raise Unsupported(f"{name} of a non-char value")
+        return fn(x)
+    BUILTINS[name] = f
+    return f
+
+
+BUILTINS["toupper"] = _cellwise("upper", str.upper)
+BUILTINS["tolower"] = _cellwise("lower", str.lower)
 BUILTINS["strtrim"] = lambda I, a, nout: _str(a[0], "strtrim").strip(" \t\n\v\f\r\0")
 BUILTINS["deblank"] = lambda I, a, nout: _str(a[0], "deblank").rstrip(" \t\n\v\f\r\0")
-BUILTINS["strrep"] = lambda I, a, nout: _str(a[0], "strrep").replace(_str(a[1], "strrep"), _str(a[2], "strrep")) if a[1] != "" else a[0]
+def _strrep1(s, p, r):
+    """Every (overlapping) match of p is replaced, as in MATLAB and Octave: strrep('aaa', 'aa', 'b') is 'bb'."""
+    if not p:
+        return s
+    out, k = [], 0
+    for j in range(len(s) - len(p) + 1):
+        if s.startswith(p, j):
+            if j >= k:
+                out.append(s[k:j])
+            out.append(r)
+            k = j + len(p)
+    out.append(s[k:])
+    return "".join(out)
+
+
+@bi("strrep")
+def _strrep(I, a, nout):
+    _nargs(a, 3, 3, "strrep")
+    p, r = _str(a[1], "strrep"), _str(a[2], "strrep")
+    if isinstance(a[0], Cell):
+        return Cell([_strrep1(_str(c, "strrep"), p, r) for c in a[0].items], a[0].shape)
+    return _strrep1(_str(a[0], "strrep"), p, r)
 BUILTINS["blanks"] = lambda I, a, nout: " " * as_index_int(a[0])
-BUILTINS["strcat"] = lambda I, a, nout: "".join(_str(x, "strcat").rstrip(" \t\n\v\f\r") for x in a)
+@bi("strcat")
+def _strcat(I, a, nout):
+    """strcat: char arguments lose their trailing white space (MATLAB documents space, tab, vertical tab,
+    newline, carriage return and form feed; Octave strips only some of them), cell arguments do not;
+    with a cell argument the result is a cell."""
+    for x in a:
+        if not isinstance(x, (str, Cell)) and not (isinstance(x, np.ndarray) and x.size == 0):
+            raise Unsupported("strcat with a numeric argument")
+    parts = [x.rstrip(" \t\n\v\f\r") if isinstance(x, str) else ("" if isinstance(x, np.ndarray) else x) for x in a]
+    cells = [x for x in parts if isinstance(x, Cell)]
+    if not cells:
+        return "".join(parts)
+    shape = None
+    for c in cells:
+        if c.shape != (1, 1):
+            if shape is not None and c.shape != shape:
+                raise MatlabError("strcat: arguments must be the same size, or be scalars")
+            shape = c.shape
+    shape = shape or (1, 1)
+    n = shape[0] * shape[1]
+    out = []
+    for i in range(n):
+        piece = []
+        for x in parts:
+            v = x if isinstance(x, str) else x.items[0 if x.shape == (1, 1) else i]
+            if not isinstance(v, str):
+                raise Unsupported("strcat of a cell element that is not a string")
+            piece.append(v)
+        out.append("".join(piece))
+    return Cell(out, shape)
 BUILTINS["int2str"] = lambda I, a, nout: _num2str(_mround(scalar(a[0], "int2str argument")))
 BUILTINS["str2double"] = lambda I, a, nout: _str2double(a[0])
 BUILTINS["filesep"] = lambda I, a, nout: "/"
@@ -2317,8 +2583,19 @@ def _num2str(x, fmt=None):
     x = float(x)
     if fmt is not None:
         if isinstance(fmt, str):
-            return _sprintf(fmt, [_F(x)])
-        return _cfmt("%" + f".{as_index_int(fmt)}g", x)
+            # Octave's num2str.m: one conversion -> deblank(fmt) + "\n"; split into lines; strtrim
+            f = re.sub(r"\\(.)", lambda m: _ESC.get(m.group(1), m.group(0)), fmt)
+            nconv = len(re.findall(r"%", f.replace("%%", "")))
+            if not (nconv > 1 or f in ("%s", "%c")):
+                f = f.rstrip(" \t\n\v\f\r\0") + "\n"
+            lines = [t for t in _sprintf(f.replace("\\", "\\\\"), [_F(x)]).split("\n") if t]
+            if len(lines) > 1:
+                raise Unsupported("num2str producing a char matrix")
+            return lines[0].strip(" \t\n\v\f\r\0") if lines else ""
+        p = as_index_int(fmt)
+        if p < 0:
+            raise MatlabError("num2str: PRECISION must be a scalar integer >= 0")
+        return _cfmt(f"%{p + 7}.{p}g", x).strip()
     if x != x:
         return "NaN"
     if math.isinf(x):
@@ -2331,81 +2608,157 @@ def _num2str(x, fmt=None):
 
 
 def _cfmt(spec, x):
-    """C-style formatting of one number with MATLAB's spelling of Inf/NaN."""
-    conv = spec[-1]
+    """C-style formatting of one number with MATLAB's spelling of Inf/NaN (``spec`` is a complete
+    conversion such as ``%8.3f``)."""
+    m = re.fullmatch(r"%([-+ 0#]*)(\d*)(?:\.(\d*))?([diouxXfeEgGcs])", spec)
+    if m is None:
+        raise Unsupported(f"format {spec!r}")
+    prec = None if m.group(3) is None else int(m.group(3) or 0)
+    return _fmt_num(m.group(1), int(m.group(2) or 0), prec, m.group(4), float(x))
+
+
+def _pad(body, flags, width, zero_ok, lead=""):
+    """Pad ``lead + body`` to ``width`` as C does (``-`` left-justifies, ``0`` pads with zeros after the sign)."""
+    if len(lead) + len(body) >= width:
+        return lead + body
+    if "-" in flags:
+        return (lead + body).ljust(width)
+    if "0" in flags and zero_ok:
+        return lead + body.rjust(width - len(lead), "0")
+    return (lead + body).rjust(width)
+
+
+def _fmt_num(flags, width, prec, conv, x):
+    """One numeric value under a C conversion, with the C semantics Python's % lacks (precision of
+    integer conversions, the alternate form of %o, Inf/NaN) and MATLAB's rules for values that do
+    not fit the conversion."""
     if x != x or math.isinf(x):
-        s = "NaN" if x != x else ("Inf" if x > 0 else "-Inf")
-        m = re.match(r"%([-+ 0#]*)(\d*)", spec)
-        w = int(m.group(2)) if m.group(2) else 0
-        return s.ljust(w) if "-" in m.group(1) else s.rjust(w)
-    if conv in "di":
+        body = "NaN" if x != x else ("Inf" if x > 0 else "-Inf")
+        if x > 0 and "+" in flags:
+            body = "+" + body
+        elif x > 0 and " " in flags:
+            body = " " + body
+        return _pad(body, flags, width, False)
+    if conv in "cs":
         if x != int(x):
-            return (spec[:-1] + "e") % x if "." in spec else (re.sub(r"\.\d+", "", spec[:-1]) + "e") % x
-        return (re.sub(r"\.\d+", "", spec[:-1]) + "d") % int(x)
-    if conv in "xXou":
-        if x != int(x) or x < 0:
-            return (spec[:-1] + "e") % x
-        return spec % int(x)
-    if conv == "c":
-        return (spec[:-1] + "s") % chr(int(x))
+            conv = "e"                      # MATLAB: a non-integer under a text conversion is printed with %e
+        elif 0 <= x < 256:
+            t = chr(int(x))
+            if prec is not None:
+                t = t[:prec]
+            return _pad(t, flags, width, False)
+        else:
+            raise Unsupported("sprintf: %c or %s of a number that is not a character code below 256 (MATLAB and Octave differ)")
+    if conv in "diouxX":
+        if x != int(x):
+            if conv in "di":
+                conv = "e"                  # MATLAB: a non-integer under %d is printed with %e
+            else:
+                raise Unsupported(f"sprintf: %{conv} of a non-integer (MATLAB and Octave differ)")
+        elif x < 0 and conv not in "di":
+            raise Unsupported(f"sprintf: %{conv} of a negative number (MATLAB and Octave differ)")
+    if conv in "diouxX":
+        n = int(x)
+        if conv in "di":
+            digits, lead = str(abs(n)), ("-" if n < 0 else ("+" if "+" in flags else (" " if " " in flags else "")))
+        else:
+            digits, lead = format(n, {"u": "d", "o": "o", "x": "x", "X": "X"}[conv]), ""
+        if prec is not None:
+            digits = "" if (prec == 0 and n == 0) else digits.rjust(prec, "0")
+        if "#" in flags:
+            if conv == "o" and not digits.startswith("0"):
+                digits = "0" + digits
+            elif conv in "xX" and n != 0:
+                lead = "0" + conv
+        return _pad(digits, flags, width, prec is None, lead)
+    spec = "%" + flags + (str(width) if width else "") + ("" if prec is None else f".{prec}") + conv
     return spec % x
 
 
-_FMT_RE = re.compile(r"%([-+ 0#]*)(\*|\d+)?(?:\.(\*|\d+))?([diouxXfeEgGcs%])")
+_FMT_RE = re.compile(r"%([-+ 0#]*)(\*|\d+)?(?:\.(\*|\d*))?([hlL]*)([diouxXfeEgGcs%])")
 _ESC = {"n": "\n", "t": "\t", "\\": "\\", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
+_EMPTY = object()
 
 
 def _sprintf(fmt, args):
+    """sprintf with MATLAB's (and Octave's) rules: the format is reused while data remain; output stops
+    at the first conversion that has no data left (the text before it is still printed); a char
+    argument is consumed whole by %s and one character at a time by the other conversions; an empty
+    argument is consumed by one conversion and prints nothing."""
     fmt = re.sub(r"\\(.)", lambda m: _ESC.get(m.group(1), m.group(0)), fmt)
-    flat = []
+    elements, pos = [], 0               # (literal text before the conversion, conversion or None)
+    for m in _FMT_RE.finditer(fmt):
+        if m.group(5) == "%":
+            continue
+        if m.group(2) == "*" or m.group(3) == "*":
+            raise Unsupported("sprintf with '*' field width")
+        if m.group(4) not in ("", "l", "h", "L"):
+            raise Unsupported(f"sprintf: length modifier {m.group(4)!r}")
+        elements.append((fmt[pos:m.start()], m))
+        pos = m.end()
+    elements.append((fmt[pos:], None))
+    elements = [(t.replace("%%", "%"), m) for t, m in elements]
+    items = []
     for v in args:
         if isinstance(v, str):
-            flat.append(v)
-        elif isinstance(v, (Cell, Struct, Handle)):
-            raise MatlabError("sprintf: wrong type of argument")
+            items.append(v if v else _EMPTY)
+        elif isinstance(v, (Cell, Struct, Handle)) or hasattr(v, "get_field"):
+            raise MatlabError("sprintf: wrong type argument")
         else:
-            flat.extend(_F(x) for x in arr(v).ravel(order="F"))
-    specs = list(_FMT_RE.finditer(fmt))
-    nconv = sum(1 for m in specs if m.group(4) != "%")
-    out, k, first = [], 0, True
-    while first or (k < len(flat) and nconv):
-        first = False
-        pos = 0
-        for m in specs:
-            out.append(fmt[pos:m.start()])
-            pos = m.end()
-            if m.group(4) == "%":
-                out.append("%")
+            a = arr(v)
+            items.append(a.ravel(order="F").astype(float) if a.size else _EMPTY)
+    only_s = len(elements) == 2 and elements[0][0] == "" and elements[1][0] == "" and \
+        elements[0][1].group(0) == "%s"
+    ai, ei = 0, 0
+
+    def take(conv):
+        nonlocal ai, ei
+        it = items[ai]
+        if it is _EMPTY:
+            ai += 1
+            return _EMPTY
+        if isinstance(it, str):
+            if conv == "s":
+                v = it[ei:]
+                ai, ei = ai + 1, 0
+                return v
+            v = it[ei]
+        else:
+            v = it[ei]
+            if conv == "s" and not only_s and it.size - ei > 1 and v == int(v) and 0 <= v < 256 \
+                    and it[ei + 1] == int(it[ei + 1]) and 0 <= it[ei + 1] < 256:
+                raise Unsupported("sprintf: %s of a numeric array (MATLAB formats one element per %s, Octave a run of characters)")
+        ei += 1
+        if ei >= len(it):
+            ai, ei = ai + 1, 0
+        return v
+
+    out = []
+    if all(m is None for _, m in elements):
+        return "".join(t for t, _ in elements)
+    while True:
+        for text, m in elements:
+            out.append(text)
+            if m is None:
                 continue
-            if m.group(2) == "*" or m.group(3) == "*":
-                raise Unsupported("sprintf with '*' field width")
-            if k >= len(flat):
-                if flat or k:
-                    pos = len(fmt) if k else pos
-                    if k:
-                        break
-                out.append("")
-                continue
-            v = flat[k]
-            k += 1
-            spec = "%" + m.group(1) + (m.group(2) or "") + ("." + m.group(3) if m.group(3) is not None else "") + m.group(4)
-            if isinstance(v, str):
-                if m.group(4) in "sc":
-                    out.append((spec[:-1] + "s") % v)
-                elif len(v) == 1:
-                    out.append(_cfmt(spec, float(ord(v))))
+            if ai >= len(items):
+                return "".join(out)
+            flags, width = m.group(1), int(m.group(2) or 0)
+            prec = None if m.group(3) is None else int(m.group(3) or 0)
+            conv = m.group(5)
+            v = take(conv)
+            if v is _EMPTY:
+                out.append(_pad("", flags, width, False) if conv in "sc" else "")
+            elif isinstance(v, str):
+                if conv in "sc":
+                    t = v if prec is None or conv == "c" else v[:prec]
+                    out.append(_pad(t, flags, width, False))
                 else:
-                    out.append(v)
-            elif m.group(4) == "s":
-                x = float(v)              # %s with a number: the character with that code if it is one
-                out.append((spec[:-1] + "s") % (chr(int(x)) if x == int(x) and 0 <= x < 0x110000 else _shortg(x)))
+                    out.append(_fmt_num(flags, width, prec, conv, float(ord(v))))
             else:
-                out.append(_cfmt(spec, float(v)))
-        else:
-            out.append(fmt[pos:])
-            continue
-        break
-    return "".join(out)
+                out.append(_fmt_num(flags, width, prec, conv, float(v)))
+        if ai >= len(items):
+            return "".join(out)
 
 
 def _shortg(x):
@@ -2455,9 +2808,39 @@ def _char(I, a, nout):
 
 @bi("strsplit")
 def _strsplit(I, a, nout):
+    if nout > 1:
+        raise Unsupported("strsplit with two outputs")
     s = _str(a[0], "strsplit")
-    d = _str(a[1], "strsplit") if len(a) > 1 else " "
-    return Cell(s.split(d))
+    rest = list(a[1:])
+    if rest and not isinstance(rest[0], (np.bool_, bool)) and not (isinstance(rest[0], np.ndarray) and rest[0].dtype == bool):
+        d = rest.pop(0)
+    else:
+        d = Cell([" ", "\f", "\n", "\r", "\t", "\v"])
+    collapse = True
+    if rest and (isinstance(rest[0], (np.bool_, bool)) or (isinstance(rest[0], np.ndarray) and rest[0].dtype == bool)):
+        collapse = truth(rest.pop(0))
+    if len(rest) % 2:
+        raise MatlabError("strsplit: invalid arguments")
+    for k, v in zip(rest[::2], rest[1::2]):
+        k = _str(k, "strsplit").lower()
+        if k == "collapsedelimiters":
+            collapse = truth(v)
+        elif k == "delimitertype" and isinstance(v, str) and "simple".startswith(v.lower()) and v:
+            pass
+        elif k == "delimitertype":
+            raise Unsupported("strsplit with regular-expression delimiters")
+        else:
+            raise MatlabError(f"strsplit: invalid parameter name, '{k}'")
+    dels = d.items if isinstance(d, Cell) else [d]
+    dels = [re.sub(r"\\(.)", lambda m: _ESC.get(m.group(1), m.group(0)), _str(x, "strsplit")) for x in dels]
+    if not s:
+        return Cell([s])
+    if not dels or any(x == "" for x in dels):
+        raise Unsupported("strsplit with an empty delimiter")
+    pat = "|".join(re.escape(x) for x in dels)
+    if collapse:
+        pat = f"(?:{pat})+"
+    return Cell(re.split(pat, s))
 
 
 @bi("strjoin")
@@ -2678,31 +3061,76 @@ def _isoctave(I, a, nout):
     return np.bool_(ISOCTAVE)
 
 
+_ERR_ID_RE = re.compile(r"[^%\s:][^%\s]*:[^%\s]*[^%\s:]")
+
+
+def _error_args(a, what="error"):
+    """(message, identifier) of error(...) arguments, as MATLAB and Octave read them: a first argument
+    without white space or '%' that contains ':' (not at either end) is an identifier when more
+    arguments follow; the message is formatted by sprintf only when there is more than one argument."""
+    if not a or not isinstance(a[0], str):
+        raise Unsupported(f"{what} with a non-char first argument")
+    ident = ""
+    if _ERR_ID_RE.fullmatch(a[0]):
+        if len(a) == 1:
+            raise Unsupported(f"{what} with only a message identifier (MATLAB and Octave give different messages)")
+        ident, a = a[0], a[1:]
+        if not isinstance(a[0], str):
+            raise Unsupported(f"{what} with a non-char message")
+        msg = _sprintf(a[0], a[1:])
+    elif len(a) == 1:
+        msg = a[0]
+    else:
+        msg = _sprintf(a[0], a[1:])
+    return msg, ident
+
+
 @bi("error")
 def _error(I, a, nout):
     if not a:
-        raise MatlabError("error")
+        raise MatlabError("Invalid call to error")
     if isinstance(a[0], Struct):
-        raise MatlabError(str(a[0].get("message", "error")))
-    fmt = a[0] if isinstance(a[0], str) else "error"
-    rest = a[1:]
-    if rest and re.fullmatch(r"[A-Za-z]\w*(:[\w-]+)+", fmt) and isinstance(rest[0], str):
-        fmt, rest = rest[0], rest[1:]
-    try:
-        msg = _sprintf(fmt, rest) if (rest or "%" in fmt or "\\" in fmt) else fmt
-    except Exception:  # noqa: BLE001 - the message is informative only
-        msg = fmt
-    raise MatlabError(msg)
+        e = a[0]
+        msg, ident = e.get("message", ""), e.get("identifier", "")
+        if not isinstance(msg, str) or not isinstance(ident, str):
+            raise Unsupported("error(struct) with non-char fields")
+        if msg == "":
+            return []                       # MATLAB and Octave: an empty message raises nothing
+        raise MatlabError(msg, ident)
+    msg, ident = _error_args(a)
+    if msg.endswith("\n") and len(a) > 1:
+        msg = msg[:-1]                      # a trailing newline is not part of the message
+    raise MatlabError(msg, ident)
+
+
+@bi("rethrow")
+def _rethrow(I, a, nout):
+    _nargs(a, 1, 1, "rethrow")
+    e = a[0]
+    if not isinstance(e, Struct) or not isinstance(e.get("message"), str) or not isinstance(e.get("identifier", ""), str):
+        raise Unsupported("rethrow of a value that is not an error structure")
+    raise MatlabError(e["message"], e.get("identifier", ""))
 
 
 @bi("assert")
 def _assert(I, a, nout):
     if not a:
-        raise MatlabError("assert: argument missing")
-    if len(a) >= 2 and not isinstance(a[1], str):
-        raise Unsupported("assert(observed, expected, tol) form")
-    if not truth(a[0]):
-        raise MatlabError("assertion failed" + (": " + a[1] if len(a) > 1 else ""))
+        raise MatlabError("Invalid call to assert")
+    cond = a[0]
+    if len(a) >= 2:
+        if not isinstance(a[1], str):
+            raise Unsupported("assert(observed, expected, tol) form")
+        if _class(cond) != "logical":
+            # Octave compares cond with the string (always an error); MATLAB tests cond
+            raise Unsupported("assert(cond, message) with a condition that is not logical (MATLAB and Octave differ)")
+    if isinstance(cond, (str, Cell, Struct, Handle)) or hasattr(cond, "get_field"):
+        raise Unsupported("assert of a non-numeric condition")
+    c = arr(cond)
+    if c.size == 0 or not bool(np.all(c != 0)):
+        if len(a) == 1:
+            raise MatlabError("assertion failed")
+        msg, ident = _error_args(a[1:], "assert")
+        raise MatlabError(msg, ident)
     return []
 
 
@@ -3120,6 +3548,11 @@ def walk(node):
             stack.extend(n)
 
 
+def _err_struct(exc):
+    """The value a ``catch err`` clause binds."""
+    return Struct(message=str(exc), identifier=getattr(exc, "identifier", ""), stack=Struct())
+
+
 class Interpreter:
     """Evaluates syntax trees.  ``host`` gives access to the model (``M_``, ``options_``, ``oo_``)."""
 
@@ -3350,7 +3783,13 @@ class Interpreter:
         if hasattr(v, "snapshot"):
             v = v.snapshot()
         args = self.index_args(v, n.args, sc)
-        return index_brace(v, args) if n.brace else index(v, args)
+        try:
+            return index_brace(v, args) if n.brace else index(v, args)
+        except PY_ERRORS as exc:
+            err = _matlab_error(exc, "index")
+            if err is None:
+                raise
+            raise err from exc
 
     def getfield(self, v, name):
         if hasattr(v, "get_field"):
@@ -3430,6 +3869,11 @@ class Interpreter:
             self.scope_stack.append(sc)
             try:
                 r = f(self, args, nargout)
+            except PY_ERRORS as exc:
+                err = _matlab_error(exc, name)
+                if err is None:
+                    raise
+                raise err from exc
             finally:
                 self.scope_stack.pop()
             return r if type(r) is list else [r]
@@ -3586,12 +4030,18 @@ class Interpreter:
         if t is Try:
             saved_scopes, saved_end, saved_depth = len(self.scope_stack), len(self.end_stack), self.depth
             try:
-                return self.exec_block(s.body, sc)
+                try:
+                    return self.exec_block(s.body, sc)
+                except PY_ERRORS as exc:          # e.g. an operator applied to values numpy rejects
+                    err = _matlab_error(exc, "error")
+                    if err is None:
+                        raise
+                    raise err from exc
             except MATLAB_ERRORS as exc:
                 del self.scope_stack[saved_scopes:], self.end_stack[saved_end:]
                 self.depth = saved_depth
                 if s.ident:
-                    self.setvar(sc, s.ident, Struct(message=str(exc), identifier="", stack=Struct()))
+                    self.setvar(sc, s.ident, _err_struct(exc))
                 return self.exec_block(s.handler, sc)
         if t is Break:
             raise _BreakSig
@@ -3723,7 +4173,13 @@ class Interpreter:
         cur = self.getvar(sc, e.name)
         if cur is _MISSING:
             cur = None
-        new = self._assign_chain(cur, chain, 0, value, sc)
+        try:
+            new = self._assign_chain(cur, chain, 0, value, sc)
+        except PY_ERRORS as exc:
+            err = _matlab_error(exc, "indexed assignment")
+            if err is None:
+                raise
+            raise err from exc
         self.setvar(sc, e.name, new)
 
     def _assign_chain(self, cur, chain, i, value, sc):
@@ -3785,6 +4241,11 @@ def run(text, variables=None, directory=None):
             I.exec_block(body, I.base)
         except _ReturnSig:
             pass
+        except PY_ERRORS as exc:
+            err = _matlab_error(exc, "error")
+            if err is None:
+                raise
+            raise err from exc
     return I.base.vars
 
 
@@ -4272,7 +4733,7 @@ class ModSession:
                         raise ParseError("function")
                     self._scan(body, info, seen)
                 except ParseError:
-                    info.calib = info.calib or f"eval of text that cannot be parsed"
+                    info.calib = info.calib or "eval of text that cannot be parsed"
                 continue
             if name == "load":
                 info.all = True
@@ -4502,6 +4963,10 @@ class ModSession:
                     raise self.error(f"MATLAB code in the .mod file cannot be interpreted at {self._where()}: {u}") from None
                 except MATLAB_ERRORS as exc:
                     raise self.error(f"MATLAB error in the .mod file at {self._where()}: {exc}") from None
+                except PY_ERRORS as exc:
+                    if _matlab_error(exc, "error") is None:
+                        raise
+                    raise self.error(f"MATLAB error in the .mod file at {self._where()}: {exc}") from None
                 except ArithmeticError as exc:
                     raise self.error(f"MATLAB code in the .mod file cannot be interpreted at {self._where()}: {exc}") from None
         self.model.matlab_skipped = [(t, k, w) for t, k, w, _ in self.skipped]
@@ -4628,7 +5093,13 @@ class ModSession:
             n0 = self.host.nwrites
             self.in_try += 1
             try:
-                return self.run_block(s.body)
+                try:
+                    return self.run_block(s.body)
+                except PY_ERRORS as exc:
+                    err = _matlab_error(exc, "error")
+                    if err is None:
+                        raise
+                    raise err from exc
             except _TryUnknown as tu:
                 self.in_try -= 1
                 if self.host.nwrites != n0:
@@ -4641,7 +5112,7 @@ class ModSession:
                 self.in_try -= 1
                 try:
                     if s.ident:
-                        sc.vars[s.ident] = Struct(message=str(exc), identifier="", stack=Struct())
+                        sc.vars[s.ident] = _err_struct(exc)
                     return self.run_block(s.handler)
                 finally:
                     self.in_try += 1

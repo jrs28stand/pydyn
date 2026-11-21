@@ -373,7 +373,6 @@ def test_mode_check_grid_rules():
 # ------------------------------------------------------------------ sampler options, chain files
 def test_jumping_covariance_tuning_and_chain_files(load, tmp_path):
     est = load("post_nk")
-    c = ref("post_nk_chains.mat")
     mode = est.mode()
     V = mode.inv_hessian
     np.testing.assert_array_equal(posterior.jumping_covariance(est, "hessian", V), V)

@@ -1,3 +1,9 @@
+# This file is part of pydyn.
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
+# GNU General Public License (file LICENSE) for details.
 """Load every Dynare example with pydyn and compare with saved Dynare results where they exist.
 
 Usage: python tools/sweep_examples.py <dir with one sub-folder per example group, containing the

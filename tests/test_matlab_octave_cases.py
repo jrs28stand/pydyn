@@ -1,0 +1,122 @@
+"""pydyn.matlab against Octave 8.4 on small MATLAB snippets (reference/matlab_octave_cases).
+
+matlab_extra_*: the 376 cases of JDyn's review of pydyn's interpreter; pydyn_extra_*: pydyn's own
+further cases (same format).  Each snippet sets ``r``; Octave's ``double(r)`` is stored (char results
+as character codes, failures as 'ERROR: ...').  pydyn must either give Octave's value (an Octave
+error must be a MatlabError) or refuse with Unsupported: never a different value, never a raw
+Python exception.
+"""
+from pathlib import Path
+
+import numpy as np
+import pytest
+from scipy.io import loadmat
+
+from pydyn import matlab as M
+
+DIR = Path(__file__).resolve().parent.parent / "reference" / "matlab_octave_cases"
+SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
+        "pydyn_extra": ("pydyn_extra_cases.txt", "pydyn_extra.mat")}
+
+
+def _load(name):
+    cases_file, mat_file = SETS[name]
+    cases = (DIR / cases_file).read_text().split("\n%%\n")
+    ref = loadmat(DIR / mat_file)["results"].ravel()
+    assert len(cases) == len(ref)
+    return cases, ref
+
+
+DATA = {name: _load(name) for name in SETS}
+PARAMS = [(name, k) for name in SETS for k in range(len(DATA[name][0]))]
+
+
+def _unwrap(w):
+    while isinstance(w, np.ndarray) and w.dtype == object and w.size == 1:
+        w = w.ravel()[0]
+    return w
+
+
+def _text(x):
+    if isinstance(x, str):
+        return x
+    if isinstance(x, np.ndarray) and x.dtype.kind in "US":
+        return "".join(x.ravel().tolist())
+    return None
+
+
+def _same(got, want):
+    """Octave's double(r) against pydyn's r (char results compared by character code)."""
+    gt = _text(got)
+    if gt is not None:              # char results: by character code (pydyn's '' does not say 0x0 or 1x0)
+        codes = [float(ord(c)) for c in gt]
+        return codes == np.asarray(want, float).ravel().tolist(), f"{gt!r} vs Octave {want!r}"
+    else:
+        g = np.asarray(got)
+        if g.dtype == object:
+            return False, f"pydyn returned {got!r}"
+        g = np.atleast_2d(g.astype(float))
+    w = np.atleast_2d(np.asarray(want, float))
+    if g.shape != w.shape and not (g.size == 1 and w.size == 1):
+        return False, f"shape {g.shape} vs Octave {w.shape}"
+    g, w = g.ravel(), w.ravel()
+    with np.errstate(invalid="ignore"):
+        ok = np.all((np.isnan(g) & np.isnan(w)) | (g == w) | (np.abs(g - w) <= 1e-12 + 1e-9 * np.abs(w)))
+    return bool(ok), f"{g[:8]} vs Octave {w[:8]}"
+
+
+@pytest.mark.parametrize("name,k", PARAMS, ids=[f"{n}-{k + 1}" for n, k in PARAMS])
+def test_against_octave(name, k):
+    cases, ref = DATA[name]
+    code, want = cases[k], _unwrap(ref[k])
+    wt = _text(want)
+    octave_error = wt is not None and wt.startswith("ERROR")
+    try:
+        got = M.run(code)["r"]
+    except M.Unsupported:
+        return                                   # a refusal is acceptable
+    except M.MatlabError as exc:
+        assert octave_error, f"pydyn raised a MATLAB error ({exc}); Octave gives {want!r}\n{code}"
+        return
+    assert not octave_error, f"Octave fails ({wt}); pydyn returned {got!r}\n{code}"
+    ok, why = _same(got, want)
+    assert ok, f"{why}\n{code}"
+
+
+def test_refusals_are_few():
+    """The cases are meant to be answered: refusals stay the exception (60 of 376 at the time of the
+    review, mostly functions pydyn does not provide)."""
+    refused = 0
+    for name, k in PARAMS:
+        try:
+            M.run(DATA[name][0][k])
+        except M.Unsupported:
+            refused += 1
+        except M.MatlabError:
+            pass
+    assert refused <= 70
+
+
+def test_refusal_is_not_caught_by_try():
+    """A refusal must not be taken for a MATLAB error by the user's try/catch."""
+    with pytest.raises(M.Unsupported):
+        M.run("r = 0; try, x = magic(3); catch, r = 1; end")
+    with pytest.raises(M.Unsupported):
+        M.run("r = 0; try, x = 2; x(1, 2) = []; catch, r = 1; end")
+
+
+def test_python_errors_become_matlab_errors():
+    """numpy's exceptions inside a built-in are MATLAB errors: try/catch catches them."""
+    out = M.run("r = 0; try, x = chol([1 2; 2 1]); catch err, r = 1; m = err.message; end")
+    assert out["r"] == 1 and "chol" in out["m"]
+    out = M.run("r = 0; try, x = 1:3; x(5) = []; catch err, r = 1; end")
+    assert out["r"] == 1
+    with pytest.raises(M.MatlabError):
+        M.run("x = [1 2; 3 4]; x(3, :) = [];")
+
+
+def test_error_identifier():
+    out = M.run("try, error('pkg:sub:id', 'value %d', 3); catch e, m = e.message; i = e.identifier; end")
+    assert out["m"] == "value 3" and out["i"] == "pkg:sub:id"
+    out = M.run("try, try, error('a:b', 'x'); catch e, rethrow(e); end; catch e2, i = e2.identifier; end")
+    assert out["i"] == "a:b"

@@ -120,7 +120,6 @@ def test_estimation_reports_options_it_does_not_act_on(tmp_path):
     for f in REF.glob("est_nk*"):
         if f.suffix in (".mod", ".m", ".csv"):
             shutil.copy(f, tmp_path)
-    text = (tmp_path / "est_nk.mod").read_text()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "est_nk.mod"))

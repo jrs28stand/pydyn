@@ -74,7 +74,7 @@ def _split_comparison(expr: str):
     toks = tokenize(expr)
     # recover character offsets by re-scanning
     idx = 0
-    for kind, val in toks:
+    for _kind, val in toks:
         idx = expr.index(val, pos)
         if val == "(":
             depth += 1

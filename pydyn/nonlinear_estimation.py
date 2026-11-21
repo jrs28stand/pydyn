@@ -48,7 +48,7 @@ from . import nonlinear_filters as nlf
 from .estimation import Estimation, EstimationError, _Rejected, _ispd, _pd_penalty
 from .korder import KOrderError, k_order
 from .perturbation import dr_ordering
-from .random_streams import make_stream
+from .octave_rng import make_stream
 from .steady import SteadyStateError, steady_state
 
 __all__ = ["NonlinearEstimation", "particle_options"]

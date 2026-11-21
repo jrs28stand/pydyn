@@ -14,7 +14,7 @@ steady state, and returns the steady state (original variables are enough; auxil
 filled in automatically) together with the possibly updated parameters.
 """
 import numpy as np
-from scipy.optimize import brentq, newton
+from scipy.optimize import newton
 
 from pydyn import SteadyStateError
 

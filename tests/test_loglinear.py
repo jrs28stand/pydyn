@@ -3,7 +3,6 @@
 The model has an endogenous auxiliary variable (a lag of two on capital: logged by Dynare) and
 auxiliary variables for leads and lags of exogenous variables (kept in levels by Dynare)."""
 import os
-import shutil
 import warnings
 from pathlib import Path
 

@@ -6,7 +6,6 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 import pydyn
 import pydyn.model as model_module
