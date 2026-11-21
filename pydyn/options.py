@@ -53,5 +53,6 @@ def refuse_occbin(model, what: str) -> None:
     if getattr(model, "occbin_constraints", None):
         raise NotImplementedError(
             f"{what} is linear and would ignore the model's occbin_constraints (it would use the reference "
-            "regime only). OccBin filtering and estimation are not implemented. To run the linear version "
-            "deliberately, set model.occbin_constraints = [] first.")
+            "regime only). Use pydyn.occbin_estimation.OccbinEstimation for estimation and "
+            "pydyn.occbin_filter.occbin_smoother for smoothing. To run the linear version deliberately, "
+            "set model.occbin_constraints = [] first.")

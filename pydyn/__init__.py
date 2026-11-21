@@ -9,6 +9,8 @@ from .korder import k_order
 from .perfect_foresight import (perfect_foresight, PerfectForesightError, PerfectForesightResult,
                                 unanticipated_shocks)
 from .occbin import Occbin, OccbinResult, OccbinError
+from . import occbin_filter
+from .occbin_estimation import OccbinEstimation
 
 __all__ = ["run_preprocessor", "Model", "ModelError", "steady_state", "first_order", "FirstOrderSolution",
-           "k_order", "simulate", "irf", "SteadyStateError", "perfect_foresight", "PerfectForesightError", "PerfectForesightResult", "unanticipated_shocks", "Occbin", "OccbinResult", "OccbinError"]
+           "k_order", "simulate", "irf", "SteadyStateError", "perfect_foresight", "PerfectForesightError", "PerfectForesightResult", "unanticipated_shocks", "Occbin", "OccbinResult", "OccbinError", "OccbinEstimation"]

@@ -28,7 +28,7 @@ preprocessor (C++) on a `.mod` file, reads the JSON it writes, and does the nume
 | Smoother and decompositions at the posterior mode/mean/median, ML mode, prior mean/mode or any parameter vector | done, validated at Dynare's own vectors |
 | Shock groups, `init2shocks`, real-time decomposition, squeeze; decomposition figures (bars, detail panels, year-on-year, flip, steady state) | done, validated incl. the plotted bars against Dynare's drawing calls |
 | Estimation at first order: Kalman likelihood (stationary, diffuse, missing data, univariate), Dynare's priors, posterior mode, Laplace approximation, random-walk Metropolis-Hastings | done, validated |
-| OccBin estimation (piecewise Kalman filter, inversion filter) | not started |
+| OccBin likelihood (piecewise Kalman filter, inversion filter), OccBin smoother and shock decomposition, estimation (`OccbinEstimation`: mode, Laplace, MH) | done, validated on Dynare's OccBin filter tests |
 
 ## Validation
 
@@ -183,8 +183,10 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 - Not handled: external
   functions inside the model block, deterministic exogenous variables, Ramsey/optimal policy,
   heterogeneous-agent models, measurement-error covariances, `steady_state()` of an expression.
-- Linear estimation and the smoother refuse models with `occbin_constraints`; OccBin filtering
-  and estimation are not implemented.
+- Linear estimation and the smoother refuse models with `occbin_constraints`; use
+  `pydyn.OccbinEstimation` and `pydyn.occbin_filter.occbin_smoother`. Not implemented for OccBin:
+  particle filters, the diffuse filter, OccBin forecasts; missing data in the OccBin filters is
+  not validated.
 - `shocks(surprise, overwrite)`: the preprocessor's JSON does not record `overwrite` for surprise
   blocks, so several surprise blocks are merged (with a warning).
 - OccBin regime matrices are evaluated at the exogenous steady state; Dynare uses zero. The two

@@ -64,6 +64,8 @@ class OccbinResult:
     error_flag: int = 0              # always 0: failures raise OccbinError
     periodic: list = field(default_factory=list)   # per shock period: True if a periodic solution was selected
     diagnostics: list = field(default_factory=list)  # per shock period: dict(max_err, violates, n_viol, selected), per iteration
+    ss: list = field(default_factory=list)           # per shock period: (T, R, C) of y_t - ys = T (y_{t-1} - ys) + R u_t + C
+                                                     # (Dynare's ss.T/R/C of occbin.solver; declaration order, R on all shocks)
 
 
 def _split_comparison(expr: str):
@@ -292,6 +294,10 @@ class Occbin:
         piecewise = np.zeros((n_periods, n))
         history, iters, periodic_flags, diag = [], [], [], []
         z = used = None
+        ss_out, rules_cur = [], []
+
+        def first_rule(rules):
+            return rules[0] if rules else (self.P, self.Q, np.zeros(n))
 
         for sp in range(S):
             changed, it, increased = True, 0, False
@@ -330,7 +336,8 @@ class Occbin:
                             bi = np.zeros_like(bi)
                         used = bi.copy()
                         hist[-1] = used
-                    z, _ = self.path(used, y0, shocks[sp], self.tmax(used))
+                    z, rules_cur = self.path(used, y0, shocks[sp], self.tmax(used))
+                    cur_trc = first_rule(rules_cur)
                     binding, relax, eb, er = self.check(z + self.ys)
                     L = bi.shape[0]
                     if np.isfinite(max_check) and max_check < L:
@@ -397,9 +404,12 @@ class Occbin:
                             chosen_periodic, selected = True, best + 1
                             if best < it - 1:
                                 used = bi.copy()
-                                z, _ = self.path(used, y0, shocks[sp], self.tmax(used))
+                                z, rules_cur = self.path(used, y0, shocks[sp], self.tmax(used))
+                                cur_trc = first_rule(rules_cur)
                 else:
                     changed = False
+                    rules_cur = rules_cur[1:]          # Dynare: SS = SS(2:end), rule of the next period
+                    cur_trc = first_rule(rules_cur)
                     z = np.vstack([z[1:], self.P @ z[-1]])
                     if z.shape[0] < bi.shape[0]:
                         z = np.vstack([z, self.P @ z[-1]])
@@ -424,6 +434,7 @@ class Occbin:
                                          "increase check_ahead_periods (error 312)", period=sp + 1)
             history.append([self.map_regime(used[:, j]) for j in range(k)])
             iters.append(it)
+            ss_out.append(cur_trc)
             periodic_flags.append(bool(changed and chosen_periodic))
             diag.append(dict(max_err=max_err[:it].copy(), violates=viol_exp[:it].copy(), n_viol=n_viol[:it].copy(),
                              selected=selected))
@@ -439,7 +450,7 @@ class Occbin:
             linear[t] = y
         return OccbinResult(piecewise=piecewise + self.ys, linear=linear + self.ys, shocks=shocks_in,
                             regime_history=history, ys=self.ys, iterations=iters, exo_pos=exo_idx,
-                            periodic=periodic_flags, diagnostics=diag)
+                            periodic=periodic_flags, diagnostics=diag, ss=ss_out)
 
     # option names of occbin_setup / occbin_solver (JSON keys) -> simulate() keywords
     _MOD_OPTIONS = {
