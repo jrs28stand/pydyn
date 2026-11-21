@@ -129,11 +129,16 @@ control flow around parameter assignments (`if`, `for`, `switch`, ...) behaves a
   `eval`/`exec`; file access is limited to reading `.m` and `.mat` files next to the `.mod` file.
 
 On 212 files from Dynare's own test suite that contain MATLAB code and that Dynare runs under
-Octave: 163 load with a calibration identical to Dynare's (one more to solver tolerance), 33 are refused with a clear error, 15
-are outside this package for unrelated reasons, none load with a different calibration
-(`tools/sweep_matlab.py`; the 163 are re-checked by `tests/test_matlab.py`). An independent
-adversarial review (617 mixed Dynare/MATLAB cases run in both systems) found eleven ways to get a
-different calibration without an error; each is fixed or refused and has a regression test.
+Octave: 180 load with a calibration identical to Dynare's (one more to solver tolerance), 31 are
+refused with a clear error, none load with a different calibration (`tools/sweep_matlab.py`; re-checked
+by `tests/test_matlab.py`). An independent adversarial review (617 mixed Dynare/MATLAB cases run in
+both systems) found eleven ways to get a different calibration without an error; each is fixed or
+refused and has a regression test. A further 650 small cases checked against Octave 8.4
+(`reference/matlab_octave_cases/`, shared with the Julia port JDyn) cover indexing, logical class,
+empty arrays, deletion, `sprintf`/`num2str`, `error`/`try` and string functions: every case matches
+Octave or is refused (`tests/test_matlab_octave_cases.py`). Python exceptions inside MATLAB code
+become MATLAB errors that `try/catch` sees; refusals are never caught. Model expressions
+(`steady_state_model`, generated code) run without access to Python's builtins.
 References are from Octave; MATLAB-only behaviour rests on documentation.
 
 Two consequences for models without any MATLAB code: `model.params` after loading includes the
@@ -150,6 +155,20 @@ example asks for it, the perfect-foresight path, and the welfare of the two Rams
 `rbc_irf_matching` loads and solves but has no reference; the expectation-errors example matches
 too; seven are outside the scope of this package: the six heterogeneous-agent examples and the PAC model. `nk_baseline`
 and `collard_2001_analytical_steady_state` use their MATLAB steady-state code directly.
+
+## Installation
+
+Python 3.11 or newer, numpy 2.0+, scipy 1.13+ (matplotlib 3.8+ optional, for figures):
+
+```sh
+pip install .                                  # or: pip install -e .
+korder/build.sh /path/to/dynare-7.2           # optional: orders 2-3 (Dynare's C++ library)
+export DYNARE_PREPROCESSOR=/path/to/dynare-preprocessor
+```
+
+The Dynare 7.2 preprocessor binary is required (pydyn reads its JSON output). The k-order library
+is looked up next to the installed package, at `$PYDYN_KORDER_LIB`, or in the source tree's
+`korder/`.
 
 ## The C++ k-order library
 

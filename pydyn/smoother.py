@@ -1,3 +1,9 @@
+# This file is part of pydyn.
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
+# GNU General Public License (file LICENSE) for details.
 """Kalman filter, Kalman smoother and historical shock decompositions: the counterpart of Dynare's
 ``calib_smoother``, the smoother run by ``estimation`` / ``evaluate_smoother`` at a parameter set
 (calibration, posterior mode / mean / median, ML mode, prior mean / mode, or any parameter vector),
@@ -1025,7 +1031,7 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     if not varobs:
         raise SmootherError("no observed variables: declare varobs or pass varobs=[...]")
     names = list(model.endo_names)
-    n, nx, pp = len(names), model.n_exo, len(varobs)
+    n, pp = len(names), len(varobs)
     try:
         mf = np.array([names.index(v) for v in varobs])
     except ValueError as exc:

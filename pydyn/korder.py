@@ -1,3 +1,9 @@
+# This file is part of pydyn.
+#
+# This program is free software: you can redistribute it and/or modify it under the terms of the
+# GNU General Public License as published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see the
+# GNU General Public License (file LICENSE) for details.
 """Higher-order perturbation through Dynare's own C++ k-order library (libkorder).
 
 The library is compiled as a plain shared library (see ``korder/build.sh``) and called with
@@ -13,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .perturbation import QZ_CRITERIUM, dr_ordering
+from .perturbation import dr_ordering
 from .steady import steady_state
 
 _NAMES = ["gy", "gu", "gyy", "gyu", "guu", "gss", "gyyy", "gyyu", "gyuu", "guuu", "gyss", "guss"]
@@ -35,6 +41,7 @@ def load_library(path: str | os.PathLike | None = None):
     if _lib is not None and path is None:
         return _lib
     cands = [path, os.environ.get("PYDYN_KORDER_LIB"),
+             Path(__file__).resolve().parent / "libpydyn_korder.so",
              Path(__file__).resolve().parent.parent / "korder" / "libpydyn_korder.so"]
     for c in cands:
         if c and Path(c).exists():
