@@ -45,6 +45,7 @@ from . import matlab as _ml
 from .matlab import (Cell, Interpreter, MatlabError, Struct, Tainted, Unsupported, arr, farr, ret, _F, _HOST_GLOBALS)
 from .model import Model, ModelError
 from .results_oo import CommandsMixin
+from .results_est import EstimationMixin
 
 __all__ = ["dynare", "Results", "ResultsError"]
 
@@ -646,7 +647,7 @@ class _Core(CommandsMixin):
             h = np.zeros((len(m.varobs), len(m.varobs)))
             for i, v in enumerate(m.varobs):
                 h[i, i] = m.measurement_errors.get(v, 0.0)
-            self.set_M("H", mat(h))
+            self.set_M("H", mat(h) if np.any(h != 0) else _F(0.0))      # Dynare: the scalar 0 without measurement errors
 
     def _push_all(self):
         self.push()
@@ -675,7 +676,8 @@ class _Core(CommandsMixin):
         m = self.model
         sts = m.statements
         if any(st["statementName"] in ("native", "verbatim") for st in sts):
-            lines = [st["string"] if st["statementName"] in ("native", "verbatim") else ("dyn", k)
+            lines = [st["string"].replace("occbin.unpack_simulations", "occbin_unpack_simulations")
+                     if st["statementName"] in ("native", "verbatim") else ("dyn", k)
                      for k, st in enumerate(sts)]
             try:
                 body, funcs = _ml.parse(lines)
@@ -716,6 +718,22 @@ class _Core(CommandsMixin):
             return f" (after the statement <{self.model.statements[k]['statementName']}> number {k + 1})"
         return ""
 
+    def _histval_to_M(self, st):
+        """M_.endo_histval / M_.exo_histval: one column per lag (Dynare: column maximum_lag + lag)."""
+        m = self.model
+        ml = max(int(m.info["maximum_lag"]), 1)
+        endo, exo = np.zeros((m.n_endo, ml)), np.zeros((m.n_exo, ml))
+        for (name, lag), v in m._stmt_values.get(id(st), {}).items():
+            col_ = ml + int(lag) - 1
+            if not 0 <= col_ < ml:
+                continue
+            if name in m._ie:
+                endo[m._ie[name], col_] = v
+            elif name in m._ix:
+                exo[m._ix[name], col_] = v
+        self.set_M("endo_histval", mat(endo))
+        self.set_M("exo_histval", mat(exo))
+
     def exec_dyn(self, k):
         """One Dynare statement of the file."""
         m = self.model
@@ -754,6 +772,8 @@ class _Core(CommandsMixin):
         if kind in ("initval", "endval", "load_params_and_steady_state", "homotopy") or \
                 (kind == "steady" and st.get("options", {}).get("homotopy_mode")):
             self.push_steady()
+        if kind == "histval" and "learnt_in" not in st:
+            self._histval_to_M(st)
         if kind == "param_init":
             self.vars[st["name"]] = _F(m.params[m._ip[st["name"]]])      # the driver also defines the variable
         if kind == "varobs":
@@ -853,10 +873,28 @@ class _FunctionsMixin:
             "perfect_foresight_solver": self.fn_command("perfect_foresight_solver"),
             "occbin_solver": self.fn_command("occbin_solver"),
             "isfield": self.fn_isfield,
+            "occbin_unpack_simulations": self.fn_unpack_simulations,
+            "resol": self.fn_resol,
         }
 
     def fn_command(self, kind):
         def run(args, nargout):
+            if args and isinstance(args[0], Struct):
+                # oo_ = perfect_foresight_solver(M_, options_, oo_): the structs are values; the globals are untouched
+                if len(args) < 3 or not all(isinstance(a, Struct) for a in args[:3]):
+                    raise Unsupported(f"{kind}(M_, options_, oo_) needs the three structs")
+                saved = {k: self.I.globals[k] for k in _HOST_GLOBALS}
+                for k, v in zip(("M_", "options_", "oo_"), args[:3]):
+                    self.set_global(k, v)
+                try:
+                    self.run_command({"statementName": kind, "options": {}})
+                    out = self.oo_
+                finally:
+                    for k, v in saved.items():
+                        self.I.globals[k] = v
+                if nargout > 1:
+                    raise Unsupported(f"{kind}: the second output (ts) is not available")
+                return [out]
             self.run_command({"statementName": kind, "options": {}})
             return []
         return run
@@ -967,7 +1005,7 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

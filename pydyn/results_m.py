@@ -19,10 +19,12 @@ from .results import cellstr, col, empty, mat, row
 #: fields of Dynare's M_ that pydyn does not fill: reading one is refused (it is not "non-existent")
 KNOWN_UNSUPPORTED = {
     "bvar", "xref1", "xref2", "osr", "instr_id", "endo_partitions", "param_partitions", "heterogeneity_aggregates",
-    "database", "surprise_shocks", "learnt_shocks", "learnt_endval", "shock_paths", "heteroskedastic_shocks",
+    "database", "histval_dseries", "surprise_shocks", "learnt_shocks", "learnt_endval", "shock_paths", "heteroskedastic_shocks",
     "matched_irfs", "matched_irfs_weights", "perfect_foresight_controlled_paths", "ramsey_orig_eq_nbr",
     "ramsey_orig_endo_nbr", "epilogue_names", "epilogue_var_list_", "mapping", "block_structure", "endo_trends",
-    "dynamic_g1_sparse_rowval", "dynamic_g1_sparse_colval", "dynamic_g1_sparse_colptr", "dynamic_g2_sparse_indices", "dynamic_g3_sparse_indices",
+    "dynamic_g1_sparse_rowval", "dynamic_g1_sparse_colval", "dynamic_g1_sparse_colptr", "dynamic_g2_sparse_indices", "dynamic_g3_sparse_indices", "ramsey_multipliers_static_g1_sparse_rowval",
+    "ramsey_multipliers_static_g1_sparse_colval", "ramsey_multipliers_static_g1_sparse_colptr", "objective_tmp_nbr",
+    "objective_g1_sparse_rowval", "objective_g1_sparse_colval", "objective_g1_sparse_colptr", "objective_g2_sparse_indices",
     "dynamic_tmp_nbr", "lhs", "dynamic_mcp_equations_reordering", "static_tmp_nbr", "block_structure_stat",
     "static_g1_sparse_rowval", "static_g1_sparse_colval", "static_g1_sparse_colptr", "static_mcp_equations_reordering",
     "csn", "det_shocks", "exo_det_histval", "static_and_dynamic_models_differ", "has_external_function",
@@ -70,9 +72,9 @@ def build_M(model, mod_name: str) -> Struct:
     if model.max_deriv_order >= 2:         # the preprocessor output has the Hessian (Dynare sets the field then)
         hess = model._meta.get("dynamic_hess")
         rows = np.unique(np.asarray(hess[0], int)) + 1 if hess is not None else np.zeros(0, int)
-        M["nonzero_hessian_eqs"] = mat(rows.astype(float).reshape(1, -1))
+        M["nonzero_hessian_eqs"] = mat(rows.astype(float).reshape(1, -1)) if rows.size else mat(np.zeros((0, 0)))
         M["hessian_eq_zero"] = np.bool_(rows.size == 0)
-    M["set_auxiliary_variables"] = np.bool_(bool(raw.get("aux_vars")))
+    M["set_auxiliary_variables"] = np.bool_(any(a.get("type") != 6 for a in raw.get("aux_vars", [])))   # no file for Ramsey multipliers
     for k in ("orig_maximum_endo_lag", "orig_maximum_endo_lead", "orig_maximum_exo_lag", "orig_maximum_exo_lead",
               "orig_maximum_exo_det_lag", "orig_maximum_exo_det_lead", "orig_maximum_lag", "orig_maximum_lead",
               "orig_maximum_lag_with_diffs_expanded"):

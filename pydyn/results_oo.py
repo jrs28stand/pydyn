@@ -263,7 +263,11 @@ class CommandsMixin:
         D = R.rstruct("oo_.dr")
         D["inv_order_var"] = R.row(inv + 1)
         D["order_var"] = R.col(order_var + 1)
-        D["ys"] = R.col(dr["ys"])
+        ys_dr = np.asarray(dr["ys"], float)
+        loglin = self.opt_flag("loglinear")
+        if loglin:                  # dr1.m: ys stays in levels and gx, Gy are the derivatives before the log transformation
+            ys_dr = np.asarray(farr(self.oo_["steady_state"]), float).ravel(order="F")
+        D["ys"] = R.col(ys_dr)
         D["ghx"] = R.mat(ghx)
         D["ghu"] = R.mat(np.asarray(dr["ghu"], float))
         if order < 3:                       # Dynare's third-order dr (k_order_perturbation) has none of these
@@ -272,8 +276,13 @@ class CommandsMixin:
             sdim = int(np.sum(np.abs(eig) < qz))
             D["sdim"] = _F(sdim)
             D["edim"] = _F(len(eig) - sdim)
-            D["gx"] = R.mat(ghx[nst + cnt["npred"]:, :])
-            D["Gy"] = R.mat(ghx[nst:nst + nsp, :])
+            gx, Gy = ghx[nst + cnt["npred"]:, :], ghx[nst:nst + nsp, :]
+            if loglin:
+                yo = ys_dr[order_var]
+                gx = gx * yo[nst + cnt["npred"]:, None] / yo[None, nst:nst + nsp]
+                Gy = Gy * yo[nst:nst + nsp, None] / yo[None, nst:nst + nsp]
+            D["gx"] = R.mat(gx)
+            D["Gy"] = R.mat(Gy)
         if order >= 2:
             for k in ("ghxx", "ghuu", "ghxu", "ghs2"):
                 D[k] = R.mat(np.asarray(dr[k], float))
@@ -323,6 +332,9 @@ class CommandsMixin:
         if theoretical:
             nar = int(self.opt("ar", 5))
             items = [R.mat(g) for g in mom.gamma_y]
+            single_shock_vd = m.n_exo == 1 and order >= 2 and not self.opt_flag("nodecomposition") and len(items) > nar + 1
+            if single_shock_vd:      # observed under order >= 2 with one shock: Dynare's decomposition has a row per endogenous variable
+                items[nar + 1] = R.mat(np.ones((m.n_endo, 1)))
             # th_autocovariances gives a column; the pruned state-space moments (order >= 2, pruning) a row
             shape = (1, len(items)) if (pruning and order >= 2) else (len(items), 1)
             self.set_oo("gamma_y", Cell(items, shape))
@@ -333,7 +345,9 @@ class CommandsMixin:
         if mom.skewness is not None:
             self.set_oo("skewness", R.col(mom.skewness))
             self.set_oo("kurtosis", R.col(mom.kurtosis))
-        if mom.variance_decomposition is not None and (m.n_exo > 1 or not theoretical):
+        if theoretical and m.n_exo == 1 and order >= 2 and not self.opt_flag("nodecomposition"):
+            self.set_oo("variance_decomposition", R.mat(100.0 * np.ones((m.n_endo, 1))))
+        elif mom.variance_decomposition is not None and (m.n_exo > 1 or not theoretical):
             self.set_oo("variance_decomposition", R.mat(mom.variance_decomposition))
         if mom.variance_decomposition_me is not None:
             self.set_oo("variance_decomposition_ME", R.mat(mom.variance_decomposition_me))

@@ -18,11 +18,22 @@ from pydyn.results_m import known_missing
 from pydyn.matlab import Cell, Struct, Tainted, Unsupported
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
-CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop"]
+CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
+         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh"]
+#: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
+#: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
+#: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
+#: flat in some directions (the log density agrees to 6e-5, the parameters to 1e-2, i.e. 0.4 standard errors).
+#: osr1: the loss is flat near its minimum (6e-7 apart in value), so csminwel's stopping point differs in the
+#: rule coefficients by 1e-3 (numerical vs analytic derivatives in Dynare's osr).
+TOL = {"est_mode4": 1e-3, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3}
 
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
 SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
-REFUSED = {"oo_.dr.fuu", "oo_.dr.g_0", "oo_.dr.g_1", "oo_.dr.g_2", "oo_.dr.g_3", "oo_.dr.pruning"}
+REFUSED = {"oo_.dr.fuu", "oo_.dr.g_0", "oo_.dr.g_1", "oo_.dr.g_2", "oo_.dr.g_3", "oo_.dr.pruning",
+           "oo_.dr.restrict_var_list", "oo_.dr.restrict_columns", "oo_.FilteredVariablesKStepAhead",
+           "oo_.posterior.optimization.optimization_info", "oo_.occbin.simul.regime_history",
+           "oo_.osr.optimization_info"}
 
 
 def _diff(ref, ours, path, out, tol):
@@ -57,6 +68,8 @@ def _diff(ref, ours, path, out, tol):
         if "".join(ref.ravel()) != ours:
             out.append((path, "string"))
         return
+    if isinstance(ours, Tainted) and np.iscomplexobj(ref):         # a complex number pydyn refuses to represent
+        return
     if isinstance(ours, (str, Cell, Struct, Tainted)):
         out.append((path, "type"))
         return
@@ -66,8 +79,9 @@ def _diff(ref, ours, path, out, tol):
     if a.shape != b.shape:
         out.append((path, f"shape {a.shape} vs {b.shape}"))
         return
-    if path.endswith("dr.eigval"):                 # the sign of an infinite eigenvalue is rounding noise in Dynare
-        a, b = np.where(np.isinf(a), np.inf, a), np.where(np.isinf(b), np.inf, b)
+    if path.endswith("dr.eigval"):                 # an infinite eigenvalue is +-Inf or an arbitrary huge number in Dynare
+        a, b = np.where(np.abs(a) > 1e6, np.inf, a), np.where(np.abs(b) > 1e6, np.inf, b)
+        a, b = np.sort(a, axis=None).reshape(a.shape), np.sort(b, axis=None).reshape(b.shape)   # QZ order is arbitrary
     same = (np.isnan(a) & np.isnan(b)) | (a == b)
     d = np.abs(a - b)
     bad = ~same & ~(d <= tol * np.maximum(1.0, np.abs(a)))
@@ -81,6 +95,7 @@ def runs(tmp_path_factory):
     out = {}
     for c in CASES:
         shutil.copy(REF / f"{c}.mod", d / f"{c}.mod")
+        shutil.copy(REF / "fsdat_simul.m", d / "fsdat_simul.m")
         out[c] = pydyn.dynare(d / f"{c}.mod")
     return out
 
@@ -91,7 +106,7 @@ def test_against_octave(runs, case, var):
     ref = loadmat(REF / f"{case}.mat", struct_as_record=True)[var]
     out = []
     # simulated paths agree to the steady-state tolerance (Dynare stops its Newton iterations at 1e-5)
-    _diff(ref, getattr(runs[case], var), var, out, 1e-6)
+    _diff(ref, getattr(runs[case], var), var, out, TOL.get(case, 1e-6))
     assert not out, out
 
 
@@ -107,7 +122,7 @@ def test_matlab_variables(runs, case):
         r = ref[n]
         if r.dtype.names or r.dtype == object or r.dtype.kind == "U":
             continue
-        _diff(r, ws[n], n, out, 1e-6)
+        _diff(r, ws[n], n, out, TOL.get(case, 1e-6))
     assert not out, out
 
 

@@ -179,7 +179,7 @@ field names and shapes (`oo_.dr.ghx` in DR order, `oo_.steady_state` a column in
 lines such as `irf1 = oo_.irfs.y_e;` run unchanged; `set_param_value`, `steady`, `check`, `stoch_simul` (also the functional form
 `[info, oo_, options_, M_] = stoch_simul(M_, options_, oo_, var_list)`), `perfect_foresight_setup` and `perfect_foresight_solver`
 re-run on the live workspace. Simulated paths use Octave's `randn` stream, so they equal Dynare's run under Octave.
-A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
+`estimation` (mode, Metropolis-Hastings with Dynare's Octave random numbers, posterior statistics, classical smoother), `calib_smoother`, `forecast`, `occbin_setup`/`occbin_solver`, `ramsey_model`/`ramsey_policy`/`evaluate_planner_objective` and `osr` fill the matching `oo_` fields too (arrays with more than two dimensions, such as `oo_.shock_decomposition`, are refused). A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
 supported (estimation, forecast, OccBin, ...) stop the run with an error that names them. `pydyn.Model` is unchanged.
 Validation: `tests/test_results.py` against `reference/oo/*.mat` (Dynare 7.2 under Octave 8.4).
 
