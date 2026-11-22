@@ -136,7 +136,9 @@ def test_control_flow_with_dynare_statements_against_dynare(tmp_path):
     shutil.copy(REF / "mat_flow.mod", tmp_path)
     with warnings.catch_warnings():
         warnings.simplefilter("error")                      # nothing is skipped in this file
-        m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "mat_flow.mod"))
+        # ... but options_.irf = 7 is written by MATLAB code and nothing acts on it: reported (UnsupportedOptionWarning)
+        with pytest.warns(pydyn.options.UnsupportedOptionWarning, match=r"options_\.irf"):
+            m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "mat_flow.mod"))
     r = loadmat(REF / "mat_flow.mat", squeeze_me=True)
     assert m.param_names == r["param_names"].split(",")
     np.testing.assert_allclose(m.params, r["params"], rtol=1e-12)

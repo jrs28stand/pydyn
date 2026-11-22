@@ -166,6 +166,35 @@ def steady_state_file_fn(model):
     return fn
 
 
+def _solve_auxiliary_jointly(model, ys, x, params, idx, rows):
+    """Set the auxiliary variables ``idx`` (in place) by solving their static equations ``rows`` together, the other
+    variables held fixed. The preprocessor's set_auxiliary_variables does this in dependency order; the equation of
+    an auxiliary variable of the expectation operator or of a nested lead/lag does not always sit in the row of its own
+    index (EXPECTATION(1)(.. EXPECTATION(3)(..)) creates auxiliary variables that define each other), so a variable-by-variable
+    update leaves some NaN. Returns False (``ys`` unchanged) if the system is singular or the residuals do not vanish."""
+    idx, rows = np.asarray(idx, int), np.asarray(rows, int)
+    y = ys.copy()
+    y[idx] = np.where(np.isfinite(y[idx]), y[idx], 0.0)
+    with np.errstate(all="ignore"):
+        for _ in range(4):
+            r = model.static_resid(y, x, params)[rows]
+            if not np.all(np.isfinite(r)):
+                return False
+            if np.max(np.abs(r), initial=0.0) < 1e-14:
+                break
+            J = model.static_jac(y, x, params)[np.ix_(rows, idx)]
+            try:
+                step = np.linalg.solve(J, r)
+            except np.linalg.LinAlgError:
+                return False
+            y[idx] -= step
+        r = model.static_resid(y, x, params)[rows]
+    if not (np.all(np.isfinite(r)) and np.max(np.abs(r), initial=0.0) < 1e-10 * max(1.0, np.max(np.abs(y[idx])))):
+        return False
+    ys[idx] = y[idx]
+    return True
+
+
 def fill_auxiliary(model, ys, x, params):
     """Set auxiliary variables (added by the preprocessor for leads/lags > 1 etc.) from their
     defining equations, which are linear in the auxiliary variable itself, except those of
@@ -181,6 +210,12 @@ def fill_auxiliary(model, ys, x, params):
     # sets LOG_x = log(x) (the preprocessor's orig_expr), which the Newton steps below would not give
     logs = {d["endo_index"] - 1: d["orig_index"] - 1 for d in model.raw.get("aux_vars", [])
             if d.get("type") == 7 and d.get("orig_index") is not None}
+    free = [(i, r) for i, r in zip(aux, rows) if i not in logs]
+    for i in logs:
+        with np.errstate(all="ignore"):
+            ys[i] = np.log(ys[logs[i]]) if ys[logs[i]] >= 0 else np.nan
+    if free and _solve_auxiliary_jointly(model, ys, x, params, [i for i, _ in free], [r for _, r in free]):
+        return ys
     for _ in range(2 if aux else 0):
         for i, row in zip(aux, rows):
             if i in logs:
@@ -236,7 +271,10 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     from . import options as _opt
     so = _opt.steady_options(model)          # steady and check options, accumulated in file order
     if tol is None:
-        tol = float(so.get("solve_tolf", DYNARE_TOLF))
+        tol = so.get("solve_tolf")
+        if tol is None:                      # options_.solve_tolf = ... written by MATLAB lines of the .mod file
+            tol = _opt.matlab_option(model, "solve_tolf", default=DYNARE_TOLF)
+        tol = float(np.asarray(tol).reshape(-1)[0])
     if check is None:
         check = not so.get("steadystate.nocheck", False)
     if maxit is None and so.get("steady.maxit") is not None:
@@ -246,8 +284,12 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     ported = solve_algo is not None and int(solve_algo) in PORTED_SOLVE_ALGOS
     # tolx is used by the ported algorithms, and by the default search when it runs Dynare's
     # solve_algo=4 (structurally singular Jacobian, see _singular_default)
-    if tolx is None and (ported or solve_algo is None) and so.get("solve_tolx") is not None:
-        tolx = float(so["solve_tolx"])
+    if tolx is None and (ported or solve_algo is None):
+        tx = so.get("solve_tolx")
+        if tx is None:
+            tx = _opt.matlab_option(model, "solve_tolx")
+        if tx is not None:
+            tolx = float(np.asarray(tx).reshape(-1)[0])
     _opt.warn_unused(model, "steady", {"solve_tolf", "steadystate.nocheck", "homotopy_mode", "homotopy_steps",
                                        "steady.maxit", "solve_algo"} | ({"solve_tolx"} if ported or solve_algo is None else set()),
                      "steady_state")

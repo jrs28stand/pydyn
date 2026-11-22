@@ -88,7 +88,7 @@ def run_one(entry, mod, scratch, src, out, timeout, stubs, force=False):
     if mat.exists():
         mat.unlink()
     env = {**os.environ, "GLIBC_TUNABLES": "glibc.rtld.execstack=2", "source_root": str(src), **entry.get("env", {})}
-    before = {f.name: f.stat().st_mtime_ns for f in cwd.iterdir() if f.is_file()}
+    before = snapshot(cwd)
     t = time.time()
     status, log = "ok", ""
     try:
@@ -100,10 +100,12 @@ def run_one(entry, mod, scratch, src, out, timeout, stubs, force=False):
         log = ((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")) + "\nTIMEOUT"
         subprocess.run(["pkill", "-f", str(script)])
     keep = Path(out) / "_files" / rel                  # files the run wrote next to the .mod (simulated data ...): later files of the entry read them
-    for f in cwd.iterdir():
-        if f.is_file() and before.get(f.name) != f.stat().st_mtime_ns and not f.name.startswith("accept_run_") and f.stat().st_size < 30e6:
+    for rp, f in snapshot_files(cwd):                  # also small text files in subfolders (example1/model/pac-expectations/*.inc ...)
+        if before.get(rp) != f.stat().st_mtime_ns and not f.name.startswith("accept_run_"):
             keep.mkdir(parents=True, exist_ok=True)
-            shutil.copy(f, keep / f.name)
+            if rp != f.name:
+                (keep / rp).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, keep / rp)
     msg = ""
     for ln in log.splitlines():
         if ln.startswith("ACCEPT_ERROR_MSG:"):
@@ -122,6 +124,27 @@ def run_one(entry, mod, scratch, src, out, timeout, stubs, force=False):
                                "dynare_args": entry.get("dynare_args", [])}))
     script.unlink(missing_ok=True)
     print(f"{time.strftime('%H:%M:%S')} {status:13s} {time.time() - t:7.1f}s {mod}  {msg[:100]}", flush=True)
+
+
+SUBDIR_SUFFIXES = {".inc", ".m", ".mod", ".csv", ".txt", ".json"}
+
+
+def snapshot_files(cwd):
+    """(path relative to ``cwd``, Path) of the files a run may have written: those next to the .mod (< 30 MB) and the small
+    text files below it (not in the generated '+name' packages, bytecode folders, or the Output/graphs folders)."""
+    cwd = Path(cwd)
+    for f in cwd.iterdir():
+        if f.is_file() and f.stat().st_size < 30e6:
+            yield f.name, f
+    for f in cwd.rglob("*"):
+        rel = f.relative_to(cwd)
+        if len(rel.parts) > 1 and f.is_file() and f.suffix in SUBDIR_SUFFIXES and f.stat().st_size < 5e6 \
+                and not any(p.startswith("+") or p in ("bytecode", "graphs", "Output") for p in rel.parts):
+            yield str(rel), f
+
+
+def snapshot(cwd):
+    return {rp: f.stat().st_mtime_ns for rp, f in snapshot_files(cwd)}
 
 
 def prepare_scratch(entry, src, scratch):

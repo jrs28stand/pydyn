@@ -444,7 +444,8 @@ class Model:
         #: Dynare's options_ (see pydyn.options.accumulated)
         self.options_sequence: list[tuple[str, dict]] = []
         self._options_parsed: dict[str, dict] = {}
-        self.matlab_options = matlab.Struct()      # options_.x = ... assignments (stored, not acted upon)
+        self.matlab_options = matlab.Struct()      # options_.x = ... assignments (see pydyn.options.HONOURED_MATLAB_OPTIONS)
+        self.matlab_options_log: list = []         # (index of the last Dynare statement run, options_ field, value) per assignment
         self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
         self._n_surprise = 0
         self._oo: dict[str, float] = {}            # what Dynare holds in oo_.steady_state / oo_.exo_steady_state

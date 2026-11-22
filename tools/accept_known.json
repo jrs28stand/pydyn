@@ -1,7 +1,7 @@
 {
  "decision_rules/first_order/walsh": {"class": "Dynare quirk", "note": "the last stoch_simul uses cycle_reduction with dr_cycle_reduction_tol=1e-1; Dynare's own stored rules are the loose ones (the test itself prints that QZ and cycle reduction differ at that tolerance)"},
- "optimal_policy/RamseyConstraints/test1": {"class": "pydyn limitation (silent)", "note": "options_.stack_solve_algo=7 is set by MATLAB code, which pydyn stores in model.matlab_options and does not act on; with perfect_foresight(m, lmmcp=True) the path matches Dynare to 2e-10"},
- "steady_state/Gali_2015_chapter_6_4": {"class": "pydyn bug (default var_list)", "note": "several stoch_simul statements: Dynare uses the last one's variable list, pydyn's theoretical_moments default takes the first; irfs.* differences come from stale fields of earlier calls"},
- "conditional_variance_decomposition/example3": {"class": "pydyn bug (default var_list)", "note": "same: default list is the first stoch_simul statement's, Dynare uses the last"},
- "stochastic-backward-models/solow_ces": {"class": "pydyn bug", "note": "numpy RuntimeWarning raised inside generated model code fails with KeyError('__import__') unless warnings are ignored"}
+ "kalman_filter_smoother/test_compute_Pinf_Pstar": {"class": "Dynare quirk", "note": "T has a 6-fold defective unit-root block; Schur vectors of a repeated-eigenvalue subspace are not unique, so a 7e-16 difference in T changes the rank of Pinf (3 vs 4/5). Given Dynare's own T, R, Q pydyn's compute_Pinf_Pstar reproduces Dynare's Pinf exactly"},
+ "AIM/fs2000x10L9_L": {"class": "Dynare quirk", "note": "eigenvalues of nilpotent Jordan blocks are rounding noise (1e22..1e48 vs 73..140); counts of stable and moduli in [0.1,10] agree"},
+ "AIM/fs2000x10_L9_L": {"class": "Dynare quirk", "note": "same as fs2000x10L9_L"},
+ "AIM/ls2003_2L0L": {"class": "Dynare quirk", "note": "same as fs2000x10L9_L"}
 }

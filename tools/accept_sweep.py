@@ -199,6 +199,14 @@ class Ctx:
         self.ref_exo = names_of(sget(self.M, "exo_names"))
         if self.ref_endo and self.ref_endo != list(self.m.endo_names):
             self.notes.append("endogenous names differ from Dynare's")
+        if self.loglinear():
+            # stoch_simul(loglinear) leaves oo_.dr.ys and oo_.steady_state in logs (stoch_simul.m, for the display of the rules)
+            from pydyn.perturbation import log_mask
+            mask = log_mask(self.m)
+            for name in ("dr_ys", "ref_ys"):
+                v = getattr(self, name)
+                if v.size == mask.size and np.all(np.isfinite(v[mask])):
+                    setattr(self, name, np.where(mask, np.exp(np.where(mask, v, 0.0)), v))
         self.calibration_params = np.array(self.m.params, float)
         self.calibration_Sigma = np.array(self.m.Sigma_e, float)
         return self.m
@@ -220,7 +228,12 @@ class Ctx:
         evaluated at the point Dynare ended with)."""
         m = self.m
         if self.ref_params.size == len(m.params):
-            m.params[:] = self.ref_params
+            ok = np.isfinite(self.ref_params)
+            if not ok.all() and not any("NaN" in n for n in self.notes):
+                # M_.params holds NaN for parameters Dynare never set: the .mod file's body did not run (e.g. it sits inside
+                # `if ~isoctave`, as in optimal_policy/OSR/osr_obj_corr_algo_*.mod: the Octave reference is empty)
+                self.notes.append("Dynare's M_.params contains NaN (parameters never set): the Octave run did not execute the .mod file's body")
+            m.params[ok] = self.ref_params[ok]
         if self.ref_Sigma is not None and np.size(self.ref_Sigma) == m.Sigma_e.size:
             m.Sigma_e[:, :] = np.asarray(self.ref_Sigma, float).reshape(m.Sigma_e.shape)
 
@@ -231,14 +244,17 @@ class Ctx:
         """Order Dynare actually solved to: read from the stored decision rules (options_.order is 2 by default even where the
         solver ran at first order, e.g. discretionary_policy)."""
         dr = sget(self.oo, "dr")
+        stored = 0
         if dr is not None and nonempty(dr):
             fs = fields_of(dr)
-            if "ghxxx" in fs:
-                return 3
-            if "ghxx" in fs:
-                return 2
-            if "ghx" in fs:
-                return 1
+            stored = 3 if "ghxxx" in fs else 2 if "ghxx" in fs else 1 if "ghx" in fs else 0
+        if self.has("stoch_simul"):
+            # a stoch_simul statement solves to its order (Dynare's default is 2); a later command (calib_smoother, forecast,
+            # conditional_forecast, ...) may have replaced oo_.dr by a first-order one, but oo_.mean, oo_.var, ... stay those of
+            # the stoch_simul run (conditional_forecasts/fs2000_calib_smoother_cf)
+            return max(stored, int(self.stoch_opts().get("order", 2)))
+        if stored:
+            return stored
         o = sget(self.opts, "order")
         return int(o) if o is not None and np.size(o) else int(self.stoch_opts().get("order", 1))
 
@@ -275,9 +291,29 @@ class Ctx:
                 self.cache["sol1"] = op.discretionary_policy(self.m)
                 return self.cache["sol1"]
             self.check_rules_belong(ys)
-            self.cache["sol1"] = (self.pydyn.first_order(self.m, ys=ys, params=np.array(self.m.params, float),
-                                                         loglinear=self.loglinear()) if ys is not None
-                                  else self.pydyn.first_order(self.m, loglinear=self.loglinear()))
+
+            def solve(**kw):
+                return (self.pydyn.first_order(self.m, ys=ys, params=np.array(self.m.params, float), loglinear=self.loglinear(), **kw)
+                        if ys is not None else self.pydyn.first_order(self.m, loglinear=self.loglinear(), **kw))
+            try:
+                self.cache["sol1"] = solve()
+            except self.pydyn.perturbation.BlanchardKahnError:
+                # Dynare's stored oo_.dr may come from an earlier stoch_simul whose options_.qz_criterium differed from the last
+                # one (decision_rules/ar_qz_test: the last call is expected to fail and is caught by a try/catch)
+                alt = []
+                for _k, fld, val in getattr(self.m, "matlab_options_log", []):
+                    if fld == "qz_criterium" and val not in alt:
+                        alt.append(val)
+                for q in alt:
+                    try:
+                        self.cache["sol1"] = solve(qz_criterium=float(q))
+                    except self.pydyn.perturbation.BlanchardKahnError:
+                        continue
+                    self.notes.append(f"decision rules solved with qz_criterium={float(q)!r} (an earlier options_.qz_criterium of the file; "
+                                      "Dynare's stored oo_.dr is from that call, the later call fails in Dynare as well)")
+                    break
+                else:
+                    raise
         return self.cache["sol1"]
 
     def drk(self):
@@ -299,6 +335,37 @@ class Ctx:
             vl = [v for v in self.ref_var_list if v in self.m.endo_names] or None
             self.cache["mom"] = mo.theoretical_moments(self.m, self.drk(), var_list=vl, order=self.order())
         return self.cache["mom"]
+
+    def pf_result(self):
+        if "pf" not in self.cache:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                kw = {}
+                info = self.m.info
+                if (info["maximum_endo_lag"] == 0 or info["maximum_endo_lead"] == 0) and self.m.options.get("perfect_foresight_solver", {}).get("dynatol.f") is None \
+                        and self.m.options.get("perfect_foresight_solver", {}).get("tolf") is None:
+                    # purely forward/backward/static models are solved period by period to dynatol.f, Dynare's 1e-5 (pydyn's default is
+                    # 1e-9): Dynare's own path is only that accurate (solve_algo_12_14/purely_forward_reference: 1.2e-4 apart)
+                    kw["tolf"] = 1e-5
+                self.cache["pf"] = self.pydyn.perfect_foresight(self.m, raise_on_failure=False, **kw)
+        return self.cache["pf"]
+
+    def dynare_unsolved(self):
+        """Dynare's own run failed (Blanchard-Kahn, steady state) without an error: oo_.dr exists but holds no decision rules
+        (only possible with the noprint option, which also hides the message)."""
+        dr = sget(self.oo, "dr")
+        return self.has("stoch_simul") and dr is not None and "ghx" in fields_of(dr) and not nonempty(sget(dr, "ghx"))
+
+    def ref_point_inconsistent(self):
+        """Dynare's stored oo_.steady_state is not a root of the static model at M_.params (estimation files whose optimizer
+        ended at parameters the stored results do not belong to)."""
+        try:
+            ref = np.asarray(sget(self.oo, "steady_state"), float).ravel()
+            self.sync_to_dynare()
+            r = np.max(np.abs(self.m.static_resid(ref, self.m.exo_steady(), np.array(self.m.params, float))))
+            return not r < 1e-4
+        except Exception:  # noqa: BLE001
+            return False
 
     def stat_set(self):
         return self.has("stoch_simul") and self.kinds
@@ -330,7 +397,25 @@ STOCH = ("stoch_simul",)
 def f_steady(c):
     c.sync_to_dynare()
     c.check_rules_belong(steady_ref(c.ref_ys, c)) if c.has("stoch_simul", "ramsey_model", "ramsey_policy", "discretionary_policy") and c.dr_ys.size else None
-    ys, p = c.pydyn.steady_state(c.m, params=np.array(c.m.params, float))
+    if c.has("discretionary_policy") and c.m.steady_state_model is None and c.m.steady_state_fn is None and c.m.steady_state_file is None:
+        # Dynare's discretionary_policy_1.m takes ys = zeros (the model must be in deviation form) and has no steady-state solver:
+        # the model has fewer equations than variables (the instruments are free), so there is nothing to solve for
+        from pydyn import optimal_policy
+        ys, p = optimal_policy.discretionary_policy(c.m, welfare=False).dr["ys"], np.array(c.m.params, float)
+    else:
+        try:
+            ys, p = c.pydyn.steady_state(c.m, params=np.array(c.m.params, float))
+        except c.pydyn.steady.SteadyStateError as exc:
+            ref = steady_ref(c.ref_ys, c)
+            try:
+                with np.errstate(all="ignore"):
+                    r_dy = np.max(np.abs(c.m.static_resid(np.asarray(ref, float), c.m.exo_steady(), np.array(c.m.params, float))))
+            except Exception:  # noqa: BLE001
+                r_dy = np.nan
+            if not r_dy < 1e-4:
+                raise Skip(f"Dynare never solved the static model in this file (its oo_.steady_state is the initial zero vector: static residual "
+                           f"{r_dy:.1e}); pydyn's search does not find one either ({str(exc)[:80]})")
+            raise
     numerical = c.m.steady_state_model is None and c.m.steady_state_fn is None and c.m.steady_state_file is None
     FIELDS["steady_state"]["rtol"] = RTOL_NUMERIC_SS if numerical else RTOL
     FIELDS["steady_state"]["rtol_soft"] = None
@@ -352,7 +437,7 @@ def f_steady(c):
         if r_dy < 1e-4 and r_py < 1e-6:
             raise SoftMatch(f"Dynare's numerical steady state has static residual {r_dy:.1e}, pydyn's {r_py:.1e}; "
                             f"largest difference {np.max(np.abs(ys - ref_ys)):.2e}")
-        if r_dy >= 1e-4:
+        if not r_dy < 1e-4:                       # also NaN: the stored point (initial zeros) cannot even be evaluated
             raise Skip(f"Dynare's oo_.steady_state is not a steady state (static residual {r_dy:.1e}): the file never solved for it "
                        "(initval values); pydyn's residual %.1e" % r_py)
         c.notes.append(f"steady state: static residual pydyn {r_py:.1e}, at Dynare's point {r_dy:.1e}")
@@ -372,6 +457,13 @@ FIELDS["steady_state"]["refx"] = steady_ref
 
 @field("exo_steady_state")
 def f_exo_ss(c):
+    if getattr(getattr(c.m, "_matlab", None), "path_edits", False) and c.has("perfect_foresight_with_expectation_errors_solver",
+                                                                              "perfect_foresight_solver"):
+        raise Skip("MATLAB code in the file writes oo_ (simulation paths, steady states) and solves again: Dynare's final value is the last "
+                   "solve's (pydyn does not run such assignments and warns)")
+    if c.has("perfect_foresight_with_expectation_errors_solver"):
+        # the solver leaves the exogenous steady state of the last learnt endval (shocks(learnt_in)/endval(learnt_in)) in oo_
+        return np.asarray(c.pf_result().exo_steady_state, float)
     return np.asarray(c.m.exo_steady(terminal=c.has("endval")), float)
 
 
@@ -399,9 +491,14 @@ for _k in ("ghxx", "ghxu", "ghuu", "ghs2", "ghxxx", "ghxxu", "ghxuu", "ghuuu", "
     _mk(_k)
 
 
-def finite_moduli(x, cut=1e4):
+def finite_moduli(x, lo=0.1, hi=10.0):
+    """What is compared of dr.eigval: the number of generalised eigenvalues, the number of stable ones (modulus below the
+    default qz_criterium) and the sorted moduli in [lo, hi]. The eigenvalues of a model with long lead/lag chains that are
+    infinite or zero in exact arithmetic come out as rounding noise of the Jordan blocks, which differs between programs and
+    solver calls (AIM/fs2000x10L9_L: Dynare 0.011 and 73..140, pydyn 0.0086 and 1e22..1e48, for a nilpotent block of order 10:
+    noise ~ eps^(1/10)); the cluster values are not comparable, their number is."""
     a = np.sort(np.abs(np.asarray(x).ravel()))
-    return a[a < cut]
+    return np.concatenate([[float(a.size), float(np.sum(a < 1 + 1e-6))], a[(a >= lo) & (a <= hi)]])
 
 
 @field("dr.eigval", STOCH + ("ramsey_model", "ramsey_policy"), rtol=1e-6)
@@ -510,7 +607,7 @@ def f_corr(c):
 
 def irfs_ref(ref, c):
     """oo_.irfs keeps the fields of earlier stoch_simul calls (other var_lists, other parameters): only the current var_list counts."""
-    keep = [f for f in fields_of(ref) if not c.ref_var_list or any(f.startswith(v + "_") for v in c.ref_var_list)]
+    keep = [f for f in fields_of(ref) if not c.ref_var_list or any(f == v + "_" + sh for v in c.ref_var_list for sh in c.m.exo_names)]
     class _S:
         _fieldnames = keep
     o = _S()
@@ -533,6 +630,8 @@ def f_irfs(c):
         for j, sh in enumerate(c.m.exo_names):
             if fn.endswith("_" + sh):
                 v = fn[: -len(sh) - 1]
+                if c.ref_var_list and v not in c.ref_var_list:
+                    break           # oo_.irfs keeps the fields of earlier stoch_simul statements (other parameters, other variables)
                 if v in c.m.endo_names:
                     if "impulse" not in c.cache:
                         c.cache["impulse"] = {}
@@ -554,9 +653,13 @@ def f_endo_simul(c):
     st = sget(c.oo, "deterministic_simulation.status")
     if st is not None and np.size(st) and not bool(np.all(st)):
         raise Skip("Dynare's perfect-foresight run did not converge")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        pf = c.pydyn.perfect_foresight(c.m, raise_on_failure=False)
+    if getattr(getattr(c.m, "_matlab", None), "path_edits", False):
+        # MATLAB code writes oo_.endo_simul / oo_.exo_simul / oo_.steady_state and may solve again: Dynare's final oo_.endo_simul is
+        # that of its last solve, not of the .mod file's solver statement. pydyn does not run those assignments and says so in a
+        # warning ("MATLAB code in the .mod file writes simulation paths or results ...").
+        raise Skip("MATLAB code in the file writes oo_ simulation paths and solves again: Dynare's final oo_.endo_simul is the last solve's "
+                   "(pydyn does not run such assignments and warns)")
+    pf = c.pf_result()
     if not pf.status:
         raise RuntimeError(f"pydyn's perfect-foresight solver did not converge where Dynare's did (homotopy completion share "
                            f"{pf.homotopy_completion_share:.3g}, residual {pf.max_residual:.2e})")
@@ -623,7 +726,11 @@ def f_post_opt(c):
     theta = np.asarray(mode, float).ravel()
     if theta.size != len(est.names):
         raise NotProduced(f"mode has {theta.size} entries, pydyn's estimated parameters {len(est.names)}")
-    out = {"log_density": np.asarray(est.log_posterior(theta))}
+    out = {}
+    if nonempty(sget(c.oo, "posterior.optimization.log_density")):
+        out["log_density"] = np.asarray(est.log_posterior(theta))
+    else:
+        raise Skip("Dynare stored no log_density")
     return out
 
 
@@ -751,15 +858,13 @@ def evaluate(mod, entry):
         for earlier in [f for f in entry["test"] if f.endswith(".mod")]:
             if earlier == mod:
                 break
-            art = REF / "_files" / relid(earlier)         # files Dynare's run of the earlier file wrote (simulated data ...)
-            if art.is_dir():
-                for f in art.iterdir():
-                    shutil.copy(f, scratch / "tests" / Path(earlier).parent / f.name)
+            copy_artifacts(earlier, scratch)               # files Dynare's run of the earlier file wrote (simulated data ...)
             try:                                       # files written by an earlier file of the same entry (Dynare's driver shares the folder)
                 import pydyn as _p
                 _p.run_preprocessor(scratch / "tests" / earlier, extra_args=tuple(entry.get("dynare_args", [])))
             except Exception:  # noqa: BLE001
                 pass
+        copy_artifacts(mod, scratch)       # data a file simulates and then reads itself (randn in Octave: pydyn has Dynare's data)
         c = Ctx(mod.replace("../", ""), entry, scratch, oo, M, opts)
         c.mod = mod
         try:
@@ -786,7 +891,10 @@ def evaluate(mod, entry):
             except Skip as e:
                 rows.append(("var_list", "skipped", str(e)))
             except Exception as e:  # noqa: BLE001
-                rows.append(("var_list", "error" if not is_refusal(e) else "refused", f"{type(e).__name__}: {str(e)[:150]}"))
+                if type(e).__name__ in ("BlanchardKahnError", "SteadyStateError") and c.dynare_unsolved():
+                    rows.append(("var_list", "match", f"Dynare did not solve this model either: pydyn raises {type(e).__name__}"))
+                else:
+                    rows.append(("var_list", "error" if not is_refusal(e) else "refused", f"{type(e).__name__}: {str(e)[:150]}"))
         for path, spec in FIELDS.items():
             ref = sget(oo, path)
             if not nonempty(ref):
@@ -822,6 +930,14 @@ def evaluate(mod, entry):
             except NotProduced as e:
                 rows.append((path, "not-produced", str(e)))
             except Exception as e:  # noqa: BLE001
+                if type(e).__name__ == "SteadyStateError" and c.ref_point_inconsistent():
+                    rows.append((path, "skipped", "Dynare's final M_.params do not admit the steady state its estimation used (nonstationary model, "
+                                                  "optimizer ended at a point with static residual > 1e-4): the reference cannot be reproduced"))
+                    continue
+                if type(e).__name__ in ("BlanchardKahnError", "SteadyStateError") and c.dynare_unsolved():
+                    rows.append((path, "match", f"Dynare did not solve this model either (its oo_.dr has no decision rules; stoch_simul(noprint) "
+                                                f"does not report the failure): pydyn raises {type(e).__name__}"))
+                    continue
                 st = "refused" if is_refusal(e) else "error"
                 rows.append((path, st, f"{type(e).__name__}: {str(e)[:250]}"))
                 if st == "error":
@@ -940,6 +1056,20 @@ def evaluate_oo(mod, entry):
         shutil.rmtree(scratch, ignore_errors=True)
     out["verdict"], out["detail"] = verdict(out["rows"])
     return out
+
+
+def copy_artifacts(mod, scratch):
+    """Put the files Dynare's (Octave) run of ``mod`` wrote next to it (and in subfolders) into the scratch tests folder."""
+    art = REF / "_files" / relid(mod)
+    if not art.is_dir():
+        return
+    dest = scratch / "tests" / Path(mod).parent
+    for f in art.rglob("*"):
+        if f.is_file():
+            t = dest / f.relative_to(art)
+            t.parent.mkdir(parents=True, exist_ok=True)
+            if not t.exists() or f.stat().st_size and t.stat().st_mtime < f.stat().st_mtime:
+                shutil.copy(f, t)
 
 
 def entries():

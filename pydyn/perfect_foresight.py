@@ -84,6 +84,8 @@ LU_ORDERING = os.environ.get("PYDYN_PF_LU", "NATURAL")
 #: pydyn's default tolerance on the residuals when neither the .mod file nor the caller gives
 #: ``tolf`` (Dynare's default is 1e-5)
 DEFAULT_TOLF = 1e-9
+#: Dynare's own default of options_.dynatol.f
+DYNARE_PF_TOLF = 1e-5
 
 
 class PerfectForesightError(Exception):
@@ -205,10 +207,30 @@ def _resolve_options(model, pfwee, kw):
         if v is not None:
             o[key] = v
             given.add(key)
+    # options_.<x> = ... written by MATLAB lines of the .mod file (as those before the solver statement left them) apply
+    # to the options the solver statement and the caller did not give
+    before = _opt.last_statement_index(model, names[1])
+    for key in ("stack_solve_algo", "solve_algo", "dynatol.f", "dynatol.x", "simul.maxit"):
+        if key not in given:
+            v = _opt.matlab_option(model, key, before)
+            if v is not None:
+                try:
+                    o[key] = float(np.asarray(v).reshape(-1)[0]) if key.startswith(("dynatol", "simul")) else int(np.asarray(v).reshape(-1)[0])
+                except (TypeError, ValueError, IndexError):
+                    raise ValueError(f"options_.{key} set by MATLAB code in the .mod file is not a number") from None
+                given.add(key)
+    if o["stack_solve_algo"] == 7 and o["solve_algo"] in (10, 11) and not o["lmmcp.status"]:
+        # perfect_foresight_solver_core.m: stack_solve_algo=7 with solve_algo=10 (LMMCP) solves the stacked problem as the
+        # lmmcp option does; with solve_algo=11 Dynare runs the PATH solver (mcppath)
+        if o["solve_algo"] == 11:
+            raise NotImplementedError("stack_solve_algo=7 with solve_algo=11 (the PATH solver, mcppath) is not implemented; "
+                                      "solve_algo=10 (lmmcp) is")
+        o["lmmcp.status"] = True
     excl = o["simul.homotopy_exclude_varexo"]
     if isinstance(excl, dict):
         excl = excl.get("symbol_list", [])
     o["simul.homotopy_exclude_varexo"] = [excl] if isinstance(excl, str) else list(excl or [])
+    o["_tolf_default"] = o["dynatol.f"] is None          # pydyn's own default: see _sim1 (rounding floor of large-scale models)
     if o["dynatol.f"] is None:
         o["dynatol.f"] = DEFAULT_TOLF
     o["dynatol.f"], o["dynatol.x"], o["simul.maxit"] = float(o["dynatol.f"]), float(o["dynatol.x"]), int(o["simul.maxit"])
@@ -218,7 +240,7 @@ def _resolve_options(model, pfwee, kw):
     o["simul.homotopy_marginal_linearization_fallback"] = 0.01 if m is True else float(m or 0.0)
     # reports (once per model) for options written in the .mod file that are not acted upon
     algo = int(o["stack_solve_algo"])
-    if "stack_solve_algo" in given:
+    if "stack_solve_algo" in given and not (algo == 7 and o["lmmcp.status"]):
         if not 0 <= algo <= 10:
             raise ValueError("stack_solve_algo must be between 0 and 10")
         _opt.warn_once(model, f"stack_solve_algo={algo}: pydyn has one solver for the stacked system, Newton's method with a "
@@ -1189,13 +1211,23 @@ def _sim1(model, problem, endo, exo, periods, o, log, cp=None):
                 dy = -_lin_solve_robust(A, res, o["simul.allow_nonfinite_values"]).reshape(T, n)
             else:
                 dy = -_lu_solve(A, res).reshape(T, n)
-            Y = Y + dy
-            if cp is not None:
-                for p in range(T):
-                    ex, en = cp[p]["exogenize_id"], cp[p]["endogenize_id"]
-                    if en:
-                        Y[p, ex] = cp[p]["values"]
-                        X[p, en] = X[p, en] + dy[p, ex]
+            if o.get("_tolf_default") and err < DYNARE_PF_TOLF and np.all(np.isfinite(dy)) \
+                    and np.max(np.abs(dy)) <= 1e-14 * max(1.0, np.max(np.abs(Y))):
+                # pydyn's default tolf (1e-9) is stricter than Dynare's (1e-5), but the residuals of a model whose variables
+                # are of order 1e7-1e8 (e.g. the late steps of a homotopy towards a large permanent shock) cannot fall below
+                # about 1e-16 * |y|: the Newton step is then rounding noise (<= 1e-14 relative). Accept it, as Dynare would
+                # (err < 1e-5), instead of failing at a precision the arithmetic cannot deliver.
+                log(f"Iter: {it},\t the residual has reached the rounding floor of the variables' scale (err. = {err:g} < "
+                    f"Dynare's tolf {DYNARE_PF_TOLF:g}, Newton step <= 1e-14 relative)")
+                converged = True
+            else:
+                Y = Y + dy
+                if cp is not None:
+                    for p in range(T):
+                        ex, en = cp[p]["exogenize_id"], cp[p]["endogenize_id"]
+                        if en:
+                            Y[p, ex] = cp[p]["values"]
+                            X[p, en] = X[p, en] + dy[p, ex]
         it += 1
     endo[lag:lag + T] = Y
     if o["endogenous_terminal_period"]:

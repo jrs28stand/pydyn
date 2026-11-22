@@ -4447,9 +4447,13 @@ class _HostOptions:
             raise Unsupported(f"options_.{name} was changed by a Dynare command; its value is not known to pydyn", "results")
         return self.store.get(name)
 
+    session = None                      # the ModSession of a live host: it knows the index of the last Dynare statement run
+
     def set_field(self, name, value):
         self.store[name] = value
         self.unknown.discard(name)
+        if self.session is not None:     # (index of the last Dynare statement before the write, field, value): see pydyn.options
+            self.session.model.matlab_options_log.append((self.session.last_k, name, value))
 
 
 class _HostOO:
@@ -4671,6 +4675,7 @@ class ModSession:
         self._ss_warned = False
         self.oo_numeric = False
         self.host.oo.session = self
+        self.host.options.session = self
         self.oo_written = set()         # variables given a value by initval/endval since the last steady
         self.pending = None             # (params, oo) of a 'steady' whose result has not been needed yet
         self.oo_failed = None           # why the steady state of an earlier 'steady' is unknown
@@ -4971,6 +4976,8 @@ class ModSession:
                     raise self.error(f"MATLAB code in the .mod file cannot be interpreted at {self._where()}: {exc}") from None
         self.model.matlab_skipped = [(t, k, w) for t, k, w, _ in self.skipped]
         self.warn()
+        from . import options as _opt
+        _opt.warn_unhonoured_matlab_options(self.model)
 
     def _where(self):
         s = self.current

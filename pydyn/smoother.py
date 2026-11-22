@@ -1127,7 +1127,18 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     elif lik_init == 3:
         qz = 1 + 1e-6 if qz is None else qz
         kalman_algo = 4 if kalman_algo == 4 else 3
-        Pstar, Pinf = compute_Pinf_Pstar(mf, G, Hs, Q, qz)
+        # Dynare's DsgeSmoother calls compute_Pinf_Pstar with T, R and the observed positions in decision-rule order; the routine
+        # (which zeroes the diffuse directions that no observation loads on, with an indexing that depends on the ordering) does
+        # not give the same Pinf in another order, so it is called in that order and mapped back to declaration order
+        ov = np.asarray(getattr(sol, "order_var", np.arange(n)), int)
+        if ov.size == n:
+            pos = np.empty(n, int)
+            pos[ov] = np.arange(n)
+            Pstar_dr, Pinf_dr = compute_Pinf_Pstar(pos[mf], G[np.ix_(ov, ov)], Hs[ov], Q, qz)
+            Pstar, Pinf = np.zeros((n, n)), np.zeros((n, n))
+            Pstar[np.ix_(ov, ov)], Pinf[np.ix_(ov, ov)] = Pstar_dr, Pinf_dr
+        else:
+            Pstar, Pinf = compute_Pinf_Pstar(mf, G, Hs, Q, qz)
     else:
         raise NotImplementedError(f"lik_init={lik_init}: only 1 (stationary), 2 (large variance) and 3 (diffuse) "
                                   "are implemented")
