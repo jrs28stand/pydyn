@@ -389,3 +389,15 @@ not necessarily of OccBin's problem; `RegimeOBC` candidates are checked by OccBi
 - Timings of whole runs (mode search, chains) were not measured under identical load for the two solvers except in the chains (alternating chain by chain); the other run times are one run each.
 - `bench/obc_est_study.py` runs were made on frozen clones (commits before the last edits to the study scripts and to this file); source files under `pydyn/` were the same.
 - JDyn: nothing done here.
+
+## OccBin speed-up (port of JDyn's), verification
+`pydyn/occbin.py`: constraint closures built once per model and shared; bind/relax sides evaluated once per condition; rules memoised in a trie keyed from the end of the
+guess; allocation-free `path`; `tmax` vectorised. Frozen pre-change copy: `bench/occbin_before.py`. Exact-equality check: `tests/test_occbin_bitwise.py` (simulation on obc_zlb, obc_zlb2
+(two constraints), NKM, Smets-Wouters, at two shock scales incl. runs that end in OccbinError: paths, regime histories, iterations, rules, diagnostics, errors compared with
+`np.array_equal`; both filters (piecewise Kalman, inversion) on the NKM and two-constraint rbc estimation examples: log posterior, regimes, states `==`), and the full-size
+script `bench/occbin_equality.py` (50 parameter sets x 200 periods x 4 models x 2 scales: ALL IDENTICAL). Timing (`bench/obc_bench.py p1`, 1000 periods, median of 5, microseconds per
+period, before -> after; raw `bench/results/occbin_speedup_p1.json`): zlb 552 -> 214, zlb2 675 -> 290, nkm 684 -> 222, sw 370 -> 190.
+
+## State / next step
+- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit).
+- Next: task 2 (`minnorm` alias), task 3 (singular-solve guard, Simple1 regression), task 4 (orientation test).
