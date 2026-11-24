@@ -224,12 +224,18 @@ class HigherOrderNews:
         normals. The set is symmetric, so its mean is exactly zero (with one region and every point relevant,
         cubature then equals no cubature, as in DynareOBC). Dynare's direction numbers differ from SciPy's
         beyond the second dimension, so individual points are not DynareOBC's."""
-        from scipy.stats import norm, qmc
-        m = self.qmc_level + 1
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            u = qmc.Sobol(d=dim, scramble=False).random_base2(m)[1:]
-        return norm.ppf(u).T                                     # (dim, 2^m - 1)
+        key = (int(dim), int(self.qmc_level))
+        xi = _SOBOL_CACHE.get(key)
+        if xi is None:
+            from scipy.stats import norm, qmc
+            m = self.qmc_level + 1
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                u = qmc.Sobol(d=dim, scramble=False).random_base2(m)[1:]
+            xi = np.ascontiguousarray(norm.ppf(u).T)             # (dim, 2^m - 1)
+            xi.flags.writeable = False
+            _SOBOL_CACHE[key] = xi
+        return xi
 
     def _solve(self, q):
         nb, T = self.news, self.T
@@ -243,23 +249,64 @@ class HigherOrderNews:
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
 
+    def _cub_prep(self):
+        """Quantities for the exact skipping rules, tied to the current (R, xi) objects."""
+        if getattr(self, "_cc", None) is not None and self._cc[0] is self.R and self._cc[1] is self.xi:
+            return self._cc
+        xn = np.sqrt((self.xi * self.xi).sum(axis=0))
+        order = np.argsort(xn, kind="stable")
+        rown = np.sqrt((self.R * self.R).sum(axis=1))
+        self._cc = (self.R, self.xi, xn[order], order, rown, float(xn.max()) if xn.size else 0.0)
+        return self._cc
+
+    def _relevant_points(self, q):
+        """Indices (increasing) of the points q + R xi_j that fail the relevance test of the original code,
+        ``not all(p >= -1e-8 max(1, max|p|))``. Exact skipping: by Cauchy-Schwarz p_h >= q_h - |R_h| |xi_j|, so
+        points with |xi_j| <= min_h q_h/|R_h| (1 - 1e-9) are non-relevant (the margin dwarfs rounding), and
+        min_h p_h >= -1e-8 implies non-relevant whatever max|p| is."""
+        _, _, xn_sorted, order, rown, rmax = self._cub_prep()
+        npts = self.xi.shape[1]
+        cnt = 0
+        if q.min() >= 0.0:
+            pos = rown > 0
+            rho = (q[pos] / rown[pos]).min() / (1.0 + 1e-9) if pos.any() else np.inf
+            if rho >= rmax:
+                return np.empty(0, dtype=np.intp)
+            cnt = int(np.searchsorted(xn_sorted, rho, side="right"))
+        if cnt == 0:
+            pts = q[:, None] + self.R @ self.xi
+            mn = pts.min(axis=0)
+            cand = np.nonzero(mn < -1e-8)[0]
+            sub, mnc = pts[:, cand], mn[cand]
+            rel = mnc < -1e-8 * np.maximum(1.0, np.maximum(sub.max(axis=0), -mnc))      # max|p| = max(max p, -min p)
+            return cand[rel]
+        else:
+            cand = order[cnt:]
+            sub = q[:, None] + self.R @ self.xi[:, cand]
+            keep = sub.min(axis=0) < -1e-8
+            cand, sub = cand[keep], sub[:, keep]
+        rel = sub.min(axis=0) < -1e-8 * np.maximum(1.0, np.abs(sub).max(axis=0))
+        idx = cand[rel]
+        return idx if cnt == 0 else np.sort(idx)
+
     def news_shocks(self, q):
         """Solution at q, or its average over the perturbed paths when cubature is on."""
         if not self.cubature or self.R.shape[1] == 0:
             return self._solve(q)
-        pts = q[:, None] + self.R @ self.xi                        # (N, n_points)
-        npts = pts.shape[1]
-        rel = ~np.all(pts >= -1e-8 * np.maximum(1.0, np.abs(pts).max(axis=0)), axis=0)
+        npts = self.xi.shape[1]
+        idx = self._relevant_points(q)
         self.stats["cubature_points"] += npts
-        self.stats["relevant_points"] += int(rel.sum())
-        if not rel.any():
+        self.stats["relevant_points"] += idx.size
+        if idx.size == 0:
             return np.zeros(self.T)
         if self.regions == 1:                                      # DynareOBC's default: one region, its mean point
-            return rel.mean() * self._solve(pts[:, rel].mean(axis=1))
+            # mean of q + R xi_j over the relevant j  =  q + R mean(xi_j): an (r)-vector instead of an N x k array
+            return (idx.size / npts) * self._solve(q + self.R @ self.xi[:, idx].mean(axis=1))
+        pr = q[:, None] + self.R @ self.xi[:, idx]                 # perturbed paths of the relevant points only
         if self.regions == "all":                                  # plain quasi-Monte Carlo average
             acc = np.zeros(self.T)
-            for j in np.nonzero(rel)[0]:
-                acc += self._solve(pts[:, j])
+            for j in range(idx.size):
+                acc += self._solve(pr[:, j])
             return acc / npts
         raise NotImplementedError("regions must be 1 or 'all' in this prototype")
 
