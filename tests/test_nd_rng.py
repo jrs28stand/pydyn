@@ -121,16 +121,39 @@ def test_save_never_overwrites_other_files_or_leaves_the_folder(tmp_path):
         assert not (tmp_path / "x.mat").exists() and not (d / "x.txt").exists() and not (d / "x.mat").exists()
 
 
-def test_functions_behind_addpath_are_refused_with_the_reason(tmp_path):
+def _run_mod(path):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pydyn.dynare(path)
+
+
+_TINY = "var y; varexo e; parameters rho; rho = 0.5;\nmodel; y = rho*y(-1) + e; end;\n"
+
+
+def test_functions_behind_addpath_run_and_write_next_to_the_mod_file(tmp_path):
     (tmp_path / "sub").mkdir()
-    (tmp_path / "gen.m").write_text("function gen(n)\nx = randn(n, 1);\nsave('gen_out.mat', 'x');\nend\n")
-    (tmp_path / "sub" / "a.mod").write_text("var y; varexo e; parameters rho; rho = 0.5;\nmodel; y = rho*y(-1) + e; end;\n"
-                                           "addpath('..');\ngen(3);\n")
-    with pytest.raises(pydyn.ResultsError, match="only from the .mod file's own folder"):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            pydyn.dynare(tmp_path / "sub" / "a.mod")
-    assert not (tmp_path / "gen_out.mat").exists() and not (tmp_path / "sub" / "gen_out.mat").exists()
+    (tmp_path / "gen.m").write_text("function gen(n)\nx = (1:n)' * 2;\nsave('gen_out.mat', 'x');\nend\n")
+    (tmp_path / "sub" / "a.mod").write_text(_TINY + "addpath('..');\ngen(3);\n")
+    _run_mod(tmp_path / "sub" / "a.mod")
+    assert (tmp_path / "sub" / "gen_out.mat").exists() and not (tmp_path / "gen_out.mat").exists()
+
+
+def test_addpath_refuses_to_overwrite_a_file_pydyn_did_not_write(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "gen.m").write_text("function gen(n)\nx = n;\nsave('gen_out.mat', 'x');\nend\n")
+    (tmp_path / "sub" / "gen_out.mat").write_bytes(b"precious")
+    (tmp_path / "sub" / "a.mod").write_text(_TINY + "addpath('..');\ngen(3);\n")
+    with pytest.raises(pydyn.ResultsError):
+        _run_mod(tmp_path / "sub" / "a.mod")
+    assert (tmp_path / "sub" / "gen_out.mat").read_bytes() == b"precious"
+
+
+def test_addpath_refuses_a_file_that_shadows_a_builtin(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "exp.m").write_text("function y = exp(x)\ny = 0;\nend\n")
+    (tmp_path / "sub" / "a.mod").write_text(_TINY + "addpath('..');\nz = exp(1);\n")
+    with pytest.raises(pydyn.ResultsError):
+        _run_mod(tmp_path / "sub" / "a.mod")
 
 
 def _build(tmp_path, text, name="m"):

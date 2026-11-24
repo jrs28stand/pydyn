@@ -19,7 +19,8 @@ from pydyn.matlab import Cell, Struct, Tainted, Unsupported
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
-         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2"]
+         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
+         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
@@ -33,7 +34,10 @@ SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
 REFUSED = {"oo_.dr.fuu", "oo_.dr.g_0", "oo_.dr.g_1", "oo_.dr.g_2", "oo_.dr.g_3", "oo_.dr.pruning",
            "oo_.dr.restrict_var_list", "oo_.dr.restrict_columns",
            "oo_.posterior.optimization.optimization_info", "oo_.occbin.simul.regime_history",
-           "oo_.osr.optimization_info"}
+           "oo_.osr.optimization_info",
+           # a struct array (periods x periods) of which only .endogenize_id matters; the 3-D oo_.pfwee.shocks_info is filled
+           "oo_.pfwee.controlled_paths_by_period", "oo_.deterministic_simulation.controlled_paths_by_period",
+           "oo_.deterministic_simulation.sim1", "oo_.deterministic_simulation.sim2"}
 
 
 def _diff(ref, ours, path, out, tol):

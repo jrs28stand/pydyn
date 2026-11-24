@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import keyword
 import math
+import os
 import re
 import warnings
 from pathlib import Path
@@ -224,6 +225,8 @@ def arrn(v):
         raise Unsupported("arithmetic or numeric use of a char array")
     if isinstance(v, Tainted):
         raise Unsupported(f"value depends on a statement that was not executed: {v.why}", "tainted")
+    if isinstance(v, _Obj):
+        raise Unsupported(f"this operation on a {v.obj_kind} object", "function")
     raise MatlabError(f"a {_class(v)} was used where a number is required")
 
 
@@ -293,6 +296,8 @@ def _class(v):
         return "char"
     if isinstance(v, Cell):
         return "cell"
+    if isinstance(v, _Obj):
+        return v.obj_kind
     if isinstance(v, Struct) or hasattr(v, "get_field"):
         return "struct"
     if isinstance(v, Handle):
@@ -311,6 +316,8 @@ def shape_of(v):
         return v.shape
     if isinstance(v, Tainted):
         arr(v)
+    if isinstance(v, _Obj):
+        raise Unsupported(f"size of a {v.obj_kind} object", "function")
     if hasattr(v, "ml_shape"):
         return v.ml_shape()
     return (1, 1)
@@ -794,6 +801,8 @@ def index(v, args):
     """``v(args)`` for arrays, strings and cells (returns a cell for cells)."""
     if isinstance(v, Tainted):
         arr(v)
+    if isinstance(v, _Obj):
+        return v.index(args)
     if isinstance(v, Cell):
         items, shp = v.items, v.shape
         a = np.arange(len(items)).reshape(shp, order="F") if items else np.zeros(shp, int)
@@ -849,6 +858,8 @@ def _index_arr(a, args, keep=False):
 def index_brace(v, args):
     if isinstance(v, Tainted):
         arr(v)
+    if isinstance(v, DSeriesV):
+        return v.index_brace(args)
     if not isinstance(v, Cell):
         raise MatlabError(f"'{{}}' indexing applied to a {_class(v)}")
     sub = index(v, args)
@@ -1148,6 +1159,300 @@ def assign_brace(v, args, rhs):
         grid[i][j] = rhs
         return Cell([grid[r_][c] for c in range(nc) for r_ in range(nr)], (nr, nc))
     raise Unsupported("cell arrays with more than two dimensions")
+
+
+# ====================================================================== dates and (minimal) dseries objects
+class _Obj:
+    """Base of the MATLAB objects pydyn's interpreter knows (Dynare's dates and a read-only part of dseries)."""
+    obj_kind = "object"
+
+    def get_field(self, name):
+        raise Unsupported(f"{self.obj_kind}: member or method '{name}' is not supported", "function")
+
+
+def _int_vector(p, what):
+    a = np.asarray(arrn(p), float)
+    if a.size == 0 or not np.all(np.isfinite(a)) or np.any(a != np.round(a)):
+        raise MatlabError(f"{what}: invalid input")
+    return a
+
+
+class DatesV(_Obj):
+    """Dynare's ``dates`` object: a frequency and a column vector of times (``freq`` / ``time`` members), with the
+    semantics of matlab/dseries/src/@dates (plus, minus, colon, comparisons, subsref).  Immutable here."""
+    obj_kind = "dates"
+    __slots__ = ("freq", "time")
+
+    def __init__(self, freq, time):
+        self.freq = None if freq is None else int(freq)
+        self.time = np.asarray(time, dtype=np.int64).reshape(-1)
+
+    @property
+    def ndat(self):
+        return int(self.time.size)
+
+    def _dates(self):
+        from .dates import Date
+        return [Date(self.freq, int(t)) for t in self.time]
+
+    def strings(self):
+        return [str(d) for d in self._dates()]
+
+    def get_field(self, name):
+        if name == "freq":
+            return _F(self.freq) if self.freq is not None else np.zeros((0, 0))
+        if name == "time":
+            return self.time.astype(float).reshape(-1, 1) if self.time.size else np.zeros((0, 1))
+        if name in ("ndat", "length"):
+            return _F(self.ndat)
+        if name == "isempty":
+            return np.bool_(self.ndat == 0)
+        if name == "char":
+            if self.ndat > 1:
+                raise MatlabError("The input argument must be a dates object with one element!")
+            return self.strings()[0] if self.ndat else ""
+        if name == "strings":
+            return Cell(self.strings(), (1, self.ndat))
+        if name in ("year", "subperiod"):
+            ds = self._dates()
+            return np.array([[float(getattr(d, "year" if name == "year" else "subperiod"))] for d in ds]).reshape(-1, 1)
+        if name == "sort":
+            return DatesV(self.freq, np.sort(self.time))
+        if name == "unique":      # Dynare: unique(time, 'legacy') (last occurrences), kept in the order of their positions
+            keep = [i for i in range(self.ndat) if self.time[i] not in self.time[i + 1:]]
+            return DatesV(self.freq, self.time[keep])
+        raise Unsupported(f"dates: member or method '{name}' is not supported", "function")
+
+    def index(self, args):
+        if len(args) != 1:
+            raise Unsupported("dates indexed with several subscripts", "function")
+        a = args[0]
+        if a is COLON:
+            raise MatlabError(f"dates::subsref: indices has to be a vector of positive integers less than or equal to {self.ndat}!")
+        if type(a) in _SCALT or isinstance(a, np.ndarray):
+            v = np.asarray(arrn(a))
+            if v.size == 0:
+                return DatesV(self.freq, np.zeros(0, np.int64))
+            if v.ndim == 2 and min(v.shape) != 1:
+                raise MatlabError(f"dates::subsref: indices has to be a vector of positive integers less than or equal to {self.ndat}!")
+            v = v.reshape(-1)
+            if v.dtype == bool:
+                if v.size == self.ndat:
+                    return DatesV(self.freq, self.time[v])
+            elif v.size == self.ndat and not (np.all(v == np.round(v)) and np.all(v > 0) and np.all(v <= self.ndat)):
+                raise Unsupported("dates indexed with a numeric vector of the length of the dates object that is not a list of positions "
+                                  "(Dynare treats it as a logical mask)", "function")
+            elif np.all(v == np.round(v)) and np.all(v > 0) and np.all(v <= self.ndat):
+                return DatesV(self.freq, self.time[v.astype(int) - 1])
+            raise MatlabError(f"dates::subsref: indices has to be a vector of positive integers less than or equal to {self.ndat}!")
+        raise MatlabError(f"dates::subsref: indices has to be a vector of positive integers less than or equal to {self.ndat}!")
+
+    def snapshot(self):
+        return self
+
+
+class DSeriesV(_Obj):
+    """A read-only part of Dynare's ``dseries``: data (nobs x vobs), the first date and the variable names.  Supports
+    ``ds.name``, ``ds.data``, ``ds.dates``, ``ds(dates)``, ``ds{'a','b'}`` and a few members; no arithmetic."""
+    obj_kind = "dseries"
+    __slots__ = ("data", "init", "names")
+
+    def __init__(self, data, init, names):
+        self.data, self.init, self.names = data, init, list(names)
+
+    @property
+    def nobs(self):
+        return self.data.shape[0]
+
+    def all_dates(self):
+        return DatesV(self.init.freq, self.init.time[0] + np.arange(self.nobs))
+
+    def get_field(self, name):
+        if name == "data":
+            return self.data
+        if name == "dates":
+            return self.all_dates()
+        if name == "init":
+            return self.init
+        if name == "last":
+            return DatesV(self.init.freq, self.init.time[:1] + self.nobs - 1)
+        if name == "freq":
+            return _F(self.init.freq)
+        if name == "nobs":
+            return _F(self.nobs)
+        if name == "vobs":
+            return _F(len(self.names))
+        if name == "name":
+            return Cell(list(self.names), (len(self.names), 1))
+        if name in self.names:
+            j = self.names.index(name)
+            return DSeriesV(self.data[:, [j]], self.init, [name])
+        raise MatlabError(f"dseries: unknown member or variable '{name}'")
+
+    def index(self, args):
+        if len(args) == 1 and type(args[0]) is DatesV:
+            d = args[0]
+            if d.freq != self.init.freq:
+                raise MatlabError("dseries: dates and the dseries must have the same frequency")
+            pos = d.time - int(self.init.time[0])
+            if pos.size and (pos.min() < 0 or pos.max() >= self.nobs):
+                raise MatlabError("dseries: some of the dates are out of the sample")
+            return DSeriesV(self.data[pos], DatesV(d.freq, d.time[:1]), self.names)
+        raise Unsupported("dseries subscripts other than a dates object", "function")
+
+    def index_brace(self, args):
+        if not args or not all(isinstance(a, str) for a in args):
+            raise Unsupported("dseries{...} with arguments that are not variable names", "function")
+        for a in args:
+            if a not in self.names:
+                raise MatlabError(f"dseries: unknown variable '{a}'")
+        return DSeriesV(self.data[:, [self.names.index(a) for a in args]], self.init, list(args))
+
+    def snapshot(self):
+        return self
+
+
+_OBJ = (DatesV, DSeriesV)
+_FREQ_CHARS = {"y": 1, "a": 1, "h": 2, "s": 2, "q": 4, "m": 12, "w": 52, "d": 365}
+
+
+def _make_dates(args):
+    """``dates(...)`` as the constructor of Dynare's dates class."""
+    from .dates import Date, DateError
+    if not args:
+        return DatesV(None, [])
+    if all(type(a) is DatesV for a in args):
+        out = args[0]
+        for p in args[1:]:
+            if out.freq is not None and p.freq is not None and out.freq != p.freq:
+                raise MatlabError("dates:horzcat: All input arguments must have the same frequency.")
+            if out.ndat == 0:
+                out = p
+            elif p.ndat:
+                out = DatesV(out.freq, np.concatenate([out.time, p.time]))
+        return out
+    if all(isinstance(a, str) for a in args) and not (len(args) == 1 and args[0].lower() in _FREQ_CHARS) \
+            and not all(Date.is_date(a) for a in args):
+        raise MatlabError("The input cannot be interpreted as a date.")
+    if all(isinstance(a, str) and Date.is_date(a) for a in args):
+        ds = [Date.parse(a) for a in args]
+        if any(d.freq != ds[0].freq for d in ds):
+            raise MatlabError("dates:ArgCheck: All dates passed as inputs must have the same frequency!")
+        return DatesV(ds[0].freq, [d.time for d in ds])
+    if args and (isinstance(args[0], str) and args[0].lower() in _FREQ_CHARS
+                 or type(args[0]) in _SCALT and float(args[0]) in (1, 2, 4, 12, 52)):
+        f = args[0]
+        freq = _FREQ_CHARS[f.lower()] if isinstance(f, str) else int(f)
+        if freq == 365:
+            raise Unsupported("daily dates built from numbers", "function")
+        if len(args) == 1:
+            return DatesV(freq, [])
+        if len(args) == 2 and freq == 1:
+            return DatesV(freq, _int_vector(args[1], "dates").reshape(-1))
+        if len(args) == 3 and freq != 52:
+            y, s = _int_vector(args[1], "dates").reshape(-1), _int_vector(args[2], "dates").reshape(-1)
+            if np.any(s < 1) or np.any(s > freq):
+                raise MatlabError(f"dates:ArgCheck: Third input must contain integers between 1 and {freq}.")
+            return DatesV(freq, y * freq + s)
+    raise Unsupported("this form of the dates constructor", "function")
+
+
+def _dates_cmp_args(a, b, op):
+    if type(a) is not DatesV or type(b) is not DatesV:
+        raise MatlabError(f"dates:{op}:ArgCheck: Input arguments have to be dates objects!")
+    if a.freq != b.freq:
+        raise MatlabError(f"dates:{op}:ArgCheck: Input arguments must have common frequency!")
+    if a.ndat != b.ndat and not (a.ndat == 1 or b.ndat == 1):
+        raise MatlabError(f"dates:{op}:ArgCheck: Dimensions are not consistent!")
+
+
+def _dates_binop(op, a, b):
+    """``a op b`` where an operand is a dates object (matlab/dseries/src/@dates)."""
+    if type(a) is DSeriesV or type(b) is DSeriesV:
+        raise Unsupported(f"operator {op} on a dseries object", "function")
+    if op in ("==", "~=", "!=", "<", ">", "<=", ">="):
+        name = {"==": "eq", "~=": "ne", "!=": "ne", "<": "lt", ">": "gt", "<=": "le", ">=": "ge"}[op]
+        if name == "eq" and type(a) is DatesV and type(b) is DatesV and a.ndat > 1 and b.ndat > 1 and a.ndat != b.ndat:
+            return np.bool_(False)
+        _dates_cmp_args(a, b, name)
+        x, y = a.time.reshape(-1, 1), b.time.reshape(-1, 1)
+        r = {"eq": x == y, "ne": x != y, "lt": x < y, "gt": x > y, "le": x <= y, "ge": x >= y}[name]
+        return np.bool_(r[0, 0]) if r.size == 1 else r
+    if op == "+":
+        if type(a) is DatesV and type(b) is DatesV:
+            if a.freq != b.freq:
+                raise MatlabError("dates:plus:ArgCheck: Input arguments must have common frequency.")
+            if b.ndat == 0:
+                return a
+            if a.ndat == 0:
+                return b
+            return DatesV(a.freq, np.concatenate([a.time, b.time]))
+        d, p = (a, b) if type(a) is DatesV else (b, a)
+        v = _plus_minus_operand(d, p, "plus")
+        return DatesV(d.freq, d.time + v)
+    if op == "-":
+        if type(a) is DatesV and type(b) is DatesV:
+            if a.freq != b.freq:
+                raise MatlabError("dates:minus:ArgCheck: Input arguments must have common frequencies.")
+            if a.ndat == 0 or b.ndat == 0:
+                raise MatlabError("dates:minus:ArgCheck: Input arguments must not be empty.")
+            if a.ndat != b.ndat and a.ndat != 1 and b.ndat != 1:
+                raise MatlabError("dates:minus:ArgCheck: Input arguments lengths are not consistent.")
+            n = max(a.ndat, b.ndat)
+            return (np.broadcast_to(a.time, (n,)) - np.broadcast_to(b.time, (n,))).astype(float).reshape(-1, 1)
+        if type(a) is DatesV:
+            return DatesV(a.freq, a.time - _plus_minus_operand(a, b, "minus"))
+        raise MatlabError("dates:minus:ArgCheck: Invalid input.")
+    raise Unsupported(f"operator {op} on dates objects", "function")
+
+
+def _plus_minus_operand(d, p, name):
+    if isinstance(p, (str, Cell, Struct)) or type(p) in _OBJ:
+        raise MatlabError(f"dates:{name}:ArgCheck: Invalid input.")
+    if isinstance(p, (bool, np.bool_)) or (isinstance(p, np.ndarray) and p.dtype == bool):
+        raise MatlabError(f"dates:{name}:ArgCheck: Invalid input.")
+    v = np.asarray(arrn(p), float)
+    ok = v.size >= 1 and np.all(np.isfinite(v)) and np.all(v == np.round(v)) and \
+        (v.size == 1 or (min(v.shape) == 1 and (v.size == d.ndat or d.ndat == 1)))
+    if not ok or v.ndim > 2:
+        raise MatlabError(f"dates:{name}:ArgCheck: " + ("Invalid input." if name == "plus" else
+                          "Second argument has to be a vector of integers or scalar integer."))
+    return v.reshape(-1).astype(np.int64)
+
+
+def _dates_colon(a, b, c=None):
+    if c is None:
+        o, p, step = a, b, 1
+    else:
+        o, p = a, c
+        if type(b) in _OBJ:
+            raise MatlabError("dates:colon:ArgCheck: In an expression like A:d:B, A and B must be one element dates objects and d a scalar integer.")
+        step = scalar(b, "step")
+        if step != round(step):
+            raise MatlabError("dates:colon:ArgCheck: In an expression like A:d:B, A and B must be one element dates objects and d a scalar integer.")
+        step = int(step)
+        if step == 0:
+            raise MatlabError("dates:colon:ArgCheck: In an expression like A:d:B, d (the incremental number of periods) must nonzero.")
+    if not (type(o) is DatesV and type(p) is DatesV and o.ndat == 1 and p.ndat == 1):
+        raise MatlabError("dates:colon:ArgCheck: In an expression like A:B, A and B must be one element dates objects.")
+    if o.freq != p.freq:
+        raise MatlabError("dates:colon:ArgCheck: Input arguments must have common frequency.")
+    t0, t1 = int(o.time[0]), int(p.time[0])
+    if t0 > t1 and step > 0:
+        raise MatlabError("dates:colon:ArgCheck: First date must preceed the second one.")
+    if t1 > t0 and step < 0:
+        raise MatlabError("dates:colon:ArgCheck: Second date must preceed the first one.")
+    if abs(t1 - t0) // abs(step) > MAX_ELEMENTS:
+        raise Unsupported(f"range with more than {MAX_ELEMENTS} elements")
+    return DatesV(o.freq, np.arange(t0, t1 + (1 if step > 0 else -1), step))
+
+
+def native_dates(text):
+    """Dynare's preprocessor rewrites date literals (``2000Q1``, ``3Y``, ...) of native MATLAB statements as
+    ``dates('2000Q1')`` (NativeStatement::writeOutput; ``$2000Q1`` is left alone, minus the dollar sign)."""
+    date = r"-?\d+(?:[YyAa]|[Mm](?:1[0-2]|[1-9])|[Qq][1-4]|[SsHh][12])"
+    out = re.sub(r"(?<![$\d\-'A-Za-z_])(" + date + ")", r"dates('\1')", text)
+    return re.sub(r"\$(" + date + ")", r"\1", out)
 
 
 # ====================================================================== lexer
@@ -2093,6 +2398,30 @@ def _elem(fn, name):
     return f
 
 
+def _libm(npf, mf):
+    """The elementary function of the C library, as Octave calls it (numpy's own vector versions of exp, log, tanh, ...
+    differ from it in the last bit for a few percent of the arguments).  Arguments for which ``math`` raises
+    (domain errors, overflow) and non-real arguments go to numpy, which gives the IEEE results."""
+    def f(x):
+        if type(x) is np.float64:
+            try:
+                return np.float64(mf(x))
+            except (ValueError, OverflowError):
+                return npf(x)
+        x = np.asarray(x)
+        if x.dtype != np.float64 or x.size == 0:
+            return npf(x)
+        out = np.empty(x.shape)
+        flat, o = x.reshape(-1), out.reshape(-1)
+        for i, v in enumerate(flat.tolist()):
+            try:
+                o[i] = mf(v)
+            except (ValueError, OverflowError):
+                o[i] = npf(np.float64(v))
+        return out
+    return f
+
+
 def _mround(x):
     t = np.trunc(x)                       # half away from zero, without the round-off of floor(|x| + 0.5)
     return t + np.sign(x) * (np.abs(x - t) >= 0.5)
@@ -2102,14 +2431,17 @@ def _gamma(x):
     return _F(special.gamma(x)) if np.ndim(x) == 0 else special.gamma(x)
 
 
-for _n, _f in {"exp": np.exp, "log": np.log, "log2": np.log2, "log10": np.log10, "sqrt": np.sqrt, "abs": np.abs,
+for _n, _f in {"exp": _libm(np.exp, math.exp), "log": _libm(np.log, math.log), "log2": _libm(np.log2, math.log2),
+               "log10": _libm(np.log10, math.log10), "sqrt": np.sqrt, "abs": np.abs,
                "sign": np.sign, "floor": np.floor, "ceil": np.ceil, "fix": np.trunc, "round": _mround,
-               "sin": np.sin, "cos": np.cos, "tan": np.tan, "asin": np.arcsin, "acos": np.arccos, "atan": np.arctan,
-               "sinh": np.sinh, "cosh": np.cosh, "tanh": np.tanh, "asinh": np.arcsinh, "acosh": np.arccosh,
-               "atanh": np.arctanh, "gamma": _gamma, "gammaln": lambda x: _F(special.gammaln(x)) if np.ndim(x) == 0 else special.gammaln(x),
+               "sin": _libm(np.sin, math.sin), "cos": _libm(np.cos, math.cos), "tan": _libm(np.tan, math.tan),
+               "asin": _libm(np.arcsin, math.asin), "acos": _libm(np.arccos, math.acos),
+               "atan": _libm(np.arctan, math.atan), "sinh": _libm(np.sinh, math.sinh), "cosh": _libm(np.cosh, math.cosh),
+               "tanh": _libm(np.tanh, math.tanh), "asinh": _libm(np.arcsinh, math.asinh),
+               "acosh": _libm(np.arccosh, math.acosh), "atanh": _libm(np.arctanh, math.atanh), "gamma": _gamma, "gammaln": lambda x: _F(special.gammaln(x)) if np.ndim(x) == 0 else special.gammaln(x),
                "erf": lambda x: _F(special.erf(x)) if np.ndim(x) == 0 else special.erf(x),
                "erfc": lambda x: _F(special.erfc(x)) if np.ndim(x) == 0 else special.erfc(x),
-               "isnan": np.isnan, "isinf": np.isinf, "isfinite": np.isfinite, "log1p": np.log1p, "expm1": np.expm1,
+               "isnan": np.isnan, "isinf": np.isinf, "isfinite": np.isfinite, "log1p": _libm(np.log1p, math.log1p), "expm1": _libm(np.expm1, math.expm1),
                "real": lambda x: x, "conj": lambda x: x, "double": lambda x: x, "uplus": lambda x: x,
                "factorial": lambda x: np.round(special.gamma(x + 1)),
                "norminv_std": special.ndtri}.items():
@@ -3709,7 +4041,7 @@ def _plot(I, argnodes, sc, nout):
 
 FILE_FUNCS = ("save fopen fread fwrite fgetl fgets fscanf textscan importdata xlsread xlswrite csvread csvwrite "
               "dlmread dlmwrite readtable writetable readmatrix writematrix delete copyfile movefile mkdir rmdir "
-              "addpath rmpath cd pwd dir ls system unix dos isfile isfolder isdir fileparts fullfile exist_file "
+              "cd pwd dir ls system unix dos isfile isfolder isdir fileparts fullfile exist_file "
               "datatomfile matfile which websave urlread unzip zip tempdir tempname getenv setenv "
               "open winopen edit type input keyboard dbstack mfilename genpath path userpath").split()
 
@@ -3717,6 +4049,62 @@ FILE_FUNCS = ("save fopen fread fwrite fgetl fgets fscanf textscan importdata xl
 @lazy(*FILE_FUNCS)
 def _file(I, argnodes, sc, nout):
     raise Unsupported("file-system, shell or interactive functions are not available", "file")
+
+
+@bi("corr")
+def _corr(I, a, nout):
+    """Octave's corr(x[, y]): correlation coefficients between the columns of x (and of y); row vectors are columns."""
+    _nargs(a, 1, 2, "corr")
+    mats = []
+    for v in a:
+        if isinstance(v, str) or not isinstance(v, (np.ndarray, np.floating, float, int, np.bool_, bool)):
+            if isinstance(v, str):
+                raise MatlabError("cov: X and Y must be numeric matrices or vectors")
+            arr(v)
+        m = np.array(arr(v), float)
+        if m.shape[0] == 1 and m.shape[1] > 1:
+            m = m.T
+        mats.append(m)
+    x = mats[0]
+    if x.size == 1:
+        return _F(1.0)
+    with np.errstate(all="ignore"):
+        if len(mats) == 2:
+            y = mats[1]
+            if y.shape[0] != x.shape[0]:
+                raise MatlabError("cov: X and Y must have the same number of observations")
+            n = x.shape[0]
+            if n == 0:
+                return ret(np.full((x.shape[1], y.shape[1]), np.nan))
+            xc, yc = x - x.mean(axis=0), y - y.mean(axis=0)
+            c = xc.T @ yc / max(n - 1, 1)
+            sx, sy = np.sqrt((xc ** 2).sum(axis=0) / max(n - 1, 1)), np.sqrt((yc ** 2).sum(axis=0) / max(n - 1, 1))
+            r = c / np.outer(sx, sy)
+        else:
+            n = x.shape[0]
+            if n == 0:
+                return ret(np.full((x.shape[1], x.shape[1]), np.nan))
+            xc = x - x.mean(axis=0)
+            c = xc.T @ xc / max(n - 1, 1)
+            sd = np.sqrt(np.diag(c))
+            r = c / np.outer(sd, sd)
+    return _F(r[0, 0]) if r.size == 1 else ret(r)
+
+
+@bi("addpath")
+def _addpath(I, a, nout):
+    if nout > 0:
+        raise Unsupported("addpath: the output (the previous path) is not available", "file")
+    I.add_path(a, remove=False)
+    return []
+
+
+@bi("rmpath")
+def _rmpath(I, a, nout):
+    if nout > 0:
+        raise Unsupported("rmpath: the output is not available", "file")
+    I.add_path(a, remove=True)
+    return []
 
 
 @bi("toc", "clock", "now", "date", "datestr", "cputime", "etime", "datetime", "version", "ver", "computer",
@@ -4196,10 +4584,11 @@ class Scope:
 
 class Unit:
     """A parsed .m file."""
-    __slots__ = ("path", "body", "funcs", "main")
+    __slots__ = ("path", "body", "funcs", "main", "foreign", "shadows")
 
-    def __init__(self, path, body, funcs):
+    def __init__(self, path, body, funcs, foreign=False, shadows=False):
         self.path, self.body, self.funcs = path, body, funcs
+        self.foreign, self.shadows = foreign, shadows
         self.main = next(iter(funcs.values())) if funcs and not body else None
 
     @property
@@ -4248,16 +4637,81 @@ class Interpreter:
         self.random_ok = True
         self._units = {}
         self._dir_files = None
+        self._foreign_names = set()
+        self.path_dirs = []         # folders added by addpath, highest priority first (function files only)
 
     # ---- files
+    def reserved(self, name):
+        """Names pydyn implements itself: a function file of the same name in a folder added by addpath is refused
+        (MATLAB would run the file; pydyn would silently run its own function)."""
+        return name in BUILTINS or name in LAZY
+
     def dir_files(self):
+        """name -> path of the .m files the code can call: the model's own folder, then the folders added by
+        ``addpath`` (an earlier folder wins)."""
         if self._dir_files is None:
             self._dir_files = {}
+            self._foreign_names = set()
             if self.dir is not None and self.dir.is_dir():
                 for p in self.dir.iterdir():
                     if p.suffix == ".m" and re.fullmatch(r"[A-Za-z_]\w*", p.stem):
                         self._dir_files[p.stem] = p
+            for d in self.path_dirs:
+                try:
+                    items = sorted(d.iterdir())
+                except OSError:
+                    continue
+                for p in items:
+                    if p.suffix == ".m" and re.fullmatch(r"[A-Za-z_]\w*", p.stem) and p.stem not in self._dir_files \
+                            and p.is_file():
+                        self._dir_files[p.stem] = p
+                        self._foreign_names.add(p.stem)
         return self._dir_files
+
+    def add_path(self, args, remove=False):
+        """``addpath(dir, ...)`` / ``rmpath(dir)``: relative folders are relative to the model's folder (where Dynare
+        runs the file).  Only function files found there can be called; they are interpreted, with the same
+        refusals as the model folder's own files.  Folders that do not exist are ignored (MATLAB warns)."""
+        front, dirs = True, []
+        for a in args:
+            if isinstance(a, str):
+                if a in ("-begin", "-end", "-frozen"):
+                    if a == "-end":
+                        front = False
+                    elif a == "-frozen":
+                        raise Unsupported("addpath -frozen", "file")
+                    continue
+                dirs.extend(x for x in a.split(os.pathsep) if x)
+            elif isinstance(a, (np.ndarray, float, int, np.floating)) and not remove and np.size(a) == 1:
+                front = not bool(np.asarray(a).reshape(-1)[0])      # addpath(dir, 1) appends
+            else:
+                raise Unsupported("addpath/rmpath with arguments that are not folder names", "file")
+        if self.dir is None:
+            raise Unsupported("addpath needs the folder of the model file", "file")
+        found = []
+        for d in dirs:
+            if "*" in d or "?" in d or "\0" in d:
+                raise Unsupported(f"addpath of {d!r}", "file")
+            q = Path(d).expanduser()
+            q = q if q.is_absolute() else self.dir / q
+            try:
+                q = Path(os.path.normpath(q))
+                ok = q.is_dir()
+            except OSError:
+                ok = False
+            found.append((q, ok))
+        for q, ok in found:
+            self.foreign_paths.append(str(q))
+            if remove:
+                self.path_dirs = [x for x in self.path_dirs if x != q]
+            elif ok:
+                self.path_dirs = [x for x in self.path_dirs if x != q]
+                if q == self.dir:
+                    continue
+                self.path_dirs = [q] + self.path_dirs if front else self.path_dirs + [q]
+        if found:
+            self._dir_files = None
+            self._units = {}
 
     def unit(self, name):
         """Parsed ``name.m`` from the model directory, or None."""
@@ -4267,8 +4721,17 @@ class Interpreter:
         u = None
         if p is not None:
             try:
+                foreign = name in self._foreign_names
+                if foreign and p.stat().st_size > 2_000_000:
+                    raise Unsupported(f"{p} is too large to interpret", "file")
                 body, funcs = parse(p.read_text(errors="replace"))
-                u = Unit(p, body, funcs)
+                u = Unit(p, body, funcs, foreign=foreign)
+                if foreign and self.reserved(name):
+                    raise Unsupported(f"{p} (on the path added by addpath) has the name of a function pydyn implements "
+                                      f"itself ({name}): pydyn cannot tell which one the code means", "function")
+                if foreign and u.is_script:
+                    raise Unsupported(f"{p} is a script in a folder added by addpath: only function files are read "
+                                      "from there", "file")
             except ParseError as exc:
                 u = exc
         self._units[name] = u
@@ -4354,6 +4817,10 @@ class Interpreter:
         if not self.end_stack:
             raise Unsupported("'end' inside a call to an unknown function or variable", "function")
         v, k, nargs = self.end_stack[-1]
+        if type(v) is DatesV:
+            if nargs != 1:
+                raise MatlabError("dates only has one dimension")
+            return _F(v.ndat)
         shp = (0, 0) if v is None else shape_of(v)
         return _F(redim(shp, nargs)[k]) if nargs > 1 else _F(int(np.prod(shp, dtype=np.int64)))
 
@@ -4383,6 +4850,8 @@ class Interpreter:
                 return np.bool_(a)
             return np.bool_(self._sc_bool(self.ev(n.r, sc)))
         a, b = self.ev(n.l, sc), self.ev(n.r, sc)
+        if type(a) in _OBJ or type(b) in _OBJ:
+            return _dates_binop(op, a, b)
         if hasattr(a, "ml_binop"):
             return a.ml_binop(op, b, True)
         if hasattr(b, "ml_binop"):
@@ -4401,6 +4870,8 @@ class Interpreter:
     def _range(self, n, sc):
         a = self.ev(n.a, sc)
         c = self.ev(n.c, sc)
+        if type(a) in _OBJ or type(c) in _OBJ:
+            return _dates_colon(a, c) if n.b is None else _dates_colon(a, self.ev(n.b, sc), c)
         return colon(a, c) if n.b is None else colon(a, self.ev(n.b, sc), c)
 
     def _matrix(self, n, sc):
@@ -4479,6 +4950,9 @@ class Interpreter:
             return r[0]
         if hasattr(v, "snapshot"):
             v = v.snapshot()
+        if not n.args and type(base) is Field and base.name in ("freq", "time") and not n.brace \
+                and type(self.ev(base.base, sc)) is DatesV:
+            raise MatlabError(f"dates::subsref: {base.name} is not a method but a member!")
         args = self.index_args(v, n.args, sc)
         if hasattr(v, "ml_index"):
             return v.ml_index(args, n.brace)
@@ -4584,8 +5058,8 @@ class Interpreter:
         hint = ""
         if self.foreign_paths:
             hint = (f" (the code adds {sorted(set(self.foreign_paths))} to the path: pydyn reads function files only "
-                    "from the .mod file's own folder, so functions defined elsewhere, such as Dynare's test-data "
-                    "generators in '..', are not run)")
+                    "from the .mod file's own folder and from the folders it adds with addpath that exist and hold "
+                    f"{name}.m)")
         raise Unsupported(f"unknown function or variable '{name}'{hint}", "function")
 
     def call_user(self, f, funcs, args, nargout):
@@ -4851,6 +5325,9 @@ class Interpreter:
             return None
         if name == "load":
             return self.load_file(args, sc)
+        if name in ("addpath", "rmpath"):
+            self.add_path([a.strip("'\"") for a in args], remove=name == "rmpath")
+            return None
         if name == "run":
             self.scope_stack.append(sc)
             try:
@@ -4939,6 +5416,122 @@ Interpreter._ev = {Num: Interpreter._num, Str: Interpreter._strn, Id: Interprete
                    Matrix: Interpreter._matrix, CellLit: Interpreter._celllit, AnonFunc: Interpreter._anon,
                    FuncHandle: Interpreter._fhandle, BadExpr: Interpreter._bad, ColonAll: Interpreter._colonall,
                    Index: Interpreter._index, Field: Interpreter._field}
+
+
+def _obj_builtins():
+    """Built-ins that accept dates / dseries objects (the other built-ins refuse them: ``arrn`` raises Unsupported)."""
+    def wrap(name, fn):
+        old = BUILTINS.get(name)
+
+        def f(I, a, nout):
+            if a and any(type(x) in _OBJ for x in a):
+                return fn(I, a, nout)
+            if old is None:
+                raise Unsupported(f"unknown function or variable '{name}'", "function")
+            return old(I, a, nout)
+        BUILTINS[name] = f
+
+    def need_dates(name, a, k=1):
+        for x in a:
+            if type(x) is not DatesV:
+                raise MatlabError(f"dates:{name}:ArgCheck: All input arguments must be dates objects.")
+
+    def length(I, a, nout):
+        if len(a) == 1 and type(a[0]) is DatesV:
+            return _F(a[0].ndat)
+        raise Unsupported("length of a dseries object", "function")
+
+    def isempty(I, a, nout):
+        if len(a) == 1 and type(a[0]) is DatesV:
+            return np.bool_(a[0].ndat == 0)
+        if len(a) == 1 and type(a[0]) is DSeriesV:
+            return np.bool_(a[0].nobs == 0)
+        raise Unsupported("isempty of this object", "function")
+
+    def isequal(I, a, nout):
+        if len(a) == 2 and type(a[0]) is DatesV and type(a[1]) is DatesV:
+            return np.bool_(a[0].freq == a[1].freq and np.array_equal(a[0].time, a[1].time))
+        if len(a) >= 2 and any(type(x) is DatesV for x in a):
+            raise MatlabError("dates:isequal:ArgCheck: Both inputs must be dates objects!")
+        raise Unsupported("isequal on dseries objects", "function")
+
+    def char(I, a, nout):
+        if len(a) == 1 and type(a[0]) is DatesV:
+            return a[0].get_field("char")
+        raise Unsupported("char of this object", "function")
+
+    def strings(I, a, nout):
+        if len(a) == 1 and type(a[0]) is DatesV:
+            return a[0].get_field("strings")
+        raise Unsupported("strings of this object", "function")
+
+    def mn(I, a, nout):
+        need_dates("min", a)
+        out = _make_dates(a) if len(a) > 1 else a[0]
+        if out.ndat == 0:
+            return DatesV(out.freq, [])
+        return DatesV(out.freq, [out.time.min()])
+
+    def mx(I, a, nout):
+        need_dates("max", a)
+        out = _make_dates(a) if len(a) > 1 else a[0]
+        if out.ndat == 0:
+            return DatesV(out.freq, [])
+        return DatesV(out.freq, [out.time.max()])
+
+    for nm, fn in (("length", length), ("isempty", isempty), ("isequal", isequal), ("char", char),
+                   ("strings", strings), ("min", mn), ("max", mx)):
+        wrap(nm, fn)
+    BUILTINS["dates"] = lambda I, a, nout: _make_dates(a)
+    BUILTINS["isdates"] = lambda I, a, nout: np.bool_(len(a) == 1 and type(a[0]) is DatesV)
+    BUILTINS["isdseries"] = lambda I, a, nout: np.bool_(len(a) == 1 and type(a[0]) is DSeriesV)
+
+    def dseries(I, a, nout):
+        if not 1 <= len(a) <= 3 or isinstance(a[0], (str, Cell, Struct)) or type(a[0]) in _OBJ:
+            raise Unsupported("this form of the dseries constructor (only dseries(data[, first date[, names]]) is supported)", "function")
+        data = np.array(farr(a[0]), float)
+        if data.ndim != 2:
+            raise Unsupported("dseries from an N-d array", "function")
+        if data.shape[0] == 1 and data.shape[1] > 1 and False:
+            data = data.T
+        if len(a) >= 2:
+            b = a[1]
+            if isinstance(b, np.ndarray) and b.size == 0:
+                init = DatesV(1, [1])
+            elif type(b) is DatesV and b.ndat == 1:
+                init = b
+            elif isinstance(b, str):                    # a date string
+                init = _make_dates([b])
+            elif isinstance(b, (float, np.floating, int)) and float(b) == int(b):          # a year
+                init = DatesV(1, [int(b)])
+            elif type(b) is DatesV and b.ndat > 1 and data.shape[0] in (1, b.ndat) and \
+                    np.array_equal(b.time, b.time[0] + np.arange(b.ndat)):
+                init = DatesV(b.freq, b.time[:1])
+                if data.shape[0] == 1:
+                    data = np.repeat(data, b.ndat, axis=0)
+            elif type(b) is DatesV:
+                raise Unsupported("dseries with a range of dates that is not consecutive, or whose length does not match", "function")
+            else:
+                raise MatlabError("dseries: Wrong calling sequence!")
+        else:
+            init = DatesV(1, [1])
+        if len(a) == 3:
+            nm = a[2]
+            if isinstance(nm, str):
+                names = [nm]
+            elif isinstance(nm, Cell) and all(isinstance(x, str) for x in nm.items):
+                names = list(nm.items)
+            else:
+                raise Unsupported("dseries names that are not a char array or a cell array of char arrays", "function")
+        else:
+            names = [f"Variable_{j + 1}" for j in range(data.shape[1])]
+        if len(names) != data.shape[1]:
+            raise MatlabError("dseries: the number of variable names must match the number of columns")
+        return DSeriesV(data, init, names)
+    BUILTINS["dseries"] = dseries
+
+
+_obj_builtins()
 
 
 def run(text, variables=None, directory=None):
@@ -5463,7 +6056,11 @@ class ModSession:
                 info.calib = info.calib or f"it calls {name}"
             elif name in self.I.dir_files() and name not in seen:
                 seen.add(name)
-                u = self.I.unit(name)
+                try:
+                    u = self.I.unit(name)
+                except Unsupported as exc:
+                    info.calib = info.calib or f"{name}.m cannot be interpreted ({exc})"
+                    continue
                 if isinstance(u, ParseError):
                     info.calib = info.calib or f"{name}.m cannot be parsed"
                 elif u.is_script:
@@ -5654,7 +6251,8 @@ class ModSession:
     def run(self, statements):
         self.statements = statements
         if any(st["statementName"] in ("native", "verbatim") for st in statements):
-            lines = [st["string"] if st["statementName"] in ("native", "verbatim") else ("dyn", k)
+            lines = [(native_dates(st["string"]) if st["statementName"] == "native" else st["string"])
+                     if st["statementName"] in ("native", "verbatim") else ("dyn", k)
                      for k, st in enumerate(statements)]
             try:
                 body, funcs = parse(lines)

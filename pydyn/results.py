@@ -41,6 +41,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import dates as _dates
 from . import matlab as _ml
 from .matlab import (Cell, Interpreter, MatlabError, Struct, Tainted, Unsupported, arr, farr, ret, _F, _HOST_GLOBALS)
 from .model import Model, ModelError
@@ -138,6 +139,9 @@ def py_value(v):
         if v.dtype == bool:
             return [bool(x) for x in flat]
         return [py_value(_F(x)) for x in flat]
+    if isinstance(v, _ml.DatesV):             # dates() is the empty value of options such as first_simulation_period
+        s = v.strings()
+        return [] if not s else (s[0] if len(s) == 1 else s)
     return v
 
 
@@ -364,6 +368,9 @@ class LiveInterp(Interpreter):
         return super().getfield(v, name)
 
     # --- Dynare's functions and the functions the results mode replaces
+    def reserved(self, name):
+        return super().reserved(name) or name in self.res.functions or name in self.res.noops
+
     def _live(self, name, sc):
         if name in sc.funcs or name in self.dir_files():
             return None
@@ -376,11 +383,7 @@ class LiveInterp(Interpreter):
         if name in self.res.noops and name not in sc.funcs and name not in self.dir_files():
             for a in argnodes:                         # arguments are evaluated: they may fail or have effects
                 if type(a) not in (_ml.Str, _ml.Num, _ml.ColonAll):
-                    v = self.ev_multi(a, sc, 1)
-                    if name == "addpath" and v and isinstance(v[0], str):
-                        self.foreign_paths.append(v[0])
-                elif name == "addpath" and type(a) is _ml.Str:
-                    self.foreign_paths.append(a.v)
+                    self.ev_multi(a, sc, 1)
             if nargout > 0:
                 raise Unsupported(f"{name}: its output is not available (pydyn draws nothing)", "display")
             return []
@@ -616,7 +619,8 @@ class _Core(CommandsMixin):
                 m.Correlation_matrix = C.copy()
             H = np.asarray(farr(M["H"]), float)
             if m.varobs and H.shape == (len(m.varobs), len(m.varobs)):
-                m.measurement_errors = {v: float(H[i, i]) for i, v in enumerate(m.varobs) if H[i, i] != 0}
+                C = np.asarray(farr(M["Correlation_matrix_ME"]), float) if "Correlation_matrix_ME" in M else None
+                m.set_me_H(H, m.varobs, C if C is not None and C.shape == H.shape else None)
         except Unsupported:
             raise
         self._pull_steady()
@@ -691,10 +695,12 @@ class _Core(CommandsMixin):
         self.set_M("Correlation_matrix", mat(m.Correlation_matrix))
         self.set_M("sigma_e_is_diagonal", np.bool_(not np.any(m.Sigma_e - np.diag(np.diag(m.Sigma_e)))))
         if m.varobs:
-            h = np.zeros((len(m.varobs), len(m.varobs)))
-            for i, v in enumerate(m.varobs):
-                h[i, i] = m.measurement_errors.get(v, 0.0)
+            h = m.me_H(m.varobs)
             self.set_M("H", mat(h) if np.any(h != 0) else _F(0.0))      # Dynare: the scalar 0 without measurement errors
+            # M_.Correlation_matrix_ME: the identity (the scalar 1 without calibrated measurement errors), with the
+            # correlations of 'corr' statements
+            has_me = bool(np.any(h != 0))
+            self.set_M("Correlation_matrix_ME", mat(m.me_corr_matrix(m.varobs)) if has_me else _F(1.0))
 
     def _push_all(self):
         self.push()
@@ -723,7 +729,8 @@ class _Core(CommandsMixin):
         m = self.model
         sts = m.statements
         if any(st["statementName"] in ("native", "verbatim") for st in sts):
-            lines = [st["string"].replace("occbin.unpack_simulations", "occbin_unpack_simulations")
+            lines = [(_ml.native_dates(st["string"]) if st["statementName"] == "native" else st["string"])
+                     .replace("occbin.unpack_simulations", "occbin_unpack_simulations")
                      if st["statementName"] in ("native", "verbatim") else ("dyn", k)
                      for k, st in enumerate(sts)]
             try:
@@ -812,6 +819,10 @@ class _Core(CommandsMixin):
                 handler(st)
         except ModelError as exc:
             raise ResultsError(f"<{kind}>: {exc}") from None
+        except NotImplementedError as exc:             # a feature pydyn's core does not implement: a clean refusal
+            raise ResultsError(f"<{kind}>: {exc}") from None
+        except _dates.DateError as exc:
+            raise ResultsError(f"<{kind}>: {exc}") from None
         self.push()
 
     def declare(self, st):
@@ -842,7 +853,7 @@ class _Core(CommandsMixin):
 
 
 _MISSING = object()
-_NOOP_NAMES = set(_ml.PLOT_FUNCS) | {"hold", "drawnow", "pause", "close", "clf", "figure", "fclose", "dyn_figure", "addpath", "rmpath"}
+_NOOP_NAMES = set(_ml.PLOT_FUNCS) | {"hold", "drawnow", "pause", "close", "clf", "figure", "fclose", "dyn_figure"}
 _NOOP_NAMES -= {"set", "get", "line", "text", "fill", "area", "bar", "hist", "histogram", "contour", "print", "type"}
 
 
@@ -934,6 +945,12 @@ class _FunctionsMixin:
             "isfield": self.fn_isfield,
             "occbin_unpack_simulations": self.fn_unpack_simulations,
             "resol": self.fn_resol,
+            # dynare() reproduces Dynare run under Octave (Octave's random streams, the reference outputs of the tests):
+            # the Octave branch of `if isoctave` is the one whose tolerances Dynare's own tests were tuned to there
+            "isoctave": lambda args, nargout: [np.bool_(True)],
+            "make_ex_": self.fn_make_paths("ex"),
+            "make_y_": self.fn_make_paths("y"),
+            "evaluate_steady_state": self.fn_evaluate_steady_state,
             "save": self.fn_save,
             **self._functions_backward(),
         }
@@ -948,7 +965,7 @@ class _FunctionsMixin:
                 for k, v in zip(("M_", "options_", "oo_"), args[:3]):
                     self.set_global(k, v)
                 try:
-                    self.run_command({"statementName": kind, "options": {}})
+                    self.run_command({"statementName": kind, "options": {}, "function_call": True})
                     out = self.oo_
                 finally:
                     for k, v in saved.items():
@@ -959,6 +976,36 @@ class _FunctionsMixin:
             self.run_command({"statementName": kind, "options": {}})
             return []
         return run
+
+    def fn_make_paths(self, which):
+        name = f"make_{which}_"
+
+        def run(args, nargout):
+            if len(args) != 3 or not all(isinstance(a, Struct) for a in args):
+                raise Unsupported(f"{name}(M_, options_, oo_) needs the three structs")
+            saved = {k: self.I.globals[k] for k in _HOST_GLOBALS}
+            for k, v in zip(("M_", "options_", "oo_"), args):
+                self.set_global(k, v)
+            try:
+                self.pull()
+                self.make_paths(which)
+                out = self.oo_
+            finally:
+                for k, v in saved.items():
+                    self.I.globals[k] = v
+            return [out]
+        return run
+
+    def fn_evaluate_steady_state(self, args, nargout):
+        """[ys, params, info] = evaluate_steady_state(ys_init, exo_ss, M_, options_, steadystate_check_flag)"""
+        if len(args) not in (4, 5) or not isinstance(args[2], Struct) or not isinstance(args[3], Struct):
+            raise Unsupported("evaluate_steady_state(ys_init, exo_ss, M_, options_[, check_flag]) needs four or five arguments")
+        if args[2] is not self.M_ or args[3] is not self.options_:
+            # the structs are the live ones in every file of the test suite; other values would need a model rebuilt from them
+            raise Unsupported("evaluate_steady_state with an M_ or options_ other than the live ones")
+        self.pull()
+        ys, p = self.evaluate_steady_state(farr(args[0]), farr(args[1]))
+        return [col(ys), col(p), _F(0.0)][:max(nargout, 1)]
 
     def run_command(self, st):
         """Run a command called from MATLAB code like the statement ``st`` (options come from options_)."""

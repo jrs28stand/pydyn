@@ -2,7 +2,8 @@
 
 matlab_extra_*: the 376 cases of JDyn's review of pydyn's interpreter; pydyn_extra_*: pydyn's own
 further cases; pydyn_nd_*: N-dimensional arrays; pydyn_rng_*: Octave's rand/randn/randi/randperm/rng (same
-format; every case seeds the generators first).  Each snippet sets ``r``; Octave's ``double(r)`` is stored (char results
+format; every case seeds the generators first); pydyn_blk1_*: Dynare's dates class (Octave with Dynare's dseries code,
+reference/matlab_octave_cases/r_blk1.m), corr and the libm functions.  Each snippet sets ``r``; Octave's ``double(r)`` is stored (char results
 as character codes, failures as 'ERROR: ...').  pydyn must either give Octave's value (an Octave
 error must be a MatlabError) or refuse with Unsupported: never a different value, never a raw
 Python exception.
@@ -19,7 +20,8 @@ DIR = Path(__file__).resolve().parent.parent / "reference" / "matlab_octave_case
 SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
         "pydyn_extra": ("pydyn_extra_cases.txt", "pydyn_extra.mat"),
         "pydyn_nd": ("pydyn_nd_cases.txt", "pydyn_nd.mat"),
-        "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat")}
+        "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat"),
+        "pydyn_blk1": ("pydyn_blk1_cases.txt", "pydyn_blk1.mat")}
 
 
 def _load(name):
@@ -91,7 +93,7 @@ def test_refusals_are_few():
     review, mostly functions pydyn does not provide)."""
     refused = 0
     for name, k in PARAMS:
-        if name in ("pydyn_nd", "pydyn_rng"):
+        if name in ("pydyn_nd", "pydyn_rng", "pydyn_blk1"):
             continue
         try:
             M.run(DATA[name][0][k])
@@ -100,6 +102,21 @@ def test_refusals_are_few():
         except M.MatlabError:
             pass
     assert refused <= 70
+
+
+def test_blk1_refusals_are_the_documented_ones():
+    """pydyn_blk1 (dates/dseries, addpath-era elementary functions): 244 cases, of which exactly the cases Octave
+    answers with int8/single types, complex results, unary minus or * on dates, unknown members, dates(1990) and
+    arrayfun over dates are refused (12 when written); a refusal is never a wrong answer (test above)."""
+    refused = 0
+    for k in range(len(DATA["pydyn_blk1"][0])):
+        try:
+            M.run(DATA["pydyn_blk1"][0][k])
+        except M.Unsupported:
+            refused += 1
+        except M.MatlabError:
+            pass
+    assert refused <= 12
 
 
 def test_nd_refusals_are_few():

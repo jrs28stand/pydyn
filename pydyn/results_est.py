@@ -105,6 +105,19 @@ class EstimationMixin:
         """Keywords of pydyn.smoother.smooth that the live options_ give (the model's option dicts follow options_)."""
         return {}
 
+    def _init_filter_options(self):
+        """dynare_estimation_init.m: filter_step_ahead requires filtered_vars and the reverse (filter_step_ahead = 1),
+        and options_.nk = max(options_.filter_step_ahead)."""
+        fsa = self.opt("filter_step_ahead", None)
+        fsa = [] if fsa is None else (fsa if isinstance(fsa, list) else [fsa])
+        if not self.opt_flag("filtered_vars") and fsa:
+            self.set_options("filtered_vars", np.bool_(True))
+        if self.opt_flag("filtered_vars") and (not fsa or fsa == [0]):
+            self.set_options("filter_step_ahead", np.float64(1))
+            fsa = [1]
+        if fsa != [0] and fsa:
+            self.set_options("nk", np.float64(max(fsa)))
+
     # ------------------------------------------------------------------ calib_smoother
     def st_calib_smoother(self, st):
         from .smoother import smooth, SmootherError
@@ -112,6 +125,11 @@ class EstimationMixin:
         self._refresh_options(st)
         if "parameter_set" not in (st.get("options") or {}):
             self.set_options("parameter_set", "calibration")     # the preprocessor's CalibSmootherStatement
+        fo = self.opt("first_obs", None)
+        if fo is None or (np.ndim(fo) == 0 and fo != fo):
+            self.set_options("first_obs", np.float64(1))        # dynare_estimation_init sets it; calib_smoother returns before
+                                                                # dynare_estimation_1 resets it to NaN
+        self._init_filter_options()
         self.pull()
         self._estimation_order(st, "calib_smoother", "estimation")
         m = self.model
@@ -153,6 +171,7 @@ class EstimationMixin:
         from .smoother import smooth, SmootherError
         R = _R()
         self._refresh_options(st)
+        self._init_filter_options()
         self.pull()
         self._estimation_order(st, "estimation")
         m = self.model
@@ -177,6 +196,7 @@ class EstimationMixin:
                     theta = mode.x
         except (EstimationError, NotImplementedError) as exc:
             raise R.ResultsError(f"estimation: {exc}") from None
+        self._set_likelihood_at_initial_parameters(est, mode_file)
         self._set_prior(est)
         mc = None
         if mode is not None:
@@ -191,13 +211,18 @@ class EstimationMixin:
                     theta = self._set_posterior(est, mc, mode)
             except (EstimationError, NotImplementedError, ValueError) as exc:
                 raise R.ResultsError(f"estimation: {exc}") from None
-        cal = est.calibration(theta)
+        cal = est.calibration(theta, correlation_me=True)
         m.params[:] = np.asarray(cal["params"], float)
         m.Sigma_e = np.asarray(cal["Sigma_e"], float)
-        self.push()
         Hc = cal.get("H")
+        if Hc is not None and (est._groups["vn"] or est._groups["cn"]) and m.varobs:
+            # the estimated measurement-error covariances become the model's (calibrated covariances are kept)
+            m.set_me_H(np.asarray(Hc, float), m.varobs, np.asarray(cal["Correlation_matrix_ME"], float))
+        self.push()
         if Hc is not None and np.any(np.asarray(Hc, float) != 0):
             self.set_M("H", R.mat(np.atleast_2d(np.asarray(Hc, float))))
+            if est._groups["vn"] or est._groups["cn"]:        # set_all_parameters stores M_.Correlation_matrix_ME then
+                self.set_M("Correlation_matrix_ME", R.mat(np.atleast_2d(np.asarray(cal["Correlation_matrix_ME"], float))))
         self._solve_dr_at_current()
         self._steady_at_init(est)
         if mc is not None:
@@ -224,6 +249,21 @@ class EstimationMixin:
             self._store_smoother(res, bool(self.opt_flag("filtered_vars")) or bool(self.opt("filter_step_ahead")))
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_estimation", np.bool_(True)))
 
+    def _set_likelihood_at_initial_parameters(self, est, mode_file):
+        """initial_estimation_checks.m: with options_.debug, oo_.likelihood_at_initial_parameters is the objective
+        (minus the log posterior kernel) at the initial values, or at the mode file's values."""
+        if not self.opt_flag("debug"):
+            return
+        R = _R()
+        try:
+            theta0 = est.x0 if not mode_file else est.load_mode(mode_file)[0]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fval = est.objective(np.asarray(theta0, float))[0]
+        except Exception as exc:                     # noqa: BLE001 - a by-product of the checks
+            raise R.ResultsError(f"estimation: the likelihood at the initial parameters cannot be computed: {exc}") from None
+        self.set_oo("likelihood_at_initial_parameters", _F(fval))
+
     def _steady_at_init(self, est):
         """oo_.steady_state as dynare_estimation_init leaves it: the steady state at the initial values of the
         estimated parameters (M_.params and oo_.dr are at the calibration, or the mode)."""
@@ -232,7 +272,7 @@ class EstimationMixin:
         m = self.model
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            cal = est.calibration(est.x0)
+            cal = est.calibration(est.x0, correlation_me=True)
             xs = np.array([m._oo.get(v, 0.0) for v in m.exo_names], float)
             ys, _ = steady_state(m, params=np.asarray(cal["params"], float).copy(), exo=xs)
         self.set_oo("steady_state", R.col(ys))

@@ -437,7 +437,11 @@ class Model:
         #: Dynare's M_.Correlation_matrix: set by 'corr' statements of shocks blocks only (not by
         #: 'var e, u = ...'); estimation rebuilds Sigma_e from it when standard deviations are estimated
         self.Correlation_matrix = np.eye(self.n_exo)
-        self.measurement_errors: dict[str, float] = {}
+        self.measurement_errors: dict[str, float] = {}     # M_.H diagonal: variances by observed variable
+        #: M_.H off-diagonal entries and M_.Correlation_matrix_ME (set by 'corr' statements only), keyed by the pair of
+        #: observed variables in sorted-name order
+        self.me_cov: dict[tuple, float] = {}
+        self.me_corr: dict[tuple, float] = {}
         self.occbin_constraints = []
         self.options: dict[str, dict] = {}
         #: (statement, its own options) in file order, for the statements whose options accumulate in
@@ -659,6 +663,8 @@ class Model:
             S[:] = 0
             self.Correlation_matrix = np.eye(self.n_exo)
             self.measurement_errors.clear()
+            self.me_cov.clear()
+            self.me_corr.clear()
         for key, power in (("variance", 1), ("stderr", 2)):
             for d in st.get(key, []):
                 val = self._value(d[key]) ** power
@@ -668,8 +674,17 @@ class Model:
                     self.measurement_errors[d["name"]] = val
         for key in ("covariance", "correlation"):
             for d in st.get(key, []):
+                if d["name"] not in ix and d["name2"] not in ix:         # measurement errors: M_.H(i,j), Correlation_matrix_ME
+                    a, b = d["name"], d["name2"]
+                    pair = (a, b) if a <= b else (b, a)
+                    val = self._value(d[key])
+                    if key == "correlation":
+                        self.me_corr[pair] = val
+                        val *= np.sqrt(self.measurement_errors.get(a, 0.0) * self.measurement_errors.get(b, 0.0))
+                    self.me_cov[pair] = val
+                    continue
                 if d["name"] not in ix or d["name2"] not in ix:
-                    self.unhandled_statements.append("shocks: measurement-error covariance")
+                    self.unhandled_statements.append("shocks: covariance between a shock and a measurement error")
                     continue
                 i, j = ix[d["name"]], ix[d["name2"]]
                 val = self._value(d[key])
@@ -688,6 +703,50 @@ class Model:
         for key in ("skewness", "coskewness"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")
+
+    # ------------------------------------------------------------------ measurement errors
+    def me_H(self, varobs=None) -> np.ndarray:
+        """``M_.H`` (calibrated measurement-error covariance matrix) in ``varobs`` order."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        extra = (set(self.measurement_errors) | {x for p in self.me_cov for x in p}) - set(varobs)
+        if extra:
+            raise ModelError(f"measurement error declared on non-observed variable(s) {sorted(extra)}")
+        k = {v: i for i, v in enumerate(varobs)}
+        H = np.zeros((len(varobs), len(varobs)))
+        for v, x in self.measurement_errors.items():
+            H[k[v], k[v]] = x
+        for (a, b), x in self.me_cov.items():
+            H[k[a], k[b]] = H[k[b], k[a]] = x
+        return H
+
+    def me_corr_matrix(self, varobs=None) -> np.ndarray:
+        """``M_.Correlation_matrix_ME`` in ``varobs`` order (identity but for the 'corr' statements)."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        k = {v: i for i, v in enumerate(varobs)}
+        C = np.eye(len(varobs))
+        for (a, b), x in self.me_corr.items():
+            C[k[a], k[b]] = C[k[b], k[a]] = x
+        return C
+
+    def set_me_H(self, H, varobs=None, C=None) -> None:
+        """Replace the calibrated measurement-error covariances by the matrix ``H`` (``varobs`` order)."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        H = np.asarray(H, float)
+        self.measurement_errors = {v: float(H[i, i]) for i, v in enumerate(varobs) if H[i, i] != 0}
+        self.me_cov = {}
+        for i in range(len(varobs)):
+            for j in range(i):
+                if H[i, j] != 0:
+                    a, b = varobs[i], varobs[j]
+                    self.me_cov[(a, b) if a <= b else (b, a)] = float(H[i, j])
+        if C is not None:
+            C = np.asarray(C, float)
+            self.me_corr = {}
+            for i in range(len(varobs)):
+                for j in range(i):
+                    if C[i, j] != 0:
+                        a, b = varobs[i], varobs[j]
+                        self.me_corr[(a, b) if a <= b else (b, a)] = float(C[i, j])
 
     # ------------------------------------------------------------------ parameters
     def get_param(self, name: str) -> float:

@@ -3,7 +3,7 @@
 % Each case's oo_, M_, options_ and the MATLAB variables of the .mod file are saved to <case>.mat.
 % nd_oo and nd_oo2 plot shock decompositions: without a graphics toolkit, stubs of the plotting functions are put
 % first in the path (they draw nothing; get returns a screen size).
-zz_cases = {'rbc_oo', 'rbc_oo_o2', 'rbc_oo_o3', 'rbc_oo_pf', 'rbc_oo_loop', 'rbc_oo_pfloop', 'est_smoother0', 'est_mode4', 'est_ml', 'cs1', 'fc1', 'occ1', 'ram1', 'osr1', 'est_mh', 'rng_oo', 'nd_oo', 'nd_oo2'};
+zz_cases = {'rbc_oo', 'rbc_oo_o2', 'rbc_oo_o3', 'rbc_oo_pf', 'rbc_oo_loop', 'rbc_oo_pfloop', 'est_smoother0', 'est_mode4', 'est_ml', 'cs1', 'fc1', 'occ1', 'ram1', 'osr1', 'est_mh', 'rng_oo', 'nd_oo', 'nd_oo2', 'pfwee_oo', 'pfwee_oo_dates', 'pfwee_oo_hl', 'pfwee_oo_ramst'};
 if exist('zz_only', 'var'), zz_cases = zz_only; end
 zz_here = pwd;
 if isempty(available_graphics_toolkits())

@@ -326,16 +326,16 @@ def _number(model, expr):
 
 
 def _period(v, what):
+    """A period: an int, or a pydyn.dates.Date converted later (``_undate``, with first_simulation_period)."""
     if isinstance(v, (int, np.integer)) or (isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v)):
         return int(v)
-    raise NotImplementedError(f"{what} given as a date or an expression ({v!r}): dates are only supported for the "
-                              "periods of shocks blocks (with first_simulation_period / last_simulation_period)")
+    if _dates.is_date_value(v):
+        return _dates.Date.parse(v[0] if isinstance(v, (list, tuple)) else v)
+    raise NotImplementedError(f"{what} given as an expression that is neither an integer nor a date ({v!r})")
 
 
 def _shock_period(v):
     """A period of a shocks/mshocks block: an int, or a pydyn.dates.Date converted later (``_undate``)."""
-    if _dates.is_date_value(v):
-        return _dates.Date.parse(v[0] if isinstance(v, (list, tuple)) else v)
     return _period(v, "period")
 
 
@@ -367,7 +367,29 @@ def simulation_periods(o):
 
 
 def _undate(ws, first, last):
-    """Dated shock periods (make_ex_.m): period index = date - first_simulation_period + 1."""
+    """Dated periods (make_ex_.m, controlled_paths_by_period.m, perfect_foresight_with_expectation_errors_setup.m):
+    period index = date - first_simulation_period + 1.  Covers the periods of shocks/mshocks, the learnt_in values and
+    periods of learnt shocks, endval(learnt_in=...) and perfect_foresight_controlled_paths."""
+    def conv(p, what):
+        if not isinstance(p, _dates.Date):
+            return p
+        if first is None:
+            raise PerfectForesightError(f"{what} is specified using a date but neither first_simulation_period nor "
+                                        "last_simulation_period option was passed")
+        try:
+            return p - first + 1
+        except _dates.DateError as exc:
+            raise PerfectForesightError(str(exc)) from None
+    for d in ws.learnt_endval:
+        d["learnt_in"] = conv(d["learnt_in"], "learnt_in")
+    for d in ws.learnt_shocks:
+        d["learnt_in"] = conv(d["learnt_in"], "learnt_in")
+        d["p1"], d["p2"] = conv(d["p1"], "a period"), conv(d["p2"], "a period")
+    for c in ws.controlled:
+        c["learnt_in"] = conv(c["learnt_in"], "learnt_in")
+        if c.get("dated") is not None:
+            p1, p2 = (conv(p, "a period of perfect_foresight_controlled_paths") for p in c.pop("dated"))
+            c["periods"] = list(range(p1, p2 + 1))
     out = []
     for j, p1, p2, val, typ in ws.det_shocks:
         if isinstance(p1, _dates.Date) or isinstance(p2, _dates.Date):
@@ -520,8 +542,10 @@ def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learn
                 for k, v in enumerate(path["values"]):
                     p1, p2 = _period(v["period1"], "period"), _period(v["period2"], "period")
                     val = stored[(i, k)] if (i, k) in stored else _number(model, v["value"])
+                    dated = isinstance(p1, _dates.Date) or isinstance(p2, _dates.Date)
                     ws.controlled.append(dict(exogenize_id=ie[path["exogenize"]], endogenize_id=ix[path["endogenize"]],
-                                              periods=list(range(p1, p2 + 1)), value=val, learnt_in=lin))
+                                              periods=None if dated else list(range(p1, p2 + 1)), value=val, learnt_in=lin,
+                                              dated=(p1, p2) if dated else None))
         elif kind in ("shock_paths", "smoother2histval"):
             raise NotImplementedError(f"{kind} is not implemented in pydyn.perfect_foresight")
         elif _is_setup(st):
@@ -1977,21 +2001,36 @@ def _pfwee_information(model, ws, periods, datafile):
     return shocks, terminal
 
 
-def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
-    """perfect_foresight_with_expectation_errors_solver.m."""
+def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile, setup=None):
+    """perfect_foresight_with_expectation_errors_solver.m.  ``setup`` = (shocks_info, terminal_info, endo_simul,
+    exo_simul) as the setup command left them in oo_ (``pydyn.dynare()``: endo_simul is [periods x n_endo]);
+    None builds them here."""
     lag, lead = model.info["maximum_lag"], model.info["maximum_lead"]
-    shocks, terminal = _pfwee_information(model, ws, periods, datafile)
-    ws_plain = ws
-    saved = ws.det_shocks
-    ws_plain.det_shocks = []                       # the setup command builds the paths without the shocks
-    endo_simul, exo_simul = _make_paths(model, ws_plain, periods)
-    ws.det_shocks = saved
+    if setup is None:
+        shocks, terminal = _pfwee_information(model, ws, periods, datafile)
+        ws_plain = ws
+        saved = ws.det_shocks
+        ws_plain.det_shocks = []                   # the setup command builds the paths without the shocks
+        endo_simul, exo_simul = _make_paths(model, ws_plain, periods)
+        ws.det_shocks = saved
+    else:
+        shocks, terminal = setup[0].copy(), setup[1].copy()
+        endo_simul, exo_simul = setup[2].copy(), setup[3].copy()
     o = dict(o)
     if lead > 0:
         o["simul.endval_steady"] = True
     ss, xss = ws.ss.copy(), ws.xss.copy()
     ss0, xss0 = (ss.copy(), xss.copy()) if ws.ss0 is None else (ws.ss0, ws.xss0)
     const = bool(o["pfwee.constant_simulation_length"])
+    cps = None
+    if ws.controlled:                              # controlled_paths_by_period(M_, options_, info_period), every period
+        if const:
+            raise PerfectForesightError("Option constant_simulation_length is incompatible with "
+                                        "perfect_foresight_controlled_paths or shock_paths+exogenize block")
+        try:
+            cps = [controlled_paths_by_period(model, ws, periods, q) for q in range(1, periods + 1)]
+        except ValueError as exc:
+            raise PerfectForesightError(str(exc)) from None
     info_period, increment, share0 = 1, 0, None
     out, solves = None, []
     marg = o["simul.homotopy_marginal_linearization_fallback"]
@@ -2011,7 +2050,10 @@ def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
         if info_period > 1 and share0 is not None and share0 < 1 and marg > 0:
             prev = {k: dict(endo=out[k]["endo"][increment:], exo=out[k]["exo"][increment:], share=out[k]["share"])
                     for k in ("sim1", "sim2")}
-        sim = _Sim(model, ws.params, endo, exo, ss, xss, ss0, xss0, o, verbose, stacked)
+        cp = None
+        if cps is not None and any(d["endogenize_id"] for d in cps[p][p:]):
+            cp = cps[p][p:]                        # (otherwise [], as perfect_foresight_solver expects)
+        sim = _Sim(model, ws.params, endo, exo, ss, xss, ss0, xss0, o, verbose, stacked, cp)
         out = sim.solve(sim_length, prev)
         out["solver"] = getattr(sim, "solver", "")
         solves.append((info_period, out["iterations"], out["maxerror"]))
@@ -2031,12 +2073,13 @@ def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
         increment = 1
         while (info_period + increment <= periods
                and np.array_equal(terminal[:, p], terminal[:, p + increment])
-               and np.array_equal(shocks[:, p + increment:, p], shocks[:, p + increment:, p + increment])):
+               and np.array_equal(shocks[:, p + increment:, p], shocks[:, p + increment:, p + increment])
+               and (cps is None or cps[p][p + increment:] == cps[p + increment][p + increment:])):
             increment += 1
         info_period += increment
     out = dict(out)
     out.update(endo=endo_simul, exo=exo_simul, ss=ss, xss=xss, ss0=ss0, xss0=xss0, solves=solves,
-               shocks_info=shocks, terminal_info=terminal)
+               shocks_info=shocks, terminal_info=terminal, sim_length=sim_length)
     return out
 
 
@@ -2143,9 +2186,6 @@ def perfect_foresight(model, periods=None, params=None, exo=None, y_init=None, y
     info = model.info
     lag, lead = info["maximum_lag"], info["maximum_lead"]
     if pfwee:
-        if ws.controlled:
-            raise NotImplementedError("perfect_foresight_controlled_paths together with expectation errors is not "
-                                      "implemented")
         if exo is not None or y_init is not None or y_term is not None or guess is not None:
             raise NotImplementedError("exo, y_init, y_term and guess cannot be combined with expectation errors")
         out = _solve_pfwee(model, ws, T, o, verbose, stacked, o["datafile"])

@@ -96,7 +96,7 @@ def test_indeterminate_results_are_nan_as_in_matlab():
     ("a = [1 2 3]; r = a(1.5);", M.MatlabError), ("r = [1 2] + [1 2 3];", M.MatlabError),
     ("r = [1 2; 3];", M.MatlabError), ("r = [1 2 3] * [1 2 3];", M.MatlabError),
     ("r = undefined_thing + 1;", M.Unsupported), ("r = gamrnd(2, 1);", M.Unsupported),
-    ("r = 1i;", M.Unsupported), ("x = dseries(1);", M.Unsupported), ("r = evalin('base', '1');", M.Unsupported),
+    ("r = 1i;", M.Unsupported), ("x = dseries('file.csv');", M.Unsupported), ("r = evalin('base', '1');", M.Unsupported),
     ("r = system('ls');", M.Unsupported), ("fid = fopen('x.txt', 'w');", M.Unsupported),
     ("s = struct('a', {1, 2});", M.Unsupported), ("a = zeros(2, 2, 2); b = inv(a);", M.Unsupported),
     ("if [1 2] && 1, r = 1; end", M.MatlabError), ("error('my:id', 'value %d', 4)", M.MatlabError),

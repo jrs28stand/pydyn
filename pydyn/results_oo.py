@@ -475,9 +475,9 @@ class CommandsMixin:
         self._refresh_options(st)
         self._pf_options()
         self.pull()
-        self.pf_solve()
+        self.pf_solve(set_series=not st.get("function_call"))
 
-    def pf_solve(self):
+    def pf_solve(self, set_series=True):
         R = _R()
         pf = _pfmod()
         m = self.model
@@ -539,9 +539,198 @@ class CommandsMixin:
         ds["homotopy_iterations"] = _F(out["homotopy_iterations"])
         if out.get("iterations") is not None:
             ds["iterations"] = _F(out["iterations"])
+        self._homotopy_fallback_fields(ds, out)
         self.set_oo("deterministic_simulation", ds)
         self.set_oo("gui.ran_perfect_foresight", np.bool_(bool(out["status"])))
+        if set_series:              # only the statement asks for [oo_, Simulated_time_series]
+            self._set_simulated_time_series(first_date)
         return out
+
+    # ------------------------------------------------------------------ perfect foresight with expectation errors
+    def st_perfect_foresight_with_expectation_errors_setup(self, st):
+        self._stmt_keys.setdefault("perfect_foresight", set()).update(st.get("options", {}) or {})
+        self._refresh_options(st)
+        self._pf_options()
+        self.pull()
+        self.pfwee_setup()
+
+    def _pfwee_workspace(self, what):
+        """The replayed model workspace (shocks/endval(learnt_in) blocks, steady states of the live oo_) and the
+        simulation periods, for the two pfwee commands."""
+        R = _R()
+        pf = _pfmod()
+        m = self.model
+        self._pf_options()
+        live = self._sim_live()
+        ws = pf._replay(m, params=m.params.copy(), steady=False, upto=self.last_k, live=live)
+        o = pf._resolve_options(m, True, {})
+        try:
+            sim_periods, first_date, last_date = pf.simulation_periods(o)
+        except ValueError as exc:
+            raise R.ResultsError(f"{what}: {exc}") from None
+        if o["periods"] is None and sim_periods is not None:
+            o["periods"] = sim_periods
+        if o["periods"] is None:
+            raise R.ResultsError(f"{what}: the number of periods is not given (options_.periods)")
+        try:
+            pf._undate(ws, first_date, last_date)
+        except pf.PerfectForesightError as exc:
+            raise R.ResultsError(f"{what}: {exc}") from None
+        return pf, ws, o, int(o["periods"]), first_date
+
+    def pfwee_setup(self):
+        R = _R()
+        m = self.model
+        init = self.oo_.get("initval_series")
+        if init is not None and not (isinstance(init, np.ndarray) and init.size == 0):
+            raise R.ResultsError("perfect_foresight_with_expectation_errors_setup: cannot be used in conjunction with "
+                                 "initval_file")
+        pf, ws, o, T, first_date = self._pfwee_workspace("perfect_foresight_with_expectation_errors_setup")
+        datafile = o.get("datafile")
+        try:
+            shocks, terminal = pf._pfwee_information(m, ws, T, datafile)
+            saved = ws.det_shocks
+            ws.det_shocks = []                              # the setup command builds the paths without the shocks
+            endo, x = pf._make_paths(m, ws, T)
+            ws.det_shocks = saved
+            for q in range(1, T + 1):                    # controlled_paths_by_period(M_, options_, p): the checks
+                pf.controlled_paths_by_period(m, ws, T, q)
+        except (pf.PerfectForesightError, ValueError, OSError) as exc:
+            raise R.ResultsError(f"perfect_foresight_with_expectation_errors_setup: {exc}") from None
+        info = Struct()
+        info["terminal_info"] = R.mat(terminal)
+        info["shocks_info"] = shocks if shocks.ndim == 3 and m.n_exo != 1 or shocks.size == 0 else shocks.reshape(shocks.shape)
+        info["controlled_paths_by_period"] = Tainted_cp()
+        self.set_oo("pfwee", info)
+        self.set_oo("endo_simul", R.mat(endo.T))
+        self.set_oo("exo_simul", R.mat(x))
+        self._pfwee_setup_data = (shocks.copy(), terminal.copy())
+
+    def st_perfect_foresight_with_expectation_errors_solver(self, st):
+        self._stmt_keys.setdefault("perfect_foresight", set()).update(st.get("options", {}) or {})
+        self._refresh_options(st)
+        self._pf_options()
+        self.pull()
+        self.pfwee_solve()
+
+    def pfwee_solve(self):
+        R = _R()
+        m = self.model
+        what = "perfect_foresight_with_expectation_errors_solver"
+        info = self.oo_.get("pfwee")
+        if not isinstance(info, Struct) or "shocks_info" not in info:
+            raise R.ResultsError(f"{what}: oo_.pfwee is not set: run perfect_foresight_with_expectation_errors_setup first")
+        pf, ws, o, T, first_date = self._pfwee_workspace(what)
+        if o["pfwee.constant_simulation_length"] and o.get("simul.last_simulation_period"):
+            raise R.ResultsError(f"{what}: Options constant_simulation_length and last_simulation_period cannot be "
+                                 "used together")
+        shocks = np.asarray(info["shocks_info"], float)
+        terminal = np.asarray(farr(info["terminal_info"]), float).reshape(m.n_exo, -1)
+        shocks = shocks.reshape(m.n_exo, T, T)
+        lag, lead = m.info["maximum_lag"], m.info["maximum_lead"]
+        E = np.asarray(farr(self.oo_["endo_simul"]), float)
+        X = np.asarray(farr(self.oo_["exo_simul"]), float).reshape(-1, m.n_exo)
+        if E.shape != (m.n_endo, lag + T + lead) or X.shape[0] != lag + T + lead:
+            raise R.ResultsError(f"{what}: oo_.endo_simul or oo_.exo_simul has the wrong size; was the setup command run "
+                                 "with the same periods?")
+        o["linear"] = pf._model_is_linear(m)
+        steady0 = (np.asarray(farr(self.oo_["steady_state"]), float).copy(),
+                   np.asarray(farr(self.oo_["exo_steady_state"]), float).copy() if m.n_exo else np.zeros(0))
+        try:
+            out = pf._solve_pfwee(m, ws, T, o, False, None, None, setup=(shocks, terminal, E.T.copy(), X.copy()))
+        except pf.PerfectForesightError as exc:
+            raise R.ResultsError(f"{what}: {exc}") from None
+        self.set_oo("endo_simul", R.mat(out["endo"].T))
+        self.set_oo("exo_simul", R.mat(out["exo"]))
+        self.set_oo("steady_state", R.col(out["ss"]))
+        self.set_oo("exo_steady_state", R.col(out["xss"]))
+        init0 = self.oo_.get("initial_steady_state")
+        if init0 is None or (isinstance(init0, np.ndarray) and init0.size == 0):
+            self.set_oo("initial_steady_state", R.col(steady0[0]))
+            self.set_oo("initial_exo_steady_state", R.col(steady0[1]))
+        self._last_ss = (np.asarray(out["ss"], float).copy(), np.asarray(out["xss"], float).copy())
+        for v, x in zip(m.endo_names, out["ss"]):
+            m._oo[v] = float(x)
+        # (options_.simul.endval_steady and options_.periods are changed on the function's local copy of options_ only)
+        ds = self.oo_.get("deterministic_simulation")
+        ds = ds.clone() if isinstance(ds, Struct) else Struct()
+        ds["status"] = np.bool_(bool(out["status"]))
+        ds["error"] = _F(out["maxerror"])
+        ds["homotopy_completion_share"] = _F(out["share"])
+        ds["homotopy_iterations"] = _F(out["homotopy_iterations"])
+        if out.get("iterations") is not None:
+            ds["iterations"] = _F(out["iterations"])
+        ds["controlled_paths_by_period"] = R.empty()
+        self._homotopy_fallback_fields(ds, out)
+        self.set_oo("deterministic_simulation", ds)
+        self.set_oo("gui.ran_perfect_foresight", np.bool_(bool(out["status"])))
+        self._set_simulated_time_series(first_date)
+
+    @staticmethod
+    def _homotopy_fallback_fields(ds, out):
+        """perfect_foresight_solver.m records the raw simulations of a linearization fallback in
+        oo_.deterministic_simulation.sim1/sim2 (pydyn does not keep their steady states: refused on reading)."""
+        if out.get("linearization"):
+            ds["homotopy_linearization"] = np.bool_(True)
+        if out.get("sim1") is not None:
+            ds["sim1"] = _ml.Tainted("the raw simulations of a homotopy fallback (sim1) are not stored by pydyn")
+        if out.get("sim2") is not None:
+            ds["sim2"] = _ml.Tainted("the raw simulations of a marginal linearization (sim2) are not stored by pydyn")
+
+    def make_paths(self, which):
+        """make_ex_.m / make_y_.m on the live oo_: oo_.exo_simul (with the shocks block's temporary shocks) or
+        oo_.endo_simul, from the steady states and the histval/endval blocks."""
+        R = _R()
+        m = self.model
+        pf, ws, o, T, _ = self._pfwee_workspace("make_ex_" if which == "ex" else "make_y_")
+        if ws.controlled:
+            raise R.ResultsError("make_ex_: perfect_foresight_controlled_paths and shock_paths blocks are not handled here")
+        try:
+            endo, x = pf._make_paths(m, ws, T)
+        except pf.PerfectForesightError as exc:
+            raise R.ResultsError(f"make_{which}_: {exc}") from None
+        if which == "ex":
+            self.set_oo("exo_simul", R.mat(x))
+        else:
+            self.set_oo("endo_simul", R.mat(endo.T))
+
+    def evaluate_steady_state(self, ys_init, exo_ss):
+        """evaluate_steady_state.m (no steady-state file): the static model solved from ``ys_init`` at the exogenous
+        steady state ``exo_ss``, with options_.solve_algo, options_.steady.maxit and options_.solve_tolf (the check flag of the
+        fifth argument only matters to steady-state files, which pydyn.dynare() does not combine with this call)."""
+        from .steady import DYNARE_SOLVE_ALGO, DYNARE_TOLF, SteadyStateError, steady_state
+        R = _R()
+        m = self.model
+        algo = self.opt("solve_algo", DYNARE_SOLVE_ALGO)
+        tol = self.opt("solve_tolf", None)
+        try:
+            with warnings.catch_warnings(), np.errstate(all="ignore"):
+                warnings.simplefilter("ignore")
+                ys, p = steady_state(m, m.params.copy(), guess=np.asarray(ys_init, float).ravel(),
+                                     exo=np.asarray(exo_ss, float).ravel(), tol=DYNARE_TOLF if tol is None else float(tol),
+                                     check=True, solve_algo=int(algo), maxit=int(self.opt("steady.maxit", 50)))
+        except SteadyStateError as exc:
+            raise R.ResultsError(f"evaluate_steady_state: {exc}") from None
+        return ys, p
+
+    def _set_simulated_time_series(self, first_date):
+        """``[oo_, Simulated_time_series] = perfect_foresight_solver(...)``: construct_simulation_dseries.m (a dseries of
+        the original endogenous variables and the exogenous variables from first_simulation_period - maximum_lag; the
+        default first period is 1Y).  Not merged with oo_.initval_series, which pydyn.dynare() does not fill."""
+        m = self.model
+        ds = None
+        if self.oo_.get("initval_series") is not None and not (
+                isinstance(self.oo_["initval_series"], np.ndarray) and self.oo_["initval_series"].size == 0):
+            self.I.base.vars["Simulated_time_series"] = _ml.Tainted("merged with oo_.initval_series, which pydyn does not fill")
+            return
+        from .dates import Date
+        first = first_date if first_date is not None else Date(1, 1)
+        nor = len(m.orig_endo_names)
+        E = np.asarray(farr(self.oo_["endo_simul"]), float)
+        X = np.asarray(farr(self.oo_["exo_simul"]), float) if m.n_exo else np.zeros((E.shape[1], 0))
+        init = first - m.info["maximum_lag"]
+        ds = _ml.DSeriesV(np.hstack([E[:nor].T, X]), _ml.DatesV(init.freq, [init.time]), list(m.orig_endo_names) + list(m.exo_names))
+        self.I.base.vars["Simulated_time_series"] = ds
 
     def _pf_recomputed(self, o, live):
         return bool(o["simul.endval_steady"]) or live["ss0"] is not None

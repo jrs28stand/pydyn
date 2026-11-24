@@ -137,13 +137,12 @@ def _measurement_cov(model, varobs, H=None):
     if H is not None:
         Hm = np.atleast_2d(np.asarray(H, float))
         return Hm if np.any(Hm != 0) else None
-    me = getattr(model, "measurement_errors", {})
-    if not me:
+    if not getattr(model, "measurement_errors", None) and not getattr(model, "me_cov", None):
         return None
-    extra = set(me) - set(varobs)
-    if extra:
-        raise ValueError(f"measurement error declared on non-observed variable(s) {sorted(extra)}")
-    Hm = np.diag([float(me.get(v, 0.0)) for v in varobs])
+    try:
+        Hm = model.me_H(varobs)
+    except Exception as exc:                       # ModelError: a measurement error on a variable that is not observed
+        raise ValueError(str(exc)) from None
     return Hm if np.any(Hm != 0) else None            # forecasts.run stores *_ME only if nnz(M_.H) > 0
 
 

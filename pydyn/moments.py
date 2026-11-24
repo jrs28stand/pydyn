@@ -353,6 +353,8 @@ def _measurement_errors(m):
     """``(H_diag, varobs_id)``: measurement-error variances in ``varobs`` order, observed indices."""
     varobs = list(getattr(m, "varobs", []) or [])
     me = getattr(m, "measurement_errors", {}) or {}
+    if getattr(m, "me_cov", None):
+        raise NotImplementedError("theoretical moments with correlated measurement errors are not implemented")
     H = np.array([float(me.get(v, 0.0)) for v in varobs])
     vid = np.array([list(m.endo_names).index(v) for v in varobs], int)
     return H, vid
