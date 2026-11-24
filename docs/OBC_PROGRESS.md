@@ -253,3 +253,8 @@ number of regions is slow. The size here owes much to the model (no endogenous s
 purely forward-looking NK model, i.e. the forward-guidance puzzle), but the ordering is general: the mean of the
 relevant points is usually a path that does not bind, so one region prices almost no risk.
 Cost in Python is the per-period SVD for the split, not the LCP solves.
+
+Correction (found by the JDyn port): the 1.5e-6 agreement "with pydyn's own Sobol points" was luck. The columns
+of the covariance root have arbitrary signs, and with one region the 1,023-point estimate moves by up to 6e-5
+across sign patterns, as much as the cubature effect itself (about 1e-5 at 8,191 and 32,767 points). With
+DynareOBC's root and points the agreement is exact; otherwise only a loose bound is meaningful at level 9.

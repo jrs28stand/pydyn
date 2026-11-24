@@ -55,7 +55,9 @@ def test_cubature_matches_dynareobc(nk):
     Rd = np.real(r["Rcc"])
     np.testing.assert_allclose(h.R @ h.R.T, Rd @ Rd.T, atol=1e-16)    # conditional covariance, pruned
     own = h.simulate(S)["with_bound"]
-    assert np.abs(own - E).max() < 5e-6                                 # SciPy's Sobol points
+    # Own root and SciPy's Sobol points. The root's column signs are arbitrary and change the 1,023-point
+    # estimate by about as much as the cubature effect itself (5e-5), so this is a sanity bound only.
+    assert np.abs(own - E).max() < 2e-4
     h.R, h.xi = Rd, loadmat(REF / "sob_o2cub.mat")["x"]               # DynareOBC's own root and points
     np.testing.assert_allclose(h.simulate(S)["with_bound"], E, atol=1e-13)
 
