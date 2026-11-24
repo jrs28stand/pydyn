@@ -3962,6 +3962,21 @@ def _fieldnames(I, a, nout):
     return Cell(names, (len(names), 1))
 
 
+@bi("struct2array")
+def _struct2array(I, a, nout):
+    """matlab/missing/struct2array/struct2array.m: the fields' values, each as a column (vec), stacked."""
+    _nargs(a, 1, 1, "struct2array")
+    if not isinstance(a[0], Struct):
+        raise MatlabError("struct2array:: Argument has to be a structure!")
+    cols = []
+    for v in a[0].values():
+        x = np.asarray(farr(v), float) if not isinstance(v, (str, Cell, Struct)) else None
+        if x is None:
+            raise Unsupported("struct2array of a struct with fields that are not numeric")
+        cols.append(x.ravel(order="F").reshape(-1, 1))
+    return ret(np.vstack(cols)) if cols else np.zeros((0, 0))
+
+
 @bi("isfield")
 def _isfield(I, a, nout):
     _nargs(a, 2, 2, "isfield")

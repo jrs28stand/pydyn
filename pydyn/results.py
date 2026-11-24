@@ -50,6 +50,7 @@ from .results_est import EstimationMixin
 from .results_bwd import BackwardMixin
 from .results_ep import ExtendedPathMixin
 from .results_var import VarModelMixin
+from .results_cf import ConditionalForecastMixin
 
 __all__ = ["dynare", "Results", "ResultsError"]
 
@@ -492,7 +493,7 @@ DECLARATIONS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks
 IGNORED = {"write_latex_dynamic_model", "write_latex_static_model", "write_latex_original_model",
            "write_latex_steady_state_model", "collect_latex_files", "write_latex_definitions",
            "write_latex_parameter_table", "write_latex_prior_table", "model_info", "rplot", "resid", "model_diagnostics",
-           "plot_shock_decomposition", "plot_conditional_forecast", "occbin_graph", "dsample", "dynatype", "dynasave",
+           "plot_shock_decomposition", "occbin_graph", "dsample", "dynatype", "dynasave",
            "occbin_write_regimes_xls", "squeeze_shock_decomposition"}
 #: statements whose options Dynare's driver writes into options_ (the rest declare)
 _NO_OPTIONS_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks", "estimated_params",
@@ -1166,7 +1167,7 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

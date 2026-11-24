@@ -106,6 +106,7 @@ class VarModelMixin:
              f"{self.name}.trend_component_ar_a0": self._gen_function("trend_component_ar_a0"),
              f"{self.name}.pac_target_coefficients": self._gen_function("pac_target_coefficients"),
              "get_ar_ec_matrices": self.fn_get_ar_ec_matrices,
+             "simult_": self.fn_simult_,
              "get_companion_matrix_legacy": self.fn_get_companion_matrix_legacy}
         return F
 

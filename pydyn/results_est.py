@@ -199,6 +199,8 @@ class EstimationMixin:
                     theta = mode.x
         except (EstimationError, NotImplementedError) as exc:
             raise R.ResultsError(f"estimation: {exc}") from None
+        if not self.opt_flag("dsge_var"):                # dynare_estimation_init: options_.nobs = dataset_.nobs
+            self.set_options("nobs", _F(float(est.nobs)))
         self._set_likelihood_at_initial_parameters(est, mode_file)
         self._set_prior(est)
         mc = None
@@ -260,6 +262,7 @@ class EstimationMixin:
                 if h_fc > 0 and mc is None:
                     self._forecast_at_mode(res, st_vars, h_fc)
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_estimation", np.bool_(True)))
+        self._est_ctx = {"est": est, "mode": mode, "mc": mc, "theta": theta}      # what conditional_forecast's parameter sets read
 
     # ------------------------------------------------------------------ forecasts after estimation
     def _estimation_var_list(self, st):
@@ -683,6 +686,11 @@ class EstimationMixin:
         if not var_list and isinstance(self.oo_.get("var_list"), Cell):
             var_list = [str(x) for x in self.oo_["var_list"].items]
         kw = {}
+        eh = self.M_.get("endo_histval")
+        eh = None if eh is None else np.asarray(farr(eh), float)
+        if eh is not None and eh.size and eh.ndim == 2 and eh.shape[1] == 1:
+            from .forecast import _histval_state       # forecasts.run: y0 = M_.endo_histval (its logs under loglinear)
+            kw["y0"] = _histval_state(m, eh[:, 0])
         cs = sopts.get("forecasts.conf_sig", sopts.get("conf_sig"))
         if cs is not None:
             kw["conf_sig"] = float(cs)

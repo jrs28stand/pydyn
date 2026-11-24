@@ -589,7 +589,8 @@ class Model:
             stored = self._stmt_values[id(st)] = {}
             for i, path in enumerate(st.get("paths", [])):
                 for k, v in enumerate(path.get("values", [])):
-                    stored[(i, k)] = self._value(v["value"])
+                    # a vector (``values (xx);``) gives one value per period, as ``constrained_paths_(i,p1:p2)=xx``
+                    stored[(i, k)] = self._det_value(v["value"], int(v["period2"]) - int(v["period1"]) + 1)
         elif kind in ("forecast", "conditional_forecast", "plot_conditional_forecast"):
             pass                                   # read by pydyn.forecast.run_forecasts
         elif kind in ("native", "verbatim"):
