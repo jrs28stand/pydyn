@@ -54,9 +54,9 @@ IMPLS = {"before": obc_before, "after": obc_after}
 # (found with ``calibrate``; see docs/OBC_PERF.md).  sw cannot reach 30%: OccBin and the regime formulation both
 # fail somewhere in 1,000 periods for s >= 0.29, and the share is 7.5% at s = 0.25.
 MODELS = {
-    "zlb": dict(s=2.0, methods=("occbin", "news", "regime"), params=("beta", "phi")),
+    "zlb": dict(s=2.0, methods=("occbin", "news", "lk", "regime"), params=("beta", "phi")),
     "zlb2": dict(s=2.0, methods=("occbin", "news", "regime"), params=("beta", "phi")),
-    "nkm": dict(s=4.0, methods=("occbin", "news", "regime"), params=("chi", "eta")),
+    "nkm": dict(s=4.0, methods=("occbin", "news", "lk", "regime"), params=("chi", "eta")),
     "sw": dict(s=0.25, methods=("occbin", "regime"), params=("csigma", "crpi")),
 }
 
@@ -101,6 +101,9 @@ def make_obj(impl, method, ob, horizon):
     """The solver object for a method on a ready Occbin instance (OccBin itself is the instance)."""
     if method == "occbin":
         return ob
+    if method == "lk":                      # LKNews (pydyn.obc_lk): only exists in the current code
+        from pydyn.obc_lk import LKNews
+        return LKNews(ob, horizon=horizon, check_ahead=CHECK_AHEAD)
     cls = {"news": IMPLS[impl].NewsOBC, "regime": IMPLS[impl].RegimeOBC}[method]
     return cls(ob, horizon=horizon, check_ahead=CHECK_AHEAD)
 
@@ -166,7 +169,7 @@ def instrumented_times(obj, method, shocks):
             state = r.piecewise[0] - obj.ys
             flags.append(any_binding(r.regime_history[0]))
         return np.array(times), np.array(flags)
-    name = next(n for n in ("_step", "solve_period") if hasattr(type(obj), n))
+    name = next(n for n in ("step", "_step", "solve_period") if hasattr(type(obj), n))
     orig = getattr(obj, name)
     times = []
 
@@ -191,7 +194,7 @@ def p1(models, impls, reps, seed, horizon=40, shocks_n=1000, tag="p1", model_cfg
         m = load_model(name)
         ob = Occbin(m)
         shocks = draw_shocks(m, shocks_n, cfg["s"], seed)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "occbin" else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
         objs = {c: make_obj(c[1], c[0], ob, horizon) for c in confs}
         times = {c: [] for c in confs}
         results, errors = {}, {}
@@ -247,7 +250,7 @@ def p2(models, impls, reps, horizon=40, tag="p2"):
         probe = Occbin(m)
         base = np.array(m.params, float)
         base[probe.switch] = 0.0
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "occbin" else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
         T = {c: dict(steady=[], first_order=[], ctor=[], precompute=[], total=[]) for c in confs}
         for rep in range(reps):
             for c in confs:
@@ -297,7 +300,7 @@ def p3(models, impls, reps, seed, iters=50, periods=200, horizon=40):
         m = load_model(name)
         shocks = draw_shocks(m, 1000, cfg["s"], seed)[:periods]
         sets = perturbation_sets(m, cfg["params"], iters, seed)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "occbin" else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
         tot = {c: [] for c in confs}
         parts = {c: [] for c in confs}
         errors, last = {}, {}
@@ -390,7 +393,7 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
         ob = Occbin(m)
         states = linear_states(ob, m, n_states, seed)
         z = np.random.default_rng(seed + 3).standard_normal((n_states, m.n_exo)) * shock_sd(m)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "occbin" else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
         objs = {c: make_obj(c[1], c[0], ob, horizon) for c in confs}
         for c, o in objs.items():
             if c[0] == "regime":
@@ -456,7 +459,7 @@ def warm(models, reps, seed, horizon=40):
         shocks = draw_shocks(m, 1000, cfg["s"], seed)
         out[name] = {}
         for meth in cfg["methods"]:
-            if meth == "occbin":
+            if meth in ("occbin", "lk"):
                 continue
             obj = make_obj("after", meth, ob, horizon)
             ts = {False: [], True: []}

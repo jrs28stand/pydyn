@@ -1,0 +1,506 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "zlb": 2.0,
+   "zlb2": 2.0,
+   "nkm": 4.0,
+   "sw": 0.25
+  },
+  "impls": [
+   "before",
+   "after"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 11:15",
+  "load_avg": [
+   1.92822265625,
+   0.796875,
+   0.30126953125
+  ]
+ },
+ "data": {
+  "zlb": {
+   "s": 2.0,
+   "horizon": 40,
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 0.5671097900000177,
+      "median": 0.6736783349999769,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 567.1097900000177,
+      "median": 673.6783349999769,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 364.10426201539025,
+      "us_binds": 947.5786704228994,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "one-period calls incl. overhead"
+     }
+    },
+    "news/before": {
+     "total_s": {
+      "min": 0.23569619299999545,
+      "median": 0.34030684900000097,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 235.69619299999545,
+      "median": 340.30684900000097,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 6.661338147750939e-16,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 226.10942170556058,
+      "us_binds": 296.2070704219174,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "in-loop step"
+     }
+    },
+    "news/after": {
+     "total_s": {
+      "min": 0.02508505700001251,
+      "median": 0.029966446999992513,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 25.08505700001251,
+      "median": 29.966446999992513,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 4.440892098500626e-16,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 8.881784197001252e-16,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 33.24646666692564,
+      "us_binds": 58.791971830919785,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "in-loop step"
+     }
+    },
+    "lk/after": {
+     "total_s": {
+      "min": 0.02663007699999298,
+      "median": 0.03883149300000355,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 26.63007699999298,
+      "median": 38.83149300000355,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 6.661338147750939e-16,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 16.6439953488421,
+      "us_binds": 44.58115492988148,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 0.11208703599999126,
+      "median": 0.12469748099999833,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 112.08703599999126,
+      "median": 124.69748099999832,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 6.661338147750939e-16,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 119.57595658913299,
+      "us_binds": 263.29999154976457,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/after": {
+     "total_s": {
+      "min": 0.04231995899999674,
+      "median": 0.06270188899998175,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 42.31995899999674,
+      "median": 62.701888999981755,
+      "n": 5
+     },
+     "share_binding": 0.355,
+     "max_path_diff_vs_occbin": 4.440892098500626e-16,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 8.881784197001252e-16,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 58.86917519367057,
+      "us_binds": 104.21079436565046,
+      "n_nothing": 645,
+      "n_binds": 355,
+      "kind": "in-loop step"
+     }
+    }
+   }
+  },
+  "zlb2": {
+   "s": 2.0,
+   "horizon": 40,
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 0.8045608959999981,
+      "median": 0.994832678999984,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 804.5608959999981,
+      "median": 994.8326789999841,
+      "n": 5
+     },
+     "share_binding": 0.369,
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 570.7950665606388,
+      "us_binds": 1747.1811978323226,
+      "n_nothing": 631,
+      "n_binds": 369,
+      "kind": "one-period calls incl. overhead"
+     }
+    },
+    "news/before": {
+     "total_s": {
+      "min": 0.2646391589999837,
+      "median": 0.33082162700000595,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 264.6391589999837,
+      "median": 330.82162700000595,
+      "n": 5
+     },
+     "share_binding": 0.369,
+     "max_path_diff_vs_occbin": 3.1086244689504383e-15,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 429.6696133127011,
+      "us_binds": 599.4022818434935,
+      "n_nothing": 631,
+      "n_binds": 369,
+      "kind": "in-loop step"
+     }
+    },
+    "news/after": {
+     "total_s": {
+      "min": 0.034086328000000776,
+      "median": 0.04826230000000464,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 34.086328000000776,
+      "median": 48.26230000000464,
+      "n": 5
+     },
+     "share_binding": 0.369,
+     "max_path_diff_vs_occbin": 2.4424906541753444e-15,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 8.881784197001252e-16,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 8.851820919275047,
+      "us_binds": 115.05891056917864,
+      "n_nothing": 631,
+      "n_binds": 369,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 0.25223757900002397,
+      "median": 0.2786403740000196,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 252.23757900002397,
+      "median": 278.6403740000196,
+      "n": 5
+     },
+     "share_binding": 0.369,
+     "max_path_diff_vs_occbin": 3.1086244689504383e-15,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 182.97532488108365,
+      "us_binds": 477.03188617897086,
+      "n_nothing": 631,
+      "n_binds": 369,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/after": {
+     "total_s": {
+      "min": 0.07868253700002015,
+      "median": 0.15031117600000243,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 78.68253700002015,
+      "median": 150.31117600000243,
+      "n": 5
+     },
+     "share_binding": 0.369,
+     "max_path_diff_vs_occbin": 2.4424906541753444e-15,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 8.881784197001252e-16,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 78.12985736970143,
+      "us_binds": 179.7414037948266,
+      "n_nothing": 631,
+      "n_binds": 369,
+      "kind": "in-loop step"
+     }
+    }
+   }
+  },
+  "nkm": {
+   "s": 4.0,
+   "horizon": 40,
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 0.8496380069999816,
+      "median": 0.8853697000000125,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 849.6380069999816,
+      "median": 885.3697000000125,
+      "n": 5
+     },
+     "share_binding": 0.411,
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 533.8447724968044,
+      "us_binds": 2054.5934282242915,
+      "n_nothing": 589,
+      "n_binds": 411,
+      "kind": "one-period calls incl. overhead"
+     }
+    },
+    "news/before": {
+     "total_s": {
+      "min": 0.2753861509999922,
+      "median": 0.3472713080000176,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 275.3861509999922,
+      "median": 347.2713080000176,
+      "n": 5
+     },
+     "share_binding": 0.41,
+     "max_path_diff_vs_occbin": 0.00013187248392831918,
+     "regime_histories_equal_occbin": false,
+     "split": {
+      "us_nothing_binds": 433.2916016946294,
+      "us_binds": 557.2627536577518,
+      "n_nothing": 590,
+      "n_binds": 410,
+      "kind": "in-loop step"
+     }
+    },
+    "news/after": {
+     "total_s": {
+      "min": 0.03322098199998891,
+      "median": 0.053220400000014934,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 33.22098199998891,
+      "median": 53.22040000001493,
+      "n": 5
+     },
+     "share_binding": 0.41,
+     "max_path_diff_vs_occbin": 0.00013187248392831918,
+     "regime_histories_equal_occbin": false,
+     "max_path_diff_vs_before": 3.3928415632544784e-13,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 9.004903390015928,
+      "us_binds": 57.63976341456338,
+      "n_nothing": 590,
+      "n_binds": 410,
+      "kind": "in-loop step"
+     }
+    },
+    "lk/after": {
+     "total_s": {
+      "min": 0.10782749999998487,
+      "median": 0.12309487999999646,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 107.82749999998487,
+      "median": 123.09487999999645,
+      "n": 5
+     },
+     "share_binding": 0.41,
+     "max_path_diff_vs_occbin": 0.00013187248392831918,
+     "regime_histories_equal_occbin": false,
+     "split": {
+      "us_nothing_binds": 17.893369491258394,
+      "us_binds": 207.65696097645636,
+      "n_nothing": 590,
+      "n_binds": 410,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 0.1989970719999974,
+      "median": 0.26792330699998956,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 198.9970719999974,
+      "median": 267.92330699998956,
+      "n": 5
+     },
+     "share_binding": 0.411,
+     "max_path_diff_vs_occbin": 7.488232256491756e-12,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 119.23707809903,
+      "us_binds": 330.88860584028384,
+      "n_nothing": 589,
+      "n_binds": 411,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/after": {
+     "total_s": {
+      "min": 0.06033729500001073,
+      "median": 0.06373622299997805,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 60.33729500001073,
+      "median": 63.73622299997805,
+      "n": 5
+     },
+     "share_binding": 0.411,
+     "max_path_diff_vs_occbin": 7.141842672808707e-12,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 3.4638958368304884e-13,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 28.094392190247373,
+      "us_binds": 107.98314111929946,
+      "n_nothing": 589,
+      "n_binds": 411,
+      "kind": "in-loop step"
+     }
+    }
+   }
+  },
+  "sw": {
+   "s": 0.25,
+   "horizon": 40,
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 0.42057850000000485,
+      "median": 0.4853402159999973,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 420.57850000000485,
+      "median": 485.3402159999973,
+      "n": 5
+     },
+     "share_binding": 0.075,
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 725.9793383775559,
+      "us_binds": 1911.5035866646697,
+      "n_nothing": 925,
+      "n_binds": 75,
+      "kind": "one-period calls incl. overhead"
+     }
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 0.26324472799998944,
+      "median": 0.30022491200000445,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 263.24472799998944,
+      "median": 300.22491200000445,
+      "n": 5
+     },
+     "share_binding": 0.075,
+     "max_path_diff_vs_occbin": 3.090860900556436e-13,
+     "regime_histories_equal_occbin": true,
+     "split": {
+      "us_nothing_binds": 324.4039600000375,
+      "us_binds": 614.5942266690934,
+      "n_nothing": 925,
+      "n_binds": 75,
+      "kind": "in-loop step"
+     }
+    },
+    "regime/after": {
+     "total_s": {
+      "min": 0.03476309500001662,
+      "median": 0.05244858000000363,
+      "n": 5
+     },
+     "us_per_period": {
+      "min": 34.76309500001662,
+      "median": 52.44858000000363,
+      "n": 5
+     },
+     "share_binding": 0.075,
+     "max_path_diff_vs_occbin": 2.8421709430404007e-13,
+     "regime_histories_equal_occbin": true,
+     "max_path_diff_vs_before": 3.552713678800501e-14,
+     "regimes_equal_before": true,
+     "split": {
+      "us_nothing_binds": 67.00443351301269,
+      "us_binds": 164.79715999859462,
+      "n_nothing": 925,
+      "n_binds": 75,
+      "kind": "in-loop step"
+     }
+    }
+   }
+  }
+ }
+}

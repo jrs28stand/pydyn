@@ -50,7 +50,7 @@ class LKNews(NewsOBC):
         self._lk = {}
         # next state with no wedges: P init + Q shock
         self._S0 = np.hstack([self.ob.P, self.ob.Q])
-        self._Yw0 = self.Yw[0]                                  # (n, T): effect of each wedge on the next state
+        self._Yw0 = self._V0                                      # (n, T): effect of each wedge on the next state
         self._tol = 1e-8
         self.stats = dict(none=0, shifted=0, cached=0, general=0, built=0)
 
