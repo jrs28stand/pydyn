@@ -1,7 +1,8 @@
 """pydyn.matlab against Octave 8.4 on small MATLAB snippets (reference/matlab_octave_cases).
 
 matlab_extra_*: the 376 cases of JDyn's review of pydyn's interpreter; pydyn_extra_*: pydyn's own
-further cases (same format).  Each snippet sets ``r``; Octave's ``double(r)`` is stored (char results
+further cases; pydyn_nd_*: N-dimensional arrays; pydyn_rng_*: Octave's rand/randn/randi/randperm/rng (same
+format; every case seeds the generators first).  Each snippet sets ``r``; Octave's ``double(r)`` is stored (char results
 as character codes, failures as 'ERROR: ...').  pydyn must either give Octave's value (an Octave
 error must be a MatlabError) or refuse with Unsupported: never a different value, never a raw
 Python exception.
@@ -16,7 +17,9 @@ from pydyn import matlab as M
 
 DIR = Path(__file__).resolve().parent.parent / "reference" / "matlab_octave_cases"
 SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
-        "pydyn_extra": ("pydyn_extra_cases.txt", "pydyn_extra.mat")}
+        "pydyn_extra": ("pydyn_extra_cases.txt", "pydyn_extra.mat"),
+        "pydyn_nd": ("pydyn_nd_cases.txt", "pydyn_nd.mat"),
+        "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat")}
 
 
 def _load(name):
@@ -88,6 +91,8 @@ def test_refusals_are_few():
     review, mostly functions pydyn does not provide)."""
     refused = 0
     for name, k in PARAMS:
+        if name in ("pydyn_nd", "pydyn_rng"):
+            continue
         try:
             M.run(DATA[name][0][k])
         except M.Unsupported:
@@ -95,6 +100,32 @@ def test_refusals_are_few():
         except M.MatlabError:
             pass
     assert refused <= 70
+
+
+def test_nd_refusals_are_few():
+    """N-d cases: refusals only where MATLAB and Octave differ or for functions pydyn lacks."""
+    refused = 0
+    for k in range(len(DATA["pydyn_nd"][0])):
+        try:
+            M.run(DATA["pydyn_nd"][0][k])
+        except M.Unsupported:
+            refused += 1
+        except M.MatlabError:
+            pass
+    assert refused <= 12
+
+
+def test_rng_refusals_are_few():
+    """Random-number cases: refusals only for Octave's old generators, entropy seeding and other classes."""
+    refused = 0
+    for k in range(len(DATA["pydyn_rng"][0])):
+        try:
+            M.run(DATA["pydyn_rng"][0][k])
+        except M.Unsupported:
+            refused += 1
+        except M.MatlabError:
+            pass
+    assert refused <= 8
 
 
 def test_refusal_is_not_caught_by_try():

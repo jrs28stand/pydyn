@@ -21,9 +21,10 @@ MATLAB, so the lines that matter for the calibration are interpreted here:
 
 Boundary (deliberate; it is better to refuse than to guess)
 -----------------------------------------------------------
-Supported: real double/logical scalars and 2-D matrices, char row vectors, simple cell arrays and
-scalar structs; operators with MATLAB precedence and associativity; indexing and indexed assignment
-(1-based, ``end``, ``:``, logical masks, growth on assignment); ``if/for/while/switch/try``,
+Supported: real double/logical scalars, 2-D matrices and N-d arrays, char row vectors, simple cell
+arrays and scalar structs; operators with MATLAB precedence and associativity; indexing and indexed
+assignment (1-based, ``end``, ``:``, logical masks, growth on assignment, deletion with ``[]``);
+``if/for/while/switch/try``,
 ``break/continue/return``; anonymous functions and handles; function files and scripts that sit next
 to the ``.mod`` file; ``eval`` of a string the interpreter itself can compute; ``fzero``, ``fsolve``
 and ``csolve`` mapped to scipy; the Dynare interface (``M_.params``, ``M_.Sigma_e``, ``M_.*_names``,
@@ -35,10 +36,14 @@ as accurate as that solver; an assignment pydyn cannot compute makes them unknow
 statement that starts from them is refused).
 
 Refused: complex numbers (an operation whose MATLAB result is complex is refused; 0/0, Inf-Inf and
-the like are NaN as in MATLAB),
-N-d arrays, struct arrays, char matrices, string objects in concatenations, classes, ``dseries``,
-random numbers, ``evalin``/``assignin``, every file-system and shell function except ``load`` of a
-``.mat`` file located next to the ``.mod`` file, and all Dynare internals other than those above.
+the like are NaN as in MATLAB), N-d arrays in functions that handle only matrices (``arr``; the N-d-aware
+code paths use ``arrn``, and follow Octave's Array<T> rules where MATLAB does alike),
+struct arrays, char matrices, N-d cell and char arrays, string objects in concatenations, classes, ``dseries``,
+random numbers other than ``rand``/``randn``/``randi``/``randperm`` (which give Octave 8.4's numbers from
+Dynare's seed, see "random numbers" below; refused in steady-state files and helpers the solvers call),
+``evalin``/``assignin``, every file-system and shell function except ``load`` of a ``.mat`` file located
+next to the ``.mod`` file (and, in pydyn.dynare(), a sandboxed ``save``), and all Dynare internals other
+than those above.
 
 A statement that cannot be interpreted is *skipped with a warning* only when it provably does not
 write to ``M_`` or the parameters; the variables it would have assigned become "unknown", and any
@@ -204,8 +209,13 @@ def is_num(v):
     return isinstance(v, _SCAL) or isinstance(v, np.ndarray)
 
 
-def arr(v):
-    """2-D float (or bool) array view of a numeric value."""
+#: message of the refusal raised when an N-d array reaches code that handles only 2-D arrays
+ND_REFUSAL = "this operation on an array with more than two dimensions"
+
+
+def arrn(v):
+    """float (or bool) array view of a numeric value, 2-D or N-d (ndim >= 2, no trailing singleton
+    beyond the second dimension: MATLAB's dimensions)."""
     if isinstance(v, np.ndarray):
         return v
     if isinstance(v, _SCAL):
@@ -217,13 +227,49 @@ def arr(v):
     raise MatlabError(f"a {_class(v)} was used where a number is required")
 
 
+def arr(v):
+    """2-D float (or bool) array view of a numeric value.  An N-d array is refused: code that calls
+    ``arr`` handles matrices only (N-d-aware code calls ``arrn``)."""
+    a = arrn(v)
+    if a.ndim > 2:
+        raise Unsupported(ND_REFUSAL, "ndarray")
+    return a
+
+
 def farr(v):
     a = arr(v)
     return a.astype(float) if a.dtype != float else a
 
 
+def farrn(v):
+    a = arrn(v)
+    return a.astype(float) if a.dtype != float else a
+
+
+def canon_shape(shape):
+    """MATLAB's dimensions of an array of the given shape: at least two, trailing singletons beyond
+    the second removed."""
+    shape = tuple(int(x) for x in shape)
+    if len(shape) < 2:
+        shape = shape + (1,) * (2 - len(shape))
+    while len(shape) > 2 and shape[-1] == 1:
+        shape = shape[:-1]
+    return shape
+
+
+def _padn(shape, n):
+    """``shape`` extended with trailing singletons to ``n`` dimensions."""
+    return tuple(shape) + (1,) * (n - len(shape))
+
+
 def ret(a):
-    """Normalise an array result: 1x1 becomes a scalar."""
+    """Normalise an array result: 1x1 becomes a scalar; trailing singleton dimensions beyond the
+    second are removed (MATLAB's dimensions)."""
+    if a.ndim > 2:
+        if a.shape[-1] == 1:
+            a = a.reshape(canon_shape(a.shape))
+        if a.ndim > 2:
+            return a
     if a.ndim != 2:
         a = np.atleast_2d(a)
     if a.shape == (1, 1):
@@ -236,7 +282,7 @@ def scalar(v, what="value"):
         return _F(v)
     if isinstance(v, (np.bool_, bool)):
         return _F(v)
-    a = arr(v)
+    a = arrn(v)
     if a.size != 1:
         raise MatlabError(f"{what} must be a scalar")
     return _F(a.flat[0])
@@ -276,7 +322,7 @@ def truth(v):
         return bool(v)
     if isinstance(v, str):
         return len(v) > 0 and all(ord(c) != 0 for c in v)
-    a = arr(v)
+    a = arrn(v)
     if a.dtype != bool and np.isnan(a).any():
         raise MatlabError("NaN cannot be converted to a logical value")
     return a.size > 0 and bool(np.all(a != 0))
@@ -290,11 +336,24 @@ def as_index_int(x, what="index"):
 
 
 # ---------------------------------------------------------------------- arithmetic
+def _dimstr(shape):
+    return "x".join(str(x) for x in shape)
+
+
 def _bcast(a, b):
+    """Check that ``a`` and ``b`` are compatible for an element-wise operation (MATLAB's implicit
+    expansion); returns them, the one with fewer dimensions given trailing singletons (numpy would
+    add leading ones)."""
     if a.shape != b.shape:
+        n = max(a.ndim, b.ndim)
+        if a.ndim != n:
+            a = a.reshape(_padn(a.shape, n))
+        if b.ndim != n:
+            b = b.reshape(_padn(b.shape, n))
         for p, q in zip(a.shape, b.shape):
             if p != q and p != 1 and q != 1:
-                raise MatlabError(f"nonconformant arguments ({a.shape[0]}x{a.shape[1]} and {b.shape[0]}x{b.shape[1]})")
+                raise MatlabError(f"nonconformant arguments ({_dimstr(canon_shape(a.shape))} and {_dimstr(canon_shape(b.shape))})")
+    return a, b
 
 
 def _fl(v):
@@ -307,8 +366,7 @@ def _ew(fn, a, b):
         return fn(a, b)
     if ta in _SCALT and tb in _SCALT:
         return fn(_F(a), _F(b))
-    x, y = farr(a), farr(b)
-    _bcast(x, y)
+    x, y = _bcast(farrn(a), farrn(b))
     return ret(fn(x, y))
 
 
@@ -421,7 +479,7 @@ def uminus(a):
         return -a
     if type(a) in _SCALT:
         return -_F(a)
-    return ret(-farr(a))
+    return ret(-farrn(a))
 
 
 def lnot(a):
@@ -429,7 +487,7 @@ def lnot(a):
         if a != a:
             raise MatlabError("NaN cannot be converted to a logical value")
         return np.bool_(not a)
-    x = arr(a)
+    x = arrn(a)
     if x.dtype != bool and np.isnan(x).any():
         raise MatlabError("NaN cannot be converted to a logical value")
     return ret(x == 0)
@@ -437,6 +495,8 @@ def lnot(a):
 
 def transpose(a):
     if isinstance(a, np.ndarray):
+        if a.ndim > 2:
+            raise MatlabError("transpose not defined for N-D objects")
         return a.T
     if isinstance(a, str) and len(a) > 1:
         raise Unsupported("transpose of a char array")
@@ -460,8 +520,7 @@ def _cmp(fn):
                 y = np.array([[ord(c) for c in b]], float)
                 return ret(fn(x, y))
             raise Unsupported("comparison of char arrays with ==; use strcmp")
-        x, y = arr(a), arr(b)
-        _bcast(x, y)
+        x, y = _bcast(arrn(a), arrn(b))
         return ret(fn(x, y))
     return f
 
@@ -470,21 +529,19 @@ lt, gt, le, ge, eq, ne = (_cmp(f) for f in (np.less, np.greater, np.less_equal, 
 
 
 def _logical(a):
-    x = arr(a)
+    x = arrn(a)
     if x.dtype != bool and np.isnan(x).any():
         raise MatlabError("NaN cannot be converted to a logical value")
     return x != 0
 
 
 def el_and(a, b):
-    x, y = _logical(a), _logical(b)
-    _bcast(x, y)
+    x, y = _bcast(_logical(a), _logical(b))
     return ret(x & y)
 
 
 def el_or(a, b):
-    x, y = _logical(a), _logical(b)
-    _bcast(x, y)
+    x, y = _bcast(_logical(a), _logical(b))
     return ret(x | y)
 
 
@@ -527,6 +584,76 @@ def _cat_dims(dims, d, what):
     return cur if cur is not None else (0, 0)
 
 
+def _dv_concat(dv, dvb, dim):
+    """Octave's dim_vector::concat: (match, new dimensions) of appending dimensions ``dvb`` to ``dv``
+    along ``dim`` (0-based)."""
+    dv, dvb = list(dv), list(dvb)
+    orig_nd, ndb = len(dv), len(dvb)
+    new_nd = ndb if dim < ndb else dim + 1
+    if new_nd > orig_nd:
+        dv += [1] * (new_nd - orig_nd)
+    else:
+        new_nd = orig_nd
+    match = all(i == dim or dv[i] == dvb[i] for i in range(ndb)) and \
+        all(i == dim or dv[i] == 1 for i in range(ndb, new_nd))
+    if match:
+        dv[dim] += dvb[dim] if dim < ndb else 1
+    elif ndb == 2 and dvb == [0, 0]:
+        match = True
+    elif orig_nd == 2 and dv[0] == 0 and dv[1] == 0:
+        match, dv = True, dvb
+    return match, list(canon_shape(dv))
+
+
+def _dv_hvcat(dv, dvb, dim):
+    """Octave's dim_vector::hvcat (the rule of [a, b] and [a; b]): concat, and a 1x0 or 0x1 operand
+    that does not fit is skipped."""
+    ok, new = _dv_concat(dv, dvb, dim)
+    if ok:
+        return ok, new
+    dv = list(canon_shape(dv))
+    if len(dv) == 2 and len(dvb) == 2:
+        if dvb[0] + dvb[1] == 1:
+            return True, ([0, 0] if dv[0] + dv[1] == 1 else dv)
+        if dv[0] + dv[1] == 1:
+            return True, list(dvb)
+    return False, dv
+
+
+def _concat_nd(vals, d, hv):
+    """Concatenation along ``d`` (0-based) when an operand or the result has more than two dimensions:
+    Octave's Array<T>::cat with the rule dim_vector::concat (``cat``) or hvcat (``[...]``)."""
+    arrays = [arrn(v) for v in vals]
+    n = len(arrays)
+    istart = 0
+    if not hv and n > 2 and d > 1:            # cat(3, [], [], A) is cat(3, A)
+        while istart < n and arrays[istart].shape == (0, 0):
+            istart += 1
+        if istart >= n:
+            istart = 0
+    dv = list(arrays[istart].shape)
+    for a in arrays[istart + 1:]:
+        ok, new = (_dv_hvcat if hv else _dv_concat)(dv, list(a.shape), d)
+        if not ok:
+            raise MatlabError(f"concatenation operator not implemented for '{_dimstr(dv)}' by '{_dimstr(a.shape)}' operations"
+                              if hv else f"cat: dimension mismatch in dimension {d + 1}")
+        dv = new
+    if not hv and d > 1 and all(a.shape == (0, 0) for a in arrays):
+        raise Unsupported("cat along a dimension above 2 of empty 0x0 arrays only (the result's shape is Octave's)")
+    logical = all(a.dtype == bool for a in arrays)
+    shape = tuple(dv)
+    if MAX_ELEMENTS < int(np.prod(shape, dtype=np.int64)):
+        raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+    parts = [a for a in arrays if a.size]
+    if not parts:
+        return ret(np.zeros(shape, bool if logical else float))
+    nd = max(len(shape), d + 1)
+    out = np.concatenate([a.reshape(_padn(a.shape, nd)) for a in parts], axis=d)
+    if canon_shape(out.shape) != canon_shape(shape):
+        raise MatlabError("concatenation: dimension mismatch")
+    return ret(out if logical else out.astype(float))
+
+
 def _concat(vals, d):
     what = "vertical" if d == 0 else "horizontal"
     if any(isinstance(v, Cell) for v in vals):
@@ -545,6 +672,10 @@ def _concat(vals, d):
             arr(v)
         if not (is_num(v) or isinstance(v, str)):
             raise Unsupported(f"concatenation of a {_class(v)} value (struct arrays and the like)")
+    if any(isinstance(v, np.ndarray) and v.ndim > 2 for v in vals):
+        if any(isinstance(v, str) for v in vals):
+            raise Unsupported("concatenation of char arrays with N-d arrays")
+        return _concat_nd([v for v in vals if shape_of(v) != (0, 0)] or vals[:1], d, True)
     shape = _cat_dims([shape_of(v) for v in vals], d, what)
     content = [v for v in vals if 0 not in shape_of(v)]
     if any(isinstance(v, str) for v in vals):
@@ -580,7 +711,7 @@ def _lin_index(ix, n, grow=False):
         return np.arange(n)
     if isinstance(ix, str):
         raise Unsupported("char array used as an index")
-    a = arr(ix)
+    a = arrn(ix)
     if a.dtype == bool:
         if a.size > n and a.ravel(order="F")[n:].any():
             if not grow:
@@ -596,8 +727,27 @@ def _lin_index(ix, n, grow=False):
 
 
 def _is_vec(shape):
-    """Exactly one dimension differs from 1 (1x0 and 0x1 are vectors, 1x1 and 0x0 are not)."""
-    return (shape[0] != 1) != (shape[1] != 1)
+    """A 2-D shape in which exactly one dimension differs from 1 (1x0 and 0x1 are vectors, 1x1 and
+    0x0 are not)."""
+    return len(shape) == 2 and (shape[0] != 1) != (shape[1] != 1)
+
+
+def _is_nd_vec(shape):
+    """Octave's dim_vector::is_nd_vector: exactly one dimension differs from 1, any number of dimensions."""
+    return sum(x != 1 for x in shape) == 1
+
+
+def redim(shape, n):
+    """Octave's dim_vector::redim: the dimensions seen by ``n`` subscripts (the last one spans the
+    remaining dimensions; missing ones are 1)."""
+    shape = tuple(shape)
+    if len(shape) == n:
+        return shape
+    if len(shape) < n:
+        return shape + (1,) * (n - len(shape))
+    if n <= 1:
+        return (int(np.prod(shape, dtype=np.int64)), 1) if n == 1 else shape
+    return shape[:n - 1] + (int(np.prod(shape[n - 1:], dtype=np.int64)),)
 
 
 def _index_dims(ia, n):
@@ -608,6 +758,8 @@ def _index_dims(ia, n):
         return ia.shape
     if ia.shape == (1, 1):
         return (n, n)
+    if ia.ndim > 2 and _is_nd_vec(ia.shape):
+        raise Unsupported("a logical index that is an N-d vector (1x1xn): MATLAB's result shape is not documented")
     if _is_vec(ia.shape):
         return (1, n) if ia.shape[0] == 1 else (n, 1)
     return (n, 1)
@@ -618,6 +770,8 @@ def _lin_result_shape(src, ia, n):
     scalar) takes the orientation of the source (MATLAB's rule, implemented as in Octave's
     Array<T>::index)."""
     rd = _index_dims(ia, n)
+    if (len(src) > 2 or len(rd) > 2) and n != 1 and _is_nd_vec(src) and _is_nd_vec(rd):
+        raise Unsupported("linear indexing of a vector with a vector when either is an N-d vector (1x1xn)")
     if src[0] * src[1] != 1 and _is_vec(src) and n != 1 and _is_vec(rd):
         return (n, 1) if src[1] == 1 else (1, n)
     return rd
@@ -631,18 +785,20 @@ def index(v, args):
         items, shp = v.items, v.shape
         a = np.arange(len(items)).reshape(shp, order="F") if items else np.zeros(shp, int)
         sub = _index_arr(a, args, keep=True)
+        if sub.ndim > 2:
+            raise Unsupported("cell arrays with more than two dimensions")
         return Cell([items[int(i)] for i in sub.ravel(order="F")], sub.shape)
     if isinstance(v, str):
         a = np.array([[ord(c) for c in v]], float) if v else np.zeros((0, 0))
         sub = _index_arr(a, args, keep=True)
-        if sub.shape[0] > 1:
+        if sub.shape[0] > 1 or sub.ndim > 2:
             raise Unsupported("char matrices")
         return "".join(chr(int(c)) for c in sub.ravel())
     if isinstance(v, (Struct, Handle)) or hasattr(v, "get_field"):
         if all(type(x) in _SCALT and x == 1 for x in args):
             return v
         raise Unsupported("indexing a struct or function handle")
-    return ret(_index_arr(arr(v), args))
+    return ret(_index_arr(arrn(v), args))
 
 
 def _index_arr(a, args, keep=False):
@@ -663,14 +819,18 @@ def _index_arr(a, args, keep=False):
         out = flat[k]
         if ix is COLON:
             return out.reshape(-1, 1)
-        return out.reshape(_lin_result_shape(a.shape, arr(ix), k.size), order="F")
-    if n == 2:
+        return out.reshape(_lin_result_shape(a.shape, arrn(ix), k.size), order="F")
+    if n == 2 and a.ndim == 2:
         r = _lin_index(args[0], a.shape[0])
         c = _lin_index(args[1], a.shape[1])
         return a[np.ix_(r, c)]
-    if all(type(x) in _SCALT and x == 1 for x in args[2:]):
-        return _index_arr(a, args[:2], keep)
-    raise Unsupported("arrays with more than two dimensions")
+    # n subscripts (Octave's Array<T>::index with an array of idx_vector): the last subscript spans
+    # the remaining dimensions, missing dimensions are 1
+    dims = redim(a.shape, n)
+    b = a.reshape(dims, order="F")
+    idx = [_lin_index(x, dims[k]) for k, x in enumerate(args)]
+    out = b[np.ix_(*idx)]
+    return out.reshape(canon_shape(out.shape))
 
 
 def index_brace(v, args):
@@ -692,7 +852,7 @@ def _idx_info(ix, n):
     k = _lin_index(ix, n, grow=True)
     ext = max(n, int(k.max()) + 1) if k.size else n
     return k, ext, (not isinstance(ix, (bool, np.bool_)) and not (isinstance(ix, np.ndarray) and ix.dtype == bool)
-                    and arr(ix).size == 1)
+                    and arrn(ix).size == 1)
 
 
 def _chop(shape):
@@ -731,19 +891,22 @@ def _delete(a, args):
         keep = np.ones(n, bool)
         keep[k] = False
         out = a.ravel(order="F")[keep]
-        if a.shape[0] == 1 or a.shape[1] == 1:          # vector (or scalar): keeps its orientation
+        if a.ndim == 2 and (a.shape[0] == 1 or a.shape[1] == 1):     # vector (or scalar): keeps its orientation
             return out.reshape(-1, 1) if (a.shape[1] == 1 and a.shape[0] != 1) else out.reshape(1, -1)
         if is_scalar:
             return out.reshape(1, -1)                    # MATLAB and Octave: a row
         # Octave gives a column or a row depending on how the index was built, MATLAB a row
         raise Unsupported("deleting several elements of a matrix with a linear index")
-    if len(args) != 2:
-        raise Unsupported("arrays with more than two dimensions")
+    if len(args) != a.ndim:
+        # Octave deletes along the array's own dimensions (A(:,1) = [] of a 2x3x4 array gives 2x2x4)
+        # or fails (A(:,:,1) = [] of a matrix); MATLAB reshapes first
+        raise Unsupported("null assignment with fewer or more subscripts than the array has dimensions "
+                          "(MATLAB and Octave differ)")
     cols = [x is COLON for x in args]
     if all(cols):
-        return np.zeros((0, a.shape[1]), a.dtype)
-    if any(cols):
-        d = 0 if not cols[0] else 1
+        return np.zeros((0,) + a.shape[1:], a.dtype)
+    if sum(not c for c in cols) == 1:
+        d = cols.index(False)
         n = a.shape[d]
         k, ext, _ = _idx_info(args[d], n)
         if k.size == 0:
@@ -752,14 +915,93 @@ def _delete(a, args):
             raise MatlabError(f"A(..,I,..) = []: index out of bounds: value {ext} out of bound {n}")
         keep = np.ones(n, bool)
         keep[k] = False
-        return a[keep, :] if d == 0 else a[:, keep]
+        return np.compress(keep, a, axis=d)
     info = [_idx_info(x, a.shape[d]) for d, x in enumerate(args)]
     if any(k.size == 0 for k, _, _ in info):
         return a                                          # an empty slice: nothing to delete
-    if any(np.array_equal(np.unique(k), np.arange(a.shape[d])) for d, (k, _, _) in enumerate(info)):
+    if any(args[d] is not COLON and np.array_equal(np.unique(k), np.arange(a.shape[d])) for d, (k, _, _) in enumerate(info)):
         # MATLAB treats a subscript covering its whole dimension like ':'; Octave 8 raises an error
         raise Unsupported("null assignment with a subscript that covers a whole dimension (MATLAB and Octave differ)")
     raise MatlabError("a null assignment can only have one non-colon index")
+
+
+def _assign_nd(a, args, r):
+    """``a(args) = r`` with three or more subscripts, or into an N-d array (Octave's Array<T>::assign
+    for an array of idx_vector; MATLAB alike, except that a resize through fewer subscripts than the
+    array has dimensions, an error in both, is reported the same way).  ``a`` and ``r`` have the same
+    class already."""
+    n = len(args)
+    if n == 1:                                       # linear index into an N-d array: no growth
+        k, nx, _ = _idx_info(args[0], a.size)
+        if nx != a.size:
+            raise MatlabError("Octave:index-out-of-bounds: A(I) = X: X must have the same size as I; "
+                              "resizing an N-d array with a linear index is ambiguous")
+        if r.size != 1 and k.size != r.size:
+            raise MatlabError(f"=: nonconformant arguments (op1 is 1x{k.size}, op2 is {_dimstr(r.shape)})")
+        b = np.array(a, order="F")
+        b.reshape(-1, order="F")[k] = r.ravel(order="F") if r.size != 1 else r.flat[0]
+        return ret(b)
+    dv = redim(a.shape, n)
+    if all(x == 0 for x in a.shape):                 # zero_dims_inquire (the N-d version)
+        scal = [_idx_info(x, 0)[2] if x is not COLON else False for x in args]
+        cols = [x is COLON for x in args]
+        rdv = [0 if cols[i] else _idx_info(x, 0)[1] for i, x in enumerate(args)]
+        rhdv = list(r.shape)
+        nonsc = sum(not x for x in scal)
+        if all(cols):
+            rdv = (rhdv + [1] * n)[:n]
+        elif nonsc == len(rhdv):
+            j = 0
+            for i in range(n):
+                if scal[i]:
+                    continue
+                if cols[i]:
+                    rdv[i] = rhdv[j]
+                j += 1
+        else:
+            rh0 = list(_chop(r.shape))
+            j = 0
+            for i in range(n):
+                if scal[i]:
+                    continue
+                if cols[i]:
+                    rdv[i] = rh0[j] if j < len(rh0) else 1
+                    j += 1
+        pos = [np.arange(rdv[i]) if cols[i] else _idx_info(x, 0)[0] for i, x in enumerate(args)]
+    else:
+        info = [_idx_info(x, dv[i]) for i, x in enumerate(args)]
+        pos = [k for k, _, _ in info]
+        rdv = [e for _, e, _ in info]
+    lens = [p.size for p in pos]
+    rh = list(_chop(r.shape))
+    isfill = r.size == 1
+    j, match = 0, True
+    for ln in lens:
+        if ln == 1:
+            continue
+        match = match and j < len(rh) and ln == rh[j]
+        j += 1
+    match = (match and (j == len(rh) or rh[j] == 1)) or isfill
+    if not match:
+        if 0 in lens and r.size == 0:
+            return ret(a)
+        raise MatlabError(f"=: nonconformant arguments (op1 is {_dimstr(canon_shape(lens))}, op2 is {_dimstr(r.shape)})")
+    rdv = tuple(int(x) for x in rdv)
+    if rdv != tuple(dv):
+        if n < a.ndim:
+            raise MatlabError("Octave:index-out-of-bounds: resizing an N-d array through fewer subscripts "
+                              "than it has dimensions is ambiguous (A(I,J,...) = X: dimensions mismatch)")
+        if int(np.prod(rdv, dtype=np.int64)) > MAX_ELEMENTS:
+            raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+        b = np.zeros(rdv, a.dtype)
+        b[tuple(slice(0, x) for x in dv)] = a.reshape(dv, order="F")
+        shape = canon_shape(rdv)
+    else:
+        b = a.reshape(dv, order="F").copy()
+        shape = a.shape
+    if all(lens):
+        b[np.ix_(*pos)] = r.flat[0] if isfill else r.reshape(lens, order="F")
+    return ret(b.reshape(shape, order="F"))
 
 
 def assign_index(v, args, rhs):
@@ -770,10 +1012,10 @@ def assign_index(v, args, rhs):
         if len(args) == 1 and type(args[0]) is np.float64:
             k = args[0]
             if k == int(k) and 1 <= k <= v.size:
-                a = v.copy()
+                a = np.array(v, order="F")                # Fortran order: the F-order ravel is a view
                 a.reshape(-1, order="F")[int(k) - 1] = rhs
                 return ret(a)
-        elif len(args) == 2 and type(args[0]) is np.float64 and type(args[1]) is np.float64:
+        elif len(args) == 2 and type(args[0]) is np.float64 and type(args[1]) is np.float64 and v.ndim == 2:
             i, j = args
             if i == int(i) and j == int(j) and 1 <= i <= v.shape[0] and 1 <= j <= v.shape[1]:
                 a = v.copy()
@@ -787,23 +1029,22 @@ def assign_index(v, args, rhs):
         raise Unsupported("'()' assignment with cell arrays")
     if isinstance(v, str) or isinstance(rhs, (str, Struct, Handle)):
         raise Unsupported("indexed assignment with char arrays, structs or handles")
-    a = np.zeros((0, 0)) if v is None else arr(v)
-    r = arr(rhs)
+    a = np.zeros((0, 0)) if v is None else arrn(v)
+    r = arrn(rhs)
     n = len(args)
-    if n > 2:
-        if all(type(x) in _SCALT and x == 1 for x in args[2:]):
-            args, n = args[:2], 2
-        else:
-            raise Unsupported("arrays with more than two dimensions")
     if isinstance(rhs, np.ndarray) and r.shape == (0, 0):         # A(I) = []: deletion
         return ret(_delete(a, args))
     a, r = _to_class_of(a, r, v is not None)
+    if n == 0:
+        raise Unsupported("assignment with an empty subscript list A() = X")
+    if n > 2 or a.ndim > 2:
+        return _assign_nd(a, args, r)
     if n == 1:
         ix = args[0]
         na = a.size
         k, nx, _ = _idx_info(ix, na)
         if r.size != 1 and k.size != r.size:
-            raise MatlabError(f"=: nonconformant arguments (op1 is 1x{k.size}, op2 is {r.shape[0]}x{r.shape[1]})")
+            raise MatlabError(f"=: nonconformant arguments (op1 is 1x{k.size}, op2 is {_dimstr(r.shape)})")
         if nx != na:
             if a.shape[0] in (0, 1):
                 shape = (1, nx)
@@ -825,9 +1066,9 @@ def assign_index(v, args, rhs):
     icol, jcol = args[0] is COLON, args[1] is COLON
     if a.shape == (0, 0):
         # Octave's zero_dims_inquire: only a 0x0 array takes the extent of a ':' from the right-hand side
-        if icol and jcol:
+        if icol and jcol and r.ndim == 2:
             rdv = r.shape
-        elif not isc and not jsc:
+        elif not isc and not jsc and r.ndim == 2:
             rdv = (r.shape[0] if icol else iext, r.shape[1] if jcol else jext)
         else:
             rh0, kk = _chop(r.shape), 0
@@ -848,8 +1089,8 @@ def assign_index(v, args, rhs):
         rdv = (iext, jext)
     il, jl = i.size, j.size
     rh = _chop(r.shape)
-    if not (r.size == 1 or (il == rh[0] and jl == rh[1]) or (il == 1 and jl == rh[0] and rh[1] == 1)):
-        raise MatlabError(f"=: nonconformant arguments (op1 is {il}x{jl}, op2 is {r.shape[0]}x{r.shape[1]})")
+    if not (r.size == 1 or (len(rh) == 2 and il == rh[0] and jl == rh[1]) or (il == 1 and jl == rh[0] and rh[1] == 1)):
+        raise MatlabError(f"=: nonconformant arguments (op1 is {il}x{jl}, op2 is {_dimstr(r.shape)})")
     if tuple(rdv) != a.shape:
         if rdv[0] * rdv[1] > MAX_ELEMENTS:
             raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
@@ -1830,7 +2071,7 @@ def _elem(fn, name):
             if domain and r != r and x == x:
                 _cplx()
             return r
-        x = farr(x)
+        x = farrn(x)
         r = fn(x)
         if domain and np.any(np.isnan(r) & ~np.isnan(x)):
             _cplx()
@@ -1869,7 +2110,7 @@ for _n, _f in {"plus": plus, "minus": minus, "times": times, "rdivide": rdivide,
     BUILTINS[_n] = (lambda fn, nm: lambda I, a, nout: (_nargs(a, 2, 2, nm), fn(a[0], a[1]))[1])(_f, _n)
 
 BUILTINS["double"] = lambda I, a, nout: (np.array([[float(ord(c)) for c in a[0]]]) if len(a[0]) != 1 else _F(ord(a[0]))) \
-    if isinstance(a[0], str) and a[0] else (np.zeros((0, 0)) if isinstance(a[0], str) else ret(farr(a[0])))
+    if isinstance(a[0], str) and a[0] else (np.zeros((0, 0)) if isinstance(a[0], str) else ret(farrn(a[0])))
 BUILTINS["class"] = lambda I, a, nout: _class(a[0])
 BUILTINS["uminus"] = lambda I, a, nout: uminus(a[0])
 BUILTINS["not"] = lambda I, a, nout: lnot(a[0])
@@ -1889,7 +2130,9 @@ BUILTINS["realmax"] = lambda I, a, nout: _F(np.finfo(float).max)
 BUILTINS["realmin"] = lambda I, a, nout: _F(np.finfo(float).tiny)
 
 
-def _dims(a, name="size"):
+def _dims(a, name="size", nd=False):
+    """Dimensions given as ``n``, ``m, n, ...`` or ``[m n ...]`` (negative ones are 0).  With ``nd``
+    any number of dimensions (MATLAB's: trailing singletons removed), else two."""
     a = [x for x in a if not isinstance(x, str) or _unsup(f"{name}: class or 'like' arguments")]
     if not a:
         return (1, 1)
@@ -1901,8 +2144,13 @@ def _dims(a, name="size"):
         d = [max(0, as_index_int(x, "dimension")) for x in d.ravel()]
     else:
         d = [max(0, as_index_int(x, "dimension")) for x in a]
+    if nd and len(d) >= 2:
+        d = canon_shape(d)
+        if int(np.prod(d, dtype=np.int64)) > MAX_ELEMENTS or max(d) > MAX_ELEMENTS:
+            raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+        return d
     if len(d) > 2 and any(x != 1 for x in d[2:]):
-        raise Unsupported("arrays with more than two dimensions")
+        raise Unsupported(ND_REFUSAL, "ndarray")
     if d[0] * d[1] > MAX_ELEMENTS:
         raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
     return (d[0], d[1])
@@ -1911,7 +2159,7 @@ def _dims(a, name="size"):
 def _const(value, a):
     if not a:
         return _F(value)
-    return ret(np.full(_dims(a), value))
+    return ret(np.full(_dims(a, nd=True), value))
 
 
 @bi("eye")
@@ -1920,9 +2168,262 @@ def _eye(I, a, nout):
     return ret(np.eye(r, c))
 
 
-@bi("rand", "randn", "randi", "randperm", "normrnd", "unifrnd", "mvnrnd", "gamrnd", "betarnd")
+@bi("normrnd", "unifrnd", "mvnrnd", "gamrnd", "betarnd", "randg", "exprnd", "poissrnd", "binornd", "chi2rnd",
+    "trnd", "lognrnd", "wblrnd", "random", "RandStream", "rande", "randp")
 def _random(I, a, nout):
-    raise Unsupported("random numbers are not reproduced by pydyn", "random")
+    raise Unsupported("random numbers other than rand, randn, randi and randperm are not reproduced by pydyn", "random")
+
+
+# ---------------------------------------------------------------------- random numbers (Octave's generators)
+# rand, randn, randi and randperm give Octave 8.4's numbers bit for bit (pydyn.octave_rng: Mersenne Twister,
+# 53-bit uniforms, ziggurat normals; randi is Octave's randi.m, randperm its Knuth shuffle).  The uniform and
+# the normal generator are two states, as in Octave.  The stream is the interpreter's (Interpreter.get_rng):
+# in pydyn.dynare() it is the stream of the simulations, so draws in MATLAB code and Dynare's commands consume
+# one stream in the order of the .mod file, as Dynare does under Octave.  The initial state is Dynare's
+# (set_dynare_seed('default'): rand('state', 0); randn('state', 0)).  MATLAB's generators give other numbers.
+def _mt_stream(seed):
+    """An Octave generator state after ``rand('state', seed)`` (oct-rand.cc: set_internal_state)."""
+    from .octave_rng import MTStream, init_by_array
+
+    def _double2uint32(v):          # Octave 8: uint32NDArray (s): round half away from zero, saturate, NaN -> 0
+        if v != v:
+            return 0
+        return int(min(max(math.floor(abs(v) + 0.5) * (1 if v >= 0 else -1), 0), 4294967295))
+    if isinstance(seed, str):
+        if seed.lower() == "reset":
+            raise Unsupported("rand('state', 'reset'): Octave then seeds from the clock and system entropy", "random")
+        raise MatlabError("rand: unrecognized string argument")
+    if not is_num(seed):
+        arrn(seed)
+        raise MatlabError("rand: STATE must be a numeric vector")
+    x = [0.0 if np.isinf(v) else float(v) for v in farrn(seed).ravel(order="F")]
+    if not x:
+        raise Unsupported("rand('state', []): an empty state (undefined in Octave)", "random")
+    st = MTStream(0)
+    if len(x) == 625 and 0 < x[624] <= 624:
+        st._set([_double2uint32(v) for v in x[:624]], 625 - int(_double2uint32(x[624])))
+    else:
+        st._set(init_by_array([_double2uint32(v) for v in x]), 624)
+    return st
+
+
+def _rand_dims(name, a):
+    """Dimensions of rand(...)/randn(...): a trailing class name 'double' is accepted."""
+    if a and isinstance(a[-1], str):
+        if a[-1].lower() != "double":
+            raise Unsupported(f"{name}: class argument {a[-1]!r}", "random")
+        a = a[:-1]
+    for x in a:
+        if not is_num(x):
+            arrn(x)
+            raise MatlabError(f"{name}: dimensions must be numeric")
+    return _dims(a, name, nd=True)
+
+
+def _randfun(name, attr):
+    def f(I, a, nout):
+        R = I.get_rng()
+        if a and isinstance(a[0], str) and a[0].lower() not in ("double", "single"):
+            key = a[0].lower()
+            if key in ("state", "twister"):
+                if len(a) == 1:
+                    return getattr(R, attr).get_state().reshape(-1, 1)
+                if len(a) > 2:
+                    raise MatlabError(f"{name}: wrong number of arguments")
+                setattr(R, attr, _mt_stream(a[1]))
+                return []
+            if key == "seed":
+                raise Unsupported(f"{name}('seed'): Octave's old generator is not reproduced", "random")
+            raise MatlabError(f"{name}: unrecognized string argument")
+        dims = _rand_dims(name, a)
+        n = int(np.prod(dims, dtype=np.int64))
+        if n == 0:
+            return np.zeros(dims)
+        st = getattr(R, attr)
+        v = st.uniforms(n) if attr == "u" else st.normals(n)
+        return ret(v.reshape(dims, order="F"))
+    BUILTINS[name] = f
+
+
+_randfun("rand", "u")
+_randfun("randn", "n")
+
+
+@bi("randi")
+def _randi(I, a, nout):
+    """Octave 8.4's randi.m (rejection sampling on 53-bit integers drawn with rand)."""
+    if not a:
+        raise MatlabError("Invalid call to randi")
+    b = a[0]
+    if not (is_num(b) and _class(b) == "double"):
+        if isinstance(b, Tainted):
+            arrn(b)
+        raise MatlabError("randi: IMIN and IMAX must be integer bounds")
+    bnd = farrn(b).ravel(order="F")
+    if bnd.size == 0 or np.any(bnd != np.trunc(bnd)):
+        if bnd.size == 0:
+            raise Unsupported("randi with empty bounds")
+        raise MatlabError("randi: IMIN and IMAX must be integer bounds")
+    if bnd.size == 1:
+        imin, imax = 1.0, float(bnd[0])
+        if imax < 1:
+            raise MatlabError("randi: require IMAX >= 1")
+    else:
+        imin, imax = float(bnd[0]), float(bnd[1])
+        if imax < imin:
+            raise MatlabError("randi: require IMIN <= IMAX")
+    fm = 2.0 ** 53
+    if abs(imax) >= fm or abs(imin) >= fm:
+        raise MatlabError("randi: IMIN and IMAX must be smaller than flintmax()")
+    if imax - imin >= fm - 1:
+        raise MatlabError("randi: integer range must be smaller than flintmax()-1")
+    rest = list(a[1:])
+    if rest and isinstance(rest[-1], str):
+        if rest[-1] != "double":
+            raise Unsupported(f"randi: class argument {rest[-1]!r}", "random")
+        rest = rest[:-1]
+    if not rest:
+        dims = [1, 1]
+    else:
+        if not all(is_num(x) for x in rest):
+            raise MatlabError("randi: dimensions must be numeric")
+        dl = [float(v) for x in rest for v in farrn(x).ravel(order="F")]
+        if len(rest) == 1 and len(dl) == 1:
+            dl = dl * 2
+        if len(dl) < 2 or any(v != math.floor(v) or v < 0 for v in dl):
+            raise Unsupported("randi with dimensions that are negative, not integers or a single element", "random")
+        dims = [int(v) for v in dl]
+    N = float(np.prod(dims))
+    if N > MAX_ELEMENTS:
+        raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+    rng_ = (imax - imin) + 1
+    K = math.floor((fm + 1) / rng_)
+    p = (K * rng_) / (fm + 1)
+    st = I.get_rng().u
+    while True:
+        M = math.ceil(N / p + 10 * math.sqrt(N / p - N))
+        r_prim = np.floor(st.uniforms(M) * (fm + 1)) if M > 0 else np.zeros(0)
+        r_prim = r_prim[r_prim < K * rng_]
+        if r_prim.size >= N:
+            break
+    out = imin + np.floor(r_prim[:int(N)].reshape(canon_shape(dims), order="F") / K)
+    return ret(out)
+
+
+@bi("randperm")
+def _randperm(I, a, nout):
+    _nargs(a, 1, 2, "randperm")
+    n = scalar(a[0], "randperm: N")
+    m = scalar(a[1], "randperm: M") if len(a) == 2 else n
+    if n != math.floor(n) or m != math.floor(m) or not (np.isfinite(n) and np.isfinite(m)):
+        raise MatlabError("randperm: N and M must be integers")
+    n, m = int(n), int(m)
+    if m < 0 or n < 0:
+        raise MatlabError("randperm: M and N must be non-negative")
+    if m > n:
+        raise MatlabError("randperm: M must be less than or equal to N")
+    if n > MAX_ELEMENTS:
+        raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
+    if m == 0:
+        return np.zeros((1, 0))
+    p = I.get_rng().randperm(n, m)
+    return ret((np.asarray(p, float) + 1.0).reshape(1, -1))
+
+
+def dynare_seed(I, a):
+    """``set_dynare_seed(...)`` as Dynare 7.2 runs it under Octave (set_dynare_seed_local_options.m, the
+    branch of the old interface): 'default' -> seed 0; an integer -> that seed; 'reset' -> the last seed;
+    'clock' -> a seed from the clock.  Both generators are seeded (rand('state', s); randn('state', s)).
+    Returns the seed."""
+    if not a:
+        raise MatlabError("set_dynare_seed:: I need at least one input argument!")
+    if len(a) > 1:
+        # set_dynare_seed(algorithm, seed): MATLAB's RandStream interface (an error under Octave); pydyn follows
+        # MATLAB's branch of isoctave but reproduces Octave's generators only
+        raise Unsupported("set_dynare_seed with a RandStream algorithm (MATLAB's generators are not reproduced)", "random")
+    x = a[0]
+    seed = getattr(I, "dynare_seed_value", 0)
+    if isinstance(x, str):
+        k = x.lower()
+        if k == "default":
+            seed = 0
+        elif k == "clock":
+            # floor(now*24*60*60): seconds since year 0 (datenum), beyond 2^32 - 1, which Octave's rand('state', s)
+            # saturates to 2^32 - 1, so the stream is in fact always the same under Octave
+            import time
+            seed = float(math.floor((time.time() / 86400.0 + 719529.0) * 86400.0))
+        elif k != "reset":
+            raise MatlabError("set_dynare_seed:: Something is wrong in the calling sequence!")
+    else:
+        v = scalar(x, "set_dynare_seed")
+        if not (np.isfinite(v) and v == math.floor(v)):
+            raise MatlabError("set_dynare_seed:: Something is wrong in the calling sequence!")
+        seed = v
+    I.dynare_seed_value = seed
+    I.rng_unknown = None                 # both generators get a known state
+    R = I.get_rng()
+    R.u, R.n = _mt_stream(_F(seed)), _mt_stream(_F(seed))
+    return seed
+
+
+@bi("set_dynare_seed")
+def _set_dynare_seed(I, a, nout):
+    if nout > 0:
+        raise MatlabError("set_dynare_seed: function called with too many outputs")
+    dynare_seed(I, a)
+    return []
+
+
+@bi("rng")
+def _rng_fn(I, a, nout):
+    """Octave 8.4's rng.m: rng(seed), rng('default'), rng(seed, 'twister'), s = rng, rng(s)."""
+    if len(a) > 2:
+        raise MatlabError("Invalid call to rng")
+
+    def current():
+        R = I.get_rng()
+        return Struct(Type="twister", Seed="Not applicable",
+                      State=Cell([R.u.get_state().reshape(-1, 1), R.n.get_state().reshape(-1, 1)], (1, 2)))
+    if not a:
+        return current()
+    x = a[0]
+    gen = None
+    if len(a) == 2:
+        if not isinstance(a[1], str):
+            raise MatlabError("rng: GENERATOR must be a string")
+        gen = a[1].lower()
+        if gen in ("simdtwister", "combrecursive", "philox", "threefry", "multfibonacci", "v4"):
+            raise MatlabError(f'rng: random number generator "{gen}" is not available in Octave')
+        if gen not in ("twister", "v5uniform", "v5normal"):
+            raise MatlabError(f'rng: unknown random number generator "{gen}"')
+    if is_num(x) and _class(x) == "double" and arrn(x).size == 1 and scalar(x) >= 0:
+        su = sn = x
+    elif isinstance(x, str) and x.lower() == "shuffle":
+        raise Unsupported("rng('shuffle'): Octave then seeds from the clock and system entropy", "random")
+    elif isinstance(x, str) and x.lower() == "default" and len(a) == 1:
+        gen, su, sn = "twister", _F(0), _F(0)
+    elif isinstance(x, Struct) and len(a) == 1:
+        if set(x) != {"Type", "Seed", "State"}:
+            raise MatlabError('rng: input structure requires "Type", "Seed", "State" fields"')
+        gen = x["Type"] if isinstance(x["Type"], str) else _unsup("rng: a structure whose Type is not a char array")
+        st = x["State"]
+        if isinstance(st, Cell):
+            if len(st.items) != 2:
+                raise MatlabError("rng: State must hold the states of rand and randn")
+            su, sn = st.items
+        else:
+            su = sn = st
+    else:
+        raise MatlabError("Invalid call to rng")
+    gen = gen or "twister"
+    if gen != "twister":
+        raise Unsupported(f"rng with generator {gen!r} (Octave's old generators are not reproduced)", "random")
+    cur = current() if nout > 0 else None
+    u, n = _mt_stream(su), _mt_stream(sn)
+    I.rng_unknown = None                 # both generators get a known state
+    R = I.get_rng()
+    R.u, R.n = u, n
+    return cur if nout > 0 else []
 
 
 @bi("i", "j", "complex", "imag", "angle")
@@ -1957,16 +2458,14 @@ def matlab_mod(x, y, rem=False):
 @bi("mod")
 def _mod(I, a, nout):
     _nargs(a, 2, 2, "mod")
-    x, y = farr(a[0]), farr(a[1])
-    _bcast(x, y)
+    x, y = _bcast(farrn(a[0]), farrn(a[1]))
     return ret(matlab_mod(x, y))
 
 
 @bi("rem")
 def _rem(I, a, nout):
     _nargs(a, 2, 2, "rem")
-    x, y = farr(a[0]), farr(a[1])
-    _bcast(x, y)
+    x, y = _bcast(farrn(a[0]), farrn(a[1]))
     return ret(matlab_mod(x, y, rem=True))
 
 
@@ -2004,18 +2503,18 @@ def _dim_arg(x, a, k):
     """Dimension to reduce along: argument k if given, else the first non-singleton one."""
     if len(a) > k:
         d = as_index_int(a[k], "dimension")
-        if d not in (1, 2):
-            if d > 2:
-                return None
+        if d < 1:
             raise MatlabError("dimension must be a positive integer")
-        return d - 1
-    return 1 if x.shape[0] == 1 else 0
+        return d - 1 if d <= x.ndim else None        # None: a singleton dimension (nothing to reduce)
+    if x.ndim == 2:
+        return 1 if x.shape[0] == 1 else 0
+    return next(i for i, n in enumerate(x.shape) if n != 1)
 
 
 def _reducer(name, fn, empty):
     def f(I, a, nout):
         _nargs(a, 1, 2, name)
-        x = farr(a[0])
+        x = farrn(a[0])
         if x.size == 0 and x.shape == (0, 0):
             return _F(empty)
         ax = _dim_arg(x, a, 1)
@@ -2034,7 +2533,7 @@ _reducer("median", np.median, np.nan)
 
 @bi("std", "var")
 def _std(I, a, nout, _which=None):
-    x = farr(a[0])
+    x = farrn(a[0])
     w = 0
     if len(a) > 1 and not (isinstance(a[1], np.ndarray) and a[1].size == 0):
         w = scalar(a[1])
@@ -2042,6 +2541,8 @@ def _std(I, a, nout, _which=None):
             raise Unsupported("weighted variance")
     ax = _dim_arg(x, a, 2)
     if x.size == 0:
+        if x.ndim > 2:
+            raise Unsupported("std/var of an empty N-d array")
         return _F(np.nan)
     if ax is None:
         return ret(np.zeros(x.shape))
@@ -2051,12 +2552,22 @@ def _std(I, a, nout, _which=None):
         return ret(np.var(x, axis=ax, ddof=ddof, keepdims=True))
 
 
-BUILTINS["std"] = lambda I, a, nout: ret(np.sqrt(farr(_std(I, a, nout))))
+BUILTINS["std"] = lambda I, a, nout: ret(np.sqrt(farrn(_std(I, a, nout))))
 
 
 @bi("cumsum", "cumprod")
-def _cum(I, a, nout):
-    raise Unsupported("cumsum/cumprod")
+def _cum(I, a, nout, _fn=np.cumsum):
+    _nargs(a, 1, 2, "cumsum")
+    if len(a) == 2 and isinstance(a[1], str):
+        raise Unsupported("cumsum/cumprod with an option")
+    x = farrn(a[0])
+    ax = _dim_arg(x, a, 1)
+    if ax is None or x.size == 0:
+        return ret(x)
+    return ret(_fn(x, axis=ax))
+
+
+BUILTINS["cumprod"] = lambda I, a, nout: _cum(I, a, nout, np.cumprod)
 
 
 def _minmax(name, red, argred, ew):
@@ -2068,8 +2579,10 @@ def _minmax(name, red, argred, ew):
             if nout > 1:
                 raise MatlabError(f"{name}: two outputs are not available with two inputs")
             return _ew(ew, a[0], a[1])
-        x = farr(a[0])
+        x = farrn(a[0])
         if x.size == 0:
+            if x.ndim > 2:
+                raise Unsupported(f"{name} of an empty N-d array")
             return [np.zeros((0, 0)), np.zeros((0, 0))][:max(nout, 1)]
         ax = _dim_arg(x, a, 2)
         if ax is None:
@@ -2091,13 +2604,15 @@ _minmax("min", np.min, np.argmin, np.fmin)
 def _anyall(name, fn):
     def f(I, a, nout):
         _nargs(a, 1, 2, name)
-        x = arr(a[0])
+        x = arrn(a[0])
         ax = _dim_arg(x, a, 1)
         if x.dtype != bool:                 # NaN is ignored: neither true for any nor false for all
             nan = np.isnan(x)
-            if name == "all" and ax == 1 and x.shape[0] > 1 and nan.any():
-                # Octave 8 counts NaN as false along rows of a matrix (and as true everywhere else)
-                raise Unsupported("all(X, 2) of a matrix containing NaN (MATLAB and Octave differ)")
+            if name == "all" and nan.any() and ((ax == 1 and x.shape[0] > 1) or (ax != 0 and x.ndim > 2)
+                                                 or ax is None):
+                # Octave 8 counts NaN as false along rows of a matrix and along dimensions above
+                # the first of an N-d array (and as true elsewhere)
+                raise Unsupported("all(X, DIM) of an array containing NaN (MATLAB and Octave differ)")
             x = (x != 0) & ~nan if name == "any" else (x != 0)
         if x.size == 0 and x.shape == (0, 0):
             return np.bool_(name == "all")
@@ -2114,7 +2629,7 @@ def _find(I, a, nout):
     _nargs(a, 1, 3, "find")
     if nout > 1:
         raise Unsupported("find with several outputs")
-    x = arr(a[0])
+    x = arrn(a[0])
     if x.dtype != bool and np.isnan(x).any():
         x = np.where(np.isnan(x), 1.0, x)               # NaN is non-zero
     k = np.flatnonzero(x.ravel(order="F") != 0) + 1.0
@@ -2129,7 +2644,7 @@ def _find(I, a, nout):
                 raise MatlabError('find: DIRECTION must be "first" or "last"')
             last = d == "last"
         k = k[max(k.size - n, 0):] if last else k[:n]
-    row = x.shape[0] == 1 and x.shape[1] != 1
+    row = x.ndim == 2 and x.shape[0] == 1 and x.shape[1] != 1
     if k.size:
         return ret(k.reshape(1, -1) if row else k.reshape(-1, 1))
     if x.shape == (0, 0) or x.shape == (1, 1):
@@ -2175,40 +2690,69 @@ def _unique(I, a, nout):
 
 @bi("fliplr")
 def _fliplr(I, a, nout):
-    return a[0][::-1] if isinstance(a[0], str) else ret(arr(a[0])[:, ::-1])
+    return a[0][::-1] if isinstance(a[0], str) else ret(arrn(a[0])[:, ::-1])
 
 
 @bi("flipud")
 def _flipud(I, a, nout):
-    return ret(arr(a[0])[::-1, :])
+    return ret(arrn(a[0])[::-1, :])
+
+
+@bi("flip")
+def _flip(I, a, nout):
+    _nargs(a, 1, 2, "flip")
+    if isinstance(a[0], str) or not is_num(a[0]):
+        if isinstance(a[0], Tainted):
+            arrn(a[0])
+        raise Unsupported(f"flip of a {_class(a[0])} value")
+    x = arrn(a[0])
+    d = _dim_arg(x, a, 1)
+    if d is None:
+        return a[0]
+    return ret(np.flip(x, axis=d))
 
 
 @bi("size")
 def _size(I, a, nout):
-    _nargs(a, 1, 2, "size")
+    if not a:
+        raise MatlabError("Invalid call to size")
     shp = shape_of(a[0])
-    if len(a) == 2:
-        d = as_index_int(a[1], "dimension")
-        if d < 1:
-            raise MatlabError("size: dimension must be positive")
-        return _F(shp[d - 1]) if d <= 2 else _F(1)
+    if len(a) >= 2:
+        # size(A, d), size(A, [d1 d2 ...]) and size(A, d1, d2, ...) (MATLAB R2019b, Octave 7)
+        if len(a) == 2:
+            ds = arr(a[1]).ravel(order="F")
+        else:
+            ds = [scalar(x, "size: DIM") for x in a[1:]]
+        dims = []
+        for x in ds:
+            if x != np.floor(x) or not x >= 1 or not np.isfinite(x):
+                raise MatlabError("size: requested dimension DIM (= %g) out of range" % x)
+            dims.append(int(x))
+        vals = [float(shp[d - 1]) if d <= len(shp) else 1.0 for d in dims]
+        if nout <= 1:
+            return _F(vals[0]) if len(vals) == 1 else np.array([vals])
+        if nout != len(vals):
+            raise MatlabError("size: nargout > 1 but does not match number of requested dimensions")
+        return [_F(v) for v in vals]
     if nout <= 1:
-        return np.array([[float(shp[0]), float(shp[1])]])
-    return [_F(shp[0]), _F(shp[1])] + [_F(1)] * (nout - 2)
+        return np.array([[float(x) for x in shp]])
+    d = redim(shp, nout)
+    return [_F(x) for x in d]
 
 
 BUILTINS["length"] = lambda I, a, nout: _F(0 if 0 in shape_of(a[0]) else max(shape_of(a[0])))
-BUILTINS["numel"] = lambda I, a, nout: _F(shape_of(a[0])[0] * shape_of(a[0])[1])
-BUILTINS["ndims"] = lambda I, a, nout: _F(2)
+BUILTINS["numel"] = lambda I, a, nout: _F(int(np.prod(shape_of(a[0]), dtype=np.int64))) if len(a) == 1 \
+    else _unsup("numel with index arguments")
+BUILTINS["ndims"] = lambda I, a, nout: _F(len(shape_of(a[0])))
 BUILTINS["rows"] = lambda I, a, nout: _F(shape_of(a[0])[0])
 BUILTINS["columns"] = lambda I, a, nout: _F(shape_of(a[0])[1])
 BUILTINS["isempty"] = lambda I, a, nout: np.bool_(0 in shape_of(a[0]))
 BUILTINS["isscalar"] = lambda I, a, nout: np.bool_(shape_of(a[0]) == (1, 1))
-BUILTINS["isvector"] = lambda I, a, nout: np.bool_(1 in shape_of(a[0]) and 0 not in shape_of(a[0]))
-BUILTINS["isrow"] = lambda I, a, nout: np.bool_(shape_of(a[0])[0] == 1)
-BUILTINS["iscolumn"] = lambda I, a, nout: np.bool_(shape_of(a[0])[1] == 1)
-BUILTINS["ismatrix"] = lambda I, a, nout: np.bool_(True)
-BUILTINS["issquare"] = lambda I, a, nout: np.bool_(shape_of(a[0])[0] == shape_of(a[0])[1])
+BUILTINS["isvector"] = lambda I, a, nout: np.bool_(len(shape_of(a[0])) == 2 and 1 in shape_of(a[0]) and 0 not in shape_of(a[0]))
+BUILTINS["isrow"] = lambda I, a, nout: np.bool_(len(shape_of(a[0])) == 2 and shape_of(a[0])[0] == 1)
+BUILTINS["iscolumn"] = lambda I, a, nout: np.bool_(len(shape_of(a[0])) == 2 and shape_of(a[0])[1] == 1)
+BUILTINS["ismatrix"] = lambda I, a, nout: np.bool_(len(shape_of(a[0])) == 2)
+BUILTINS["issquare"] = lambda I, a, nout: np.bool_(len(shape_of(a[0])) == 2 and shape_of(a[0])[0] == shape_of(a[0])[1])
 BUILTINS["isnumeric"] = BUILTINS["isfloat"] = lambda I, a, nout: np.bool_(_class(a[0]) == "double")
 BUILTINS["isreal"] = lambda I, a, nout: np.bool_(_class(a[0]) in ("double", "logical", "char"))
 BUILTINS["ischar"] = lambda I, a, nout: np.bool_(isinstance(a[0], str))
@@ -2218,9 +2762,43 @@ BUILTINS["iscellstr"] = lambda I, a, nout: np.bool_(isinstance(a[0], Cell) and a
 BUILTINS["isstruct"] = lambda I, a, nout: np.bool_(_class(a[0]) == "struct")
 BUILTINS["islogical"] = lambda I, a, nout: np.bool_(_class(a[0]) == "logical")
 BUILTINS["is_function_handle"] = lambda I, a, nout: np.bool_(isinstance(a[0], Handle))
-BUILTINS["squeeze"] = BUILTINS["full"] = lambda I, a, nout: a[0]
+BUILTINS["full"] = lambda I, a, nout: a[0]
+
+
+@bi("squeeze")
+def _squeeze(I, a, nout):
+    _nargs(a, 1, 1, "squeeze")
+    v = a[0]
+    if not (isinstance(v, np.ndarray) and v.ndim > 2):
+        return v
+    d = [x for x in v.shape if x != 1]          # Array<T>::squeeze: one dimension left -> a column
+    return ret(v.reshape(d + [1] * (2 - len(d)) if len(d) < 2 else d, order="F"))
+
+
+def _perm_arg(p, nd, name):
+    p = arr(p).ravel(order="F")
+    if p.size < nd or np.any(p != np.floor(p)) or sorted(p.astype(int).tolist()) != list(range(1, p.size + 1)):
+        raise MatlabError(f"{name}: PERM is not a valid permutation vector")
+    return [int(k) - 1 for k in p]
+
+
+@bi("permute", "ipermute")
+def _permute(I, a, nout, _inverse=False):
+    _nargs(a, 2, 2, "permute")
+    if not is_num(a[0]):
+        if isinstance(a[0], Tainted):
+            arrn(a[0])
+        raise Unsupported(f"permute of a {_class(a[0])} value")
+    x = arrn(a[0])
+    p = _perm_arg(a[1], x.ndim, "permute")
+    if _inverse:
+        p = list(np.argsort(p))
+    return ret(x.reshape(_padn(x.shape, len(p))).transpose(p))
+
+
+BUILTINS["ipermute"] = lambda I, a, nout: _permute(I, a, nout, _inverse=True)
 BUILTINS["vec"] = lambda I, a, nout: index(a[0], [COLON])
-BUILTINS["nnz"] = lambda I, a, nout: _F(np.count_nonzero(arr(a[0])))
+BUILTINS["nnz"] = lambda I, a, nout: _F(np.count_nonzero(arrn(a[0])))
 
 
 @bi("isa")
@@ -2228,6 +2806,31 @@ def _isa(I, a, nout):
     _nargs(a, 2, 2, "isa")
     c = _class(a[0])
     return np.bool_(a[1] == c or (a[1] in ("float", "numeric") and c == "double"))
+
+
+@bi("xor")
+def _xor(I, a, nout):
+    _nargs(a, 2, 2, "xor")
+    x, y = _bcast(_logical(a[0]), _logical(a[1]))
+    return ret(x != y)
+
+
+#: element-wise built-ins bsxfun may apply (MATLAB's implicit expansion gives the same result)
+_BSX = {"plus", "minus", "times", "rdivide", "ldivide", "power", "max", "min", "rem", "mod", "atan2", "hypot",
+        "eq", "ne", "lt", "le", "gt", "ge", "and", "or", "xor"}
+
+
+@bi("bsxfun")
+def _bsxfun(I, a, nout):
+    _nargs(a, 3, 3, "bsxfun")
+    f = a[0]
+    if not (isinstance(f, Handle) and f.name in _BSX and f.name not in (f.files or {}) and f.name not in I.dir_files()):
+        raise Unsupported("bsxfun with a function other than an element-wise built-in")
+    for v in a[1:]:
+        if not is_num(v):
+            arrn(v)
+            raise Unsupported("bsxfun of a non-numeric value")
+    return BUILTINS[f.name](I, [a[1], a[2]], 1)
 
 
 @bi("logical")
@@ -2253,7 +2856,7 @@ def _isequal(I, a, nout):
             return isinstance(x, Struct) and isinstance(y, Struct) and set(x) == set(y) and all(same(x[k], y[k]) for k in x)
         if not (is_num(x) and is_num(y)):
             raise Unsupported("isequal on this kind of value")
-        p, q = arr(x), arr(y)
+        p, q = arrn(x), arrn(y)
         return p.shape == q.shape and bool(np.all(p == q))
     return np.bool_(all(same(a[0], y) for y in a[1:]))
 
@@ -2278,41 +2881,48 @@ def _logspace(I, a, nout):
 
 @bi("repmat")
 def _repmat(I, a, nout):
-    _nargs(a, 2, 3, "repmat")
-    r, c = _dims(a[1:])
+    if len(a) < 2:
+        raise MatlabError("Invalid call to repmat")
+    reps = _dims(a[1:], "repmat", nd=True)
     if isinstance(a[0], str):
-        if r > 1:
+        if len(reps) > 2 or reps[0] > 1:
             raise Unsupported("char matrices")
-        return a[0] * c
+        return a[0] * reps[1]
     if isinstance(a[0], Cell):
         raise Unsupported("repmat of a cell array")
-    if arr(a[0]).size * r * c > MAX_ELEMENTS:
+    x = arrn(a[0])
+    n = max(x.ndim, len(reps))
+    reps, xs = _padn(reps, n), _padn(x.shape, n)
+    if int(np.prod(reps, dtype=np.int64)) * x.size > MAX_ELEMENTS:
         raise Unsupported(f"array with more than {MAX_ELEMENTS} elements")
-    return ret(np.tile(arr(a[0]), (r, c)))
+    return ret(np.tile(x.reshape(xs), reps))
 
 
 @bi("reshape")
 def _reshape(I, a, nout):
-    x = arr(a[0])
+    if isinstance(a[0], (str, Cell)) or not a[1:]:
+        if not a[1:]:
+            raise MatlabError("Invalid call to reshape")
+        raise Unsupported("reshape of a char or cell array")
+    x = arrn(a[0])
     dims = a[1:]
     if len(dims) == 1:
         dims = [_F(v) for v in arr(dims[0]).ravel()]
-    if len(dims) > 2 and any((isinstance(d, np.ndarray) and d.size == 0) or scalar(d) != 1 for d in dims[2:]):
-        raise Unsupported("arrays with more than two dimensions")
-    dims = dims[:2]
-    if len(dims) != 2:
-        raise MatlabError("reshape: bad size")
+    if len(dims) < 2:
+        raise MatlabError("reshape: SIZE must have 2 or more dimensions")
     d = [None if (isinstance(v, np.ndarray) and v.size == 0) else as_index_int(v) for v in dims]
     if d.count(None) > 1:
-        raise MatlabError("reshape: only one dimension can be []")
+        raise MatlabError("reshape: only a single dimension can be unknown")
+    if any(v is not None and v < 0 for v in d):
+        raise MatlabError("reshape: SIZE must be non-negative")
     if None in d:
-        known = d[1 - d.index(None)]
+        known = int(np.prod([v for v in d if v is not None], dtype=np.int64))
         if known == 0 or x.size % known:
-            raise MatlabError("reshape: the number of elements must not change")
+            raise MatlabError("reshape: SIZE is not divisible by the product of known dimensions")
         d[d.index(None)] = x.size // known
-    if d[0] * d[1] != x.size:
-        raise MatlabError("reshape: the number of elements must not change")
-    return ret(x.reshape(d, order="F"))
+    if int(np.prod(d, dtype=np.int64)) != x.size:
+        raise MatlabError("reshape: can't reshape array to the requested dimensions")
+    return ret(x.reshape(canon_shape(d), order="F"))
 
 
 @bi("diag")
@@ -2401,7 +3011,19 @@ def _cat(I, a, nout):
         return vcat(a[1:])
     if d == 2:
         return hcat(a[1:])
-    raise Unsupported("arrays with more than two dimensions")
+    if d < 1:
+        raise MatlabError("cat: DIM must be a valid dimension")
+    vals = a[1:]
+    if not vals:
+        return np.zeros((0, 0))
+    for v in vals:
+        if not is_num(v):
+            if isinstance(v, Tainted):
+                arrn(v)
+            raise Unsupported(f"cat along dimension {d} of a {_class(v)} value")
+    if len(vals) == 1:
+        return vals[0]
+    return _concat_nd(vals, d - 1, False)
 
 
 @bi("nchoosek")
@@ -2438,12 +3060,49 @@ def _norminv(I, a, nout):
 
 @bi("sub2ind")
 def _sub2ind(I, a, nout):
-    _nargs(a, 3, 3, "sub2ind")
-    r, c = _dims([a[0]])
-    i, j = farr(a[1]), farr(a[2])
-    if (i < 1).any() or (i > r).any() or (j < 1).any() or (j > c).any():
-        raise MatlabError("sub2ind: index out of range")
-    return ret((j - 1) * r + i)
+    if len(a) < 2:
+        raise MatlabError("Invalid call to sub2ind")
+    dims = [max(0, as_index_int(x, "sub2ind: DIMS")) for x in arr(a[0]).ravel(order="F")]
+    if len(dims) < 2:
+        raise MatlabError("sub2ind: DIMS must contain integers")
+    subs = [farrn(x) for x in a[1:]]
+    if any(x.shape != subs[0].shape for x in subs):
+        raise MatlabError("sub2ind: all subscripts must be of the same size")
+    dv = redim(tuple(dims), len(subs))
+    out = np.zeros(subs[0].shape)
+    mult = 1
+    for x, n in zip(subs, dv):
+        if np.any(x != np.floor(x)) or np.any(x < 1):
+            raise MatlabError("sub2ind: subscripts must be either integers 1 to (2^63)-1 or logicals")
+        if np.any(x > n):
+            raise MatlabError("sub2ind: index out of range")
+        out = out + (x - 1) * mult
+        mult *= n
+    return ret(out + 1)
+
+
+@bi("ind2sub")
+def _ind2sub(I, a, nout):
+    _nargs(a, 2, 2, "ind2sub")
+    dims = [max(0, as_index_int(x, "ind2sub: DIMS")) for x in arr(a[0]).ravel(order="F")]
+    if len(dims) < 2:
+        raise MatlabError("ind2sub: DIMS must contain integers")
+    k = farrn(a[1])
+    nout = max(nout, 1)
+    dv = redim(tuple(dims), nout) if nout > 1 else (int(np.prod(dims, dtype=np.int64)),)
+    if np.any(k != np.floor(k)) or np.any(k < 1):
+        raise MatlabError("ind2sub: subscripts must be either integers 1 to (2^63)-1 or logicals")
+    if np.any(k > int(np.prod(dims, dtype=np.int64))):
+        raise MatlabError("ind2sub: index out of range")
+    rest = k.astype(np.int64) - 1
+    out = []
+    for n in dv[:nout]:
+        if len(out) == nout - 1:
+            out.append(ret((rest + 1).astype(float)))
+            break
+        out.append(ret((rest % n + 1).astype(float)))
+        rest = rest // n
+    return out
 
 
 # ---------------------------------------------------------------------- strings, cells, structs
@@ -2705,7 +3364,7 @@ def _sprintf(fmt, args):
         elif isinstance(v, (Cell, Struct, Handle)) or hasattr(v, "get_field"):
             raise MatlabError("sprintf: wrong type argument")
         else:
-            a = arr(v)
+            a = arrn(v)
             items.append(a.ravel(order="F").astype(float) if a.size else _EMPTY)
     only_s = len(elements) == 2 and elements[0][0] == "" and elements[1][0] == "" and \
         elements[0][1].group(0) == "%s"
@@ -3011,7 +3670,7 @@ def _deal(I, a, nout):
 
 # ---------------------------------------------------------------------- display, errors, misc
 @lazy("disp", "display", "fprintf", "printf", "fdisp", "dprintf", "skipline", "warning", "more", "beep", "fflush",
-      "set_dynare_seed", "rng", "tic", "format", "clc", "diary", "echo", "commandwindow", "dbstop", "profile",
+      "tic", "format", "clc", "diary", "echo", "commandwindow", "dbstop", "profile",
       "close", "hold", "drawnow", "pause", "fclose", "print_info")
 def _noop(I, argnodes, sc, nout):
     # nothing is displayed, but the arguments are evaluated: they may call functions with side
@@ -3568,6 +4227,12 @@ class Interpreter:
         self.steps = 0
         self.depth = 0
         self.open_world = False     # True once an unknown script or load may have created variables
+        self._rng = None
+        self.foreign_paths = []     # folders added by addpath (results mode records them; nothing is read there)
+        self.rng_unknown = None     # why the state of the random stream is unknown (code that may draw was skipped)
+        #: False for the interpreters of steady-state files and helper functions that pydyn's solvers call
+        #: (as often as they need): Dynare draws from its global stream at each of its own calls
+        self.random_ok = True
         self._units = {}
         self._dir_files = None
 
@@ -3595,6 +4260,20 @@ class Interpreter:
                 u = exc
         self._units[name] = u
         return u
+
+    def get_rng(self):
+        """The random stream of rand/randn/randi/randperm (pydyn.octave_rng.OctaveRandom), at Dynare's
+        initial state (seed 0) until the code seeds it."""
+        if not self.random_ok:
+            raise Unsupported("random numbers in a steady-state file or a helper function that pydyn's solvers call "
+                              "(Dynare draws them from its global stream at each of its calls)", "random")
+        if self.rng_unknown:
+            raise Unsupported(f"random numbers after code that was not executed ({self.rng_unknown!r}): the state of "
+                              "Dynare's random stream is unknown", "random")
+        if self._rng is None:
+            from .octave_rng import OctaveRandom
+            self._rng = OctaveRandom(0)
+        return self._rng
 
     def need_host(self, what):
         if self.host is None:
@@ -3663,9 +4342,7 @@ class Interpreter:
             raise Unsupported("'end' inside a call to an unknown function or variable", "function")
         v, k, nargs = self.end_stack[-1]
         shp = (0, 0) if v is None else shape_of(v)
-        if nargs == 1:
-            return _F(shp[0] * shp[1])
-        return _F(shp[k]) if k < 2 else _F(1)
+        return _F(redim(shp, nargs)[k]) if nargs > 1 else _F(int(np.prod(shp, dtype=np.int64)))
 
     def _unop(self, n, sc):
         v = self.ev(n.e, sc)
@@ -3675,7 +4352,7 @@ class Interpreter:
         if op == "-":
             return uminus(v)
         if op == "+":
-            return ret(farr(v)) if not isinstance(v, np.float64) else v
+            return ret(farrn(v)) if not isinstance(v, np.float64) else v
         if op == "~":
             return lnot(v)
         return transpose(v)
@@ -3882,7 +4559,12 @@ class Interpreter:
         if self.host is not None and name in self.host.model._ip and not self.open_world:
             # a parameter exists as a MATLAB variable only once it has been given a value
             raise MatlabError(f"'{name}' undefined (the parameter has no value yet)")
-        raise Unsupported(f"unknown function or variable '{name}'", "function")
+        hint = ""
+        if self.foreign_paths:
+            hint = (f" (the code adds {sorted(set(self.foreign_paths))} to the path: pydyn reads function files only "
+                    "from the .mod file's own folder, so functions defined elsewhere, such as Dynare's test-data "
+                    "generators in '..', are not run)")
+        raise Unsupported(f"unknown function or variable '{name}'{hint}", "function")
 
     def call_user(self, f, funcs, args, nargout):
         varargin = bool(f.ins) and f.ins[-1] == "varargin"
@@ -4060,7 +4742,9 @@ class Interpreter:
             return [Cell([x], (1, 1)) for x in v.items] if v.shape[0] <= 1 else _unsup("for over a cell matrix")
         if isinstance(v, str):
             return list(v)
-        a = arr(v)
+        a = arrn(v)
+        if a.ndim > 2:
+            a = a.reshape((a.shape[0], -1), order="F")
         if a.size == 0:
             return []
         if a.shape[0] == 1:
@@ -4152,6 +4836,9 @@ class Interpreter:
             finally:
                 self.scope_stack.pop()
         if name == "disp" or name in LAZY and LAZY[name] is _noop:
+            return None
+        if name == "rng":
+            self.call(name, [a.strip("'\"") for a in args], 0, sc)
             return None
         if name in LAZY:
             return LAZY[name](self, [], sc, 0)
@@ -4378,7 +5065,7 @@ class _HostM:
             elif len(args) == 2:
                 k = _lin_index(args[0], n)
             else:
-                raise MatlabError("bad index into M_.params")
+                raise Unsupported("M_.params indexed with more than two subscripts")
             h.params[:] = new.ravel()
             h.tainted.difference_update(int(i) for i in k)
             h.nwrites += 1
@@ -4642,7 +5329,7 @@ class _ModInterp(Interpreter):
         data = loadmat(str(path), variable_names=wanted, squeeze_me=False, chars_as_strings=True)
         for n in wanted:
             v = data.get(n)
-            if isinstance(v, np.ndarray) and v.ndim == 2 and v.dtype.kind in "fiub" and not np.iscomplexobj(v):
+            if isinstance(v, np.ndarray) and v.ndim >= 2 and v.dtype.kind in "fiub" and not np.iscomplexobj(v):
                 sc.vars[n] = ret(v.astype(float) if v.dtype.kind != "b" else v)
             elif isinstance(v, np.ndarray) and v.dtype.kind == "U" and v.size <= 1:
                 sc.vars[n] = str(v.flat[0]) if v.size else ""
@@ -4689,6 +5376,8 @@ class ModSession:
         return self.error_cls(msg)
 
     def record(self, text, kind, why, n=1):
+        # code that was skipped may have drawn random numbers in Dynare: the stream's state is unknown from here
+        self.I.rng_unknown = self.I.rng_unknown or " ".join(str(text).split())[:60]
         key = (" ".join(str(text).split())[:120], kind)
         if key not in self._skipped_keys:        # a statement skipped in every pass of a loop is reported once
             self._skipped_keys.add(key)
@@ -4875,6 +5564,7 @@ class ModSession:
     def taint(self, info, why):
         ws = self.sc.vars
         self.any_taint = True
+        self.I.rng_unknown = self.I.rng_unknown or str(why)[:60]
         if info.solves and self.ss_params():
             self.host.tainted |= self.ss_params()
             self.host.taint_why = "a Dynare solution function was called in code that was not executed"
@@ -5483,6 +6173,7 @@ class MatlabFunction:
         if self._unit.is_script:
             raise Unsupported(f"{self.path.name} is a script, not a function", "function")
         self._interp = Interpreter(self.path.parent)
+        self._interp.random_ok = False
         try:
             src = _Translator(self._unit, self.path.name).function_module()
             self._fn = _compile(src, self.path)[_pyname(self._unit.main.name)]
@@ -5513,6 +6204,7 @@ class MatlabFunction:
                 host = Host(_CONTEXT[-1][0], params=_CONTEXT[-1][1])
                 host.readonly = True
             I = Interpreter(self.path.parent, host) if host is not None else self._interp
+            I.random_ok = False
             I.steps = 0
             try:
                 out = I.call_user(self._unit.main, self._unit.funcs, [_to_matlab(a) for a in args], n)
@@ -5600,6 +6292,7 @@ class SteadyStateFile:
         host = Host(model, params=params)
         host.readonly = True
         I = Interpreter(self.path.parent, host)
+        I.random_ok = False
         M_ = host.M.snapshot()
         ys0 = np.array([model.initval.get(v, 0.0) for v in model.endo_names], float).reshape(-1, 1)
         # Dynare 7 calls [ys, params, info] = f(ys, exo, M_, options_): a file declaring fewer inputs or

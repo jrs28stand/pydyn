@@ -178,8 +178,13 @@ field names and shapes (`oo_.dr.ghx` in DR order, `oo_.steady_state` a column in
 `oo_.endo_simul` n x T). MATLAB lines of the file see and may change the structs between commands, so Dynare's own self-checks and
 lines such as `irf1 = oo_.irfs.y_e;` run unchanged; `set_param_value`, `steady`, `check`, `stoch_simul` (also the functional form
 `[info, oo_, options_, M_] = stoch_simul(M_, options_, oo_, var_list)`), `perfect_foresight_setup` and `perfect_foresight_solver`
-re-run on the live workspace. Simulated paths use Octave's `randn` stream, so they equal Dynare's run under Octave.
-`estimation` (mode, Metropolis-Hastings with Dynare's Octave random numbers, posterior statistics, classical smoother), `calib_smoother`, `forecast`, `occbin_setup`/`occbin_solver`, `ramsey_model`/`ramsey_policy`/`evaluate_planner_objective` and `osr` fill the matching `oo_` fields too (arrays with more than two dimensions, such as `oo_.shock_decomposition`, are refused). A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
+re-run on the live workspace. Simulated paths use Octave's `randn` stream, so they equal Dynare's run under Octave; `rand`,
+`randn`, `randi`, `randperm`, `rng` and `set_dynare_seed` in the file's MATLAB code draw from that same stream (Octave 8.4's
+numbers bit for bit, not MATLAB's), in file order as Dynare does. `save file.mat vars` writes a MAT-file in the .mod file's own
+folder only (plain file names, no options; files pydyn did not write are never overwritten).
+`estimation` (mode, Metropolis-Hastings with Dynare's Octave random numbers, posterior statistics, classical smoother), `calib_smoother`, `forecast`, `occbin_setup`/`occbin_solver`, `ramsey_model`/`ramsey_policy`/`evaluate_planner_objective` and `osr` fill the matching `oo_` fields too, including the N-d ones (`oo_.conditional_variance_decomposition`,
+`oo_.Smoother.Variance`/`State_uncertainty`, `oo_.FilteredVariablesKStepAhead(Variances)`, and `oo_.shock_decomposition`,
+`oo_.initval_decomposition` and the realtime decompositions with `parameter_set=calibration`). A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
 supported (estimation, forecast, OccBin, ...) stop the run with an error that names them. `pydyn.Model` is unchanged.
 Validation: `tests/test_results.py` against `reference/oo/*.mat` (Dynare 7.2 under Octave 8.4).
 
@@ -267,8 +272,12 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 ## Known limits
 
-- MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
-  dates), random numbers and file-system functions are not supported; see the section above.
+- MATLAB inside `.mod` files: complex numbers, struct arrays, N-d cell and char arrays, classes (`dseries`,
+  dates), random-number functions other than `rand`/`randn`/`randi`/`randperm` (and any random numbers in
+  steady-state files or helpers the solvers call), and file-system functions other than `load` and the
+  sandboxed `save` are not supported; see the section above. N-d numeric and logical arrays follow
+  MATLAB/Octave (indexing, growth, deletion, `end`, reductions along dimensions, `permute`, `reshape`,
+  `cat`, `repmat`, implicit expansion); functions that handle matrices only refuse them.
 - Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
   dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
   (`write_latex_*` warns), `varexo_det` in perfect foresight.

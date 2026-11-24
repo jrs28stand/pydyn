@@ -324,6 +324,18 @@ class LiveInterp(Interpreter):
         self.res = res
         self.globals = {}
 
+    # --- one random stream: MATLAB code and Dynare's commands draw from the results' stream
+    def get_rng(self):
+        return self.res.rng
+
+    @property
+    def dynare_seed_value(self):
+        return self.res.seed
+
+    @dynare_seed_value.setter
+    def dynare_seed_value(self, v):
+        self.res.seed = v
+
     # --- Dynare statements inside the file
     def exec(self, s, sc):
         if type(s) is _ml.Dyn:
@@ -359,7 +371,11 @@ class LiveInterp(Interpreter):
         if name in self.res.noops and name not in sc.funcs and name not in self.dir_files():
             for a in argnodes:                         # arguments are evaluated: they may fail or have effects
                 if type(a) not in (_ml.Str, _ml.Num, _ml.ColonAll):
-                    self.ev_multi(a, sc, 1)
+                    v = self.ev_multi(a, sc, 1)
+                    if name == "addpath" and v and isinstance(v[0], str):
+                        self.foreign_paths.append(v[0])
+                elif name == "addpath" and type(a) is _ml.Str:
+                    self.foreign_paths.append(a.v)
             if nargout > 0:
                 raise Unsupported(f"{name}: its output is not available (pydyn draws nothing)", "display")
             return []
@@ -388,6 +404,28 @@ class LiveInterp(Interpreter):
 
 
 # ======================================================================================= MAT files
+def _to_mat_file(v, name):
+    """An interpreter value as scipy.io.savemat writes it (the inverse of mat_value)."""
+    if isinstance(v, (np.floating, float, int)):
+        return np.array([[float(v)]])
+    if isinstance(v, (np.bool_, bool)):
+        return np.array([[bool(v)]])
+    if isinstance(v, np.ndarray) and v.dtype.kind in "fb":
+        return v.copy()
+    if isinstance(v, str):
+        return v if v else np.zeros((0, 0))
+    if isinstance(v, Cell):
+        out = np.empty(v.shape, dtype=object)
+        for k, x in enumerate(v.items):
+            out[np.unravel_index(k, v.shape, order="F")] = _to_mat_file(x, name)
+        return out
+    if isinstance(v, Struct) and not hasattr(v, "get_field"):
+        return {k: _to_mat_file(x, name) for k, x in v.items()}
+    if isinstance(v, Tainted):
+        raise Unsupported(f"save: '{name}' is unknown ({v.why})", "tainted")
+    raise Unsupported(f"save: '{name}' is a {_ml._class(v)} value pydyn does not write", "file")
+
+
 def mat_value(v):
     """A value read from a MAT-file (``scipy.io.loadmat`` with ``struct_as_record=True``) as the interpreter holds it."""
     if isinstance(v, np.ndarray) and v.dtype.names:
@@ -398,6 +436,8 @@ def mat_value(v):
             return s
         return Tainted("a struct array read from a MAT-file (pydyn has no struct arrays)")
     if isinstance(v, np.ndarray) and v.dtype == object:
+        if v.ndim > 2:
+            return Tainted("an N-dimensional cell array read from a MAT-file")
         return Cell([mat_value(x) for x in v.ravel(order="F")], v.shape if v.ndim == 2 else (1, v.size))
     if isinstance(v, np.ndarray):
         if v.dtype.kind == "U":
@@ -405,13 +445,13 @@ def mat_value(v):
                 return str("".join(v.ravel())) if v.size else ""
             return Cell([str(x).rstrip() for x in v], (v.shape[0], 1))
         if v.dtype.kind == "b":
+            if v.ndim > 2:
+                return ret(v.copy())
             return ret(v.reshape(v.shape if v.ndim == 2 else (1, -1))) if v.size else np.zeros((0, 0), bool)
         if v.dtype.kind in "fiu":
             if np.iscomplexobj(v):
                 return Tainted("a complex array read from a MAT-file")
-            a = v.astype(float) if v.ndim == 2 else v.astype(float).reshape(1, -1) if v.ndim == 1 else v.astype(float)
-            if a.ndim > 2:
-                return Tainted("an N-dimensional array read from a MAT-file")
+            a = v.astype(float) if v.ndim >= 2 else v.astype(float).reshape(1, -1)
             return ret(a)
         return Tainted(f"a MAT-file value of class {v.dtype}")
     if isinstance(v, (bool, np.bool_)):
@@ -875,6 +915,7 @@ class _FunctionsMixin:
             "isfield": self.fn_isfield,
             "occbin_unpack_simulations": self.fn_unpack_simulations,
             "resol": self.fn_resol,
+            "save": self.fn_save,
         }
 
     def fn_command(self, kind):
@@ -950,19 +991,64 @@ class _FunctionsMixin:
         return []
 
     def fn_seed(self, args, nargout):
-        from .octave_rng import OctaveRandom
-        a = args[0] if args else "default"
-        if isinstance(a, str):
-            if a.lower() == "default":
-                self.seed = 0
-            elif a.lower() == "reset":
-                pass
-            else:
-                import time
-                self.seed = int(time.time()) % (2 ** 32 - 1)
-        else:
-            self.seed = int(_ml.scalar(a))
-        self.rng = OctaveRandom(self.seed)
+        """set_dynare_seed: Dynare 7.2 under Octave (matlab.dynare_seed); the stream is the interpreter's."""
+        if nargout > 0:
+            raise MatlabError("set_dynare_seed: function called with too many outputs")
+        _ml.dynare_seed(self.I, args)
+        return []
+
+    # ---------------------------------------------------------------- save (sandboxed)
+    #: the record of the files pydyn.dynare() wrote, in the preprocessor's folder <mod folder>/<name>/
+    _WRITTEN = "pydyn_written_files.json"
+
+    def fn_save(self, args, nargout):
+        """``save file.mat a b`` / ``save('file', 'a', 'b')``: a MAT-file (MATLAB's format) in the .mod file's own
+        folder.  Sandbox: a plain file name (no path), extension .mat, no options; a file that exists is overwritten
+        only if pydyn.dynare() wrote it (recorded with its SHA-256 in <mod folder>/<name>/pydyn_written_files.json)
+        and nobody changed it since.  Numeric, logical and char arrays, cell arrays and scalar structs of them."""
+        import hashlib
+        from scipy.io import savemat
+        if nargout > 0:
+            raise MatlabError("save: function called with too many outputs")
+        if not args or not all(isinstance(a, str) for a in args):
+            raise Unsupported("save with computed (non-char) arguments", "file")
+        if any(a.startswith("-") for a in args):
+            raise Unsupported(f"save with options {[a for a in args if a.startswith('-')]}", "file")
+        fname, names = args[0], list(args[1:])
+        if not re.fullmatch(r"[A-Za-z0-9_][\w.-]*", fname) or ".." in fname:
+            raise Unsupported(f"save: {fname!r} is not a plain file name in the .mod file's folder", "file")
+        if "." not in fname:
+            fname += ".mat"
+        if not fname.endswith(".mat"):
+            raise Unsupported(f"save: {fname!r} is not a MAT-file (only .mat files are written)", "file")
+        if any(("*" in n or "?" in n) for n in names):
+            raise Unsupported("save with wildcards", "file")
+        sc = self.I.scope_stack[-1]
+        if not names:
+            names = [n for n in sc.vars if n not in _HOST_GLOBALS]
+        data = {}
+        for n in names:
+            if n in _HOST_GLOBALS:
+                raise Unsupported(f"save of {n}", "file")
+            v = sc.vars.get(n)
+            if v is None:
+                raise MatlabError(f"save: no such variable '{n}'")
+            data[n] = _to_mat_file(v, n)
+        base = self.model.json_dir.parents[2]
+        path = base / fname
+        rec_path = self.model.json_dir.parents[1] / self._WRITTEN
+        try:
+            rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            rec = {}
+        if path.exists():
+            ok = path.is_file() and not path.is_symlink() and rec.get(fname) == hashlib.sha256(path.read_bytes()).hexdigest()
+            if not ok:
+                raise Unsupported(f"save: {fname} exists and was not written by pydyn.dynare(); it is not overwritten", "file")
+        savemat(str(path), data, do_compression=False, oned_as="column", long_field_names=True)
+        rec[fname] = hashlib.sha256(path.read_bytes()).hexdigest()
+        rec_path.parent.mkdir(parents=True, exist_ok=True)
+        rec_path.write_text(json.dumps(rec, indent=0))
         return []
 
     def fn_isfield(self, args, nargout):

@@ -1,0 +1,207 @@
+rand('state', 0); r = rand;
+%%
+rand('state', 0); r = rand(3);
+%%
+rand('state', 1); r = rand(2, 3);
+%%
+rand('state', 1); r = rand([2 3]);
+%%
+rand('state', 1); r = rand(2, 3, 2);
+%%
+rand('state', 1); r = rand([1 1 3]);
+%%
+rand('state', 7); r = rand(1, 10);
+%%
+rand('state', 7); r = rand(10, 1);
+%%
+rand('state', 7); a = rand(1, 5); b = rand(1, 5); rand('state', 7); c = rand(1, 10); r = isequal([a b], c);
+%%
+rand('state', 3); r = rand(2, 'double');
+%%
+rand('state', 3); r = rand('double');
+%%
+rand('state', 3); r = size(rand(0, 3));
+%%
+rand('state', 3); a = rand(0, 3); r = rand;
+%%
+rand('state', 3); r = size(rand(2, -1));
+%%
+rand('state', 3); r = rand(2.5);
+%%
+rand('state', 3); r = rand(2, 'single');
+%%
+rand('state', 2.7); r = rand(1, 3);
+%%
+rand('state', -3); r = rand(1, 3);
+%%
+rand('state', [1 2 3]); r = rand(1, 3);
+%%
+rand('state', 2^32 + 5); r = rand(1, 3);
+%%
+rand('state', Inf); r = rand(1, 3);
+%%
+rand('state', NaN); r = rand(1, 3);
+%%
+rand('state', 4294967295); r = rand(1, 3);
+%%
+rand('twister', 5); r = rand(1, 3);
+%%
+rand('state', 5); s = rand('state'); a = rand(1, 4); rand('state', s); b = rand(1, 4); r = [a; b];
+%%
+rand('state', 5); x = rand(1, 3); s = rand('state'); r = s(end);
+%%
+rand('state', 5); s = rand('state'); r = s(1:5)';
+%%
+rand('state', 5); x = rand(1, 1000); s = rand('state'); r = [s(1:3)' s(end)];
+%%
+rand('state', 5); s = rand('state'); r = size(s);
+%%
+randn('state', 0); r = randn;
+%%
+randn('state', 0); r = randn(3);
+%%
+randn('state', 1); r = randn(2, 3, 2);
+%%
+randn('state', 42); r = randn(1, 20);
+%%
+randn('state', 42); r = sum(randn(1000, 1));
+%%
+randn('state', 42); x = randn(5000, 1); r = [mean(x) max(x) min(x)];
+%%
+randn('state', 9); s = randn('state'); a = randn(2); randn('state', s); r = isequal(a, randn(2));
+%%
+rand('state', 1); randn('state', 1); a = rand(1, 2); b = randn(1, 2); c = rand(1, 2); d = randn(1, 2); r = [a b c d];
+%%
+rand('state', 1); randn('state', 2); a = randn(1, 3); b = rand(1, 3); r = [a b];
+%%
+rand('state', 11); randn('state', 11); r = rand('state') - randn('state'); r = any(r);
+%%
+rand('state', 11); randn('state', 12); x = randn(1, 3); r = rand(1, 3);
+%%
+randn('state', 3); a = randn(1, 7); b = randn(1, 9); randn('state', 3); c = randn(1, 16); r = isequal([a b], c);
+%%
+randn('twister', 3); r = randn(2, 2);
+%%
+rand('state', 2); r = randi(10);
+%%
+rand('state', 2); r = randi(10, 1, 8);
+%%
+rand('state', 2); r = randi(10, 3);
+%%
+rand('state', 2); r = randi([-5 5], 2, 4);
+%%
+rand('state', 2); r = randi(6, [2 3]);
+%%
+rand('state', 2); r = randi(3, 2, 2, 2);
+%%
+rand('state', 2); r = randi(1, 1, 4);
+%%
+rand('state', 2); r = randi(100, 1, 100);
+%%
+rand('state', 2); r = randi([0 1], 1, 50);
+%%
+rand('state', 2); r = randi(2^40, 1, 3);
+%%
+rand('state', 2); r = randi(10, 0, 3);
+%%
+rand('state', 2); a = randi(10, 0, 3); r = rand;
+%%
+rand('state', 2); a = randi(7, 1, 5); r = rand(1, 2);
+%%
+rand('state', 2); r = randi(0);
+%%
+rand('state', 2); r = randi(2.5);
+%%
+rand('state', 2); r = randi([5 1]);
+%%
+rand('state', 2); r = randi(10, 2, 'double');
+%%
+rand('state', 2); r = randi(3, 1, 4, 'int8');
+%%
+rand('state', 4); r = randperm(6);
+%%
+rand('state', 4); r = randperm(10, 3);
+%%
+rand('state', 4); r = randperm(1);
+%%
+rand('state', 4); r = size(randperm(0));
+%%
+rand('state', 4); r = randperm(3, 4);
+%%
+rand('state', 4); r = randperm(5, 0);
+%%
+rand('state', 4); a = randperm(8); r = rand(1, 2);
+%%
+rand('state', 4); a = randperm(100, 5); r = rand;
+%%
+rand('state', 4); r = randperm(50, 10);
+%%
+rand('state', 4); r = randperm(-1);
+%%
+rand('state', 4); r = sort(randperm(9));
+%%
+rng(0); r = [rand(1, 2) randn(1, 2)];
+%%
+rng(5); a = rand(1, 3); rand('state', 5); b = rand(1, 3); r = isequal(a, b);
+%%
+rng('default'); r = rand(1, 3);
+%%
+rng(7, 'twister'); r = randn(1, 3);
+%%
+rng(3); s = rng; a = [rand randn]; rng(s); b = [rand randn]; r = [a; b];
+%%
+rng(3); s = rng; r = s.State{1}(end);
+%%
+s = rng; r = s.Seed;
+%%
+s = rng; r = s.Type;
+%%
+rng(1); s = rng(2); a = rand; rng(s); b = rand; rng(1); c = rand; r = [a b c];
+%%
+rng(-1);
+%%
+rng(1, 'philox');
+%%
+rng(1, 'foo');
+%%
+rng(2.5); r = rand(1, 2);
+%%
+rand('state', 8); x = rand(2, 2); y = rand(2, 2); r = x * y;
+%%
+rand('state', 8); r = zeros(2, 3); for k = 1:3, r(:, k) = rand(2, 1); end
+%%
+rand('state', 8); r = zeros(1, 4); for k = 1:4, r(k) = rand; end
+%%
+randn('state', 8); r = zeros(1, 9); for k = 1:9, r(k) = randn; end
+%%
+randn('state', 8); r = randn(1, 9);
+%%
+rand('state', 6); A = rand(3, 4); r = A(A > 0.5)';
+%%
+rand('state', 6); r = 2 * rand(2) - 1;
+%%
+randn('state', 6); r = 0.5 + 2 * randn(1, 4);
+%%
+rand('state', 6); r = floor(10 * rand(1, 6));
+%%
+rand('state', 6); r = rand(1, 3) < 0.5;
+%%
+rand('state', 1); randn('state', 1); x = zeros(2, 5); x(:, 1) = randn(2, 1); for t = 2:5, x(:, t) = 0.9 * x(:, t-1) + randn(2, 1); end; r = x;
+%%
+rand('state', 0); r = rand(1, 3, 'like', 1);
+%%
+rand('seed', 1); r = rand;
+%%
+rand('state', 'reset'); r = 1;
+%%
+rand('state', []); r = rand;
+%%
+rand('foo'); r = 1;
+%%
+randn('state', 0); r = randn(3, 3, 3);
+%%
+randn('state', 123); x = randn(1, 2000); r = [x(1) x(1000) x(2000)];
+%%
+rand('state', 123); x = rand(1, 70000); r = [x(1) x(65536) x(65537) x(70000)];
+%%
+randn('state', 123); x = randn(1, 70000); r = [x(1) x(32768) x(65537) x(70000)];

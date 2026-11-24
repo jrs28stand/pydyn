@@ -19,7 +19,7 @@ from pydyn.matlab import Cell, Struct, Tainted, Unsupported
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
-         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh"]
+         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
@@ -31,7 +31,7 @@ TOL = {"est_mode4": 1e-3, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3}
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
 SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
 REFUSED = {"oo_.dr.fuu", "oo_.dr.g_0", "oo_.dr.g_1", "oo_.dr.g_2", "oo_.dr.g_3", "oo_.dr.pruning",
-           "oo_.dr.restrict_var_list", "oo_.dr.restrict_columns", "oo_.FilteredVariablesKStepAhead",
+           "oo_.dr.restrict_var_list", "oo_.dr.restrict_columns",
            "oo_.posterior.optimization.optimization_info", "oo_.occbin.simul.regime_history",
            "oo_.osr.optimization_info"}
 

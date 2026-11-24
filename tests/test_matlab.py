@@ -95,10 +95,10 @@ def test_indeterminate_results_are_nan_as_in_matlab():
     ("a = [1 2 3]; r = a(4);", M.MatlabError), ("a = [1 2 3]; r = a(0);", M.MatlabError),
     ("a = [1 2 3]; r = a(1.5);", M.MatlabError), ("r = [1 2] + [1 2 3];", M.MatlabError),
     ("r = [1 2; 3];", M.MatlabError), ("r = [1 2 3] * [1 2 3];", M.MatlabError),
-    ("r = undefined_thing + 1;", M.Unsupported), ("r = rand(2);", M.Unsupported),
+    ("r = undefined_thing + 1;", M.Unsupported), ("r = gamrnd(2, 1);", M.Unsupported),
     ("r = 1i;", M.Unsupported), ("x = dseries(1);", M.Unsupported), ("r = evalin('base', '1');", M.Unsupported),
     ("r = system('ls');", M.Unsupported), ("fid = fopen('x.txt', 'w');", M.Unsupported),
-    ("s = struct('a', {1, 2});", M.Unsupported), ("a = zeros(2, 2, 2);", M.Unsupported),
+    ("s = struct('a', {1, 2});", M.Unsupported), ("a = zeros(2, 2, 2); b = inv(a);", M.Unsupported),
     ("if [1 2] && 1, r = 1; end", M.MatlabError), ("error('my:id', 'value %d', 4)", M.MatlabError),
 ])
 def test_errors_and_refusals(code, exc):
@@ -189,7 +189,7 @@ def test_unknown_condition_without_calibration_is_skipped_with_one_warning(tmp_p
     ("oo_.steady_state(1) = oo_.dr.ys(1);\nsteady;", "oo_.steady_state"),   # computable writes are followed (see below)
     ("eval(some_unknown_function(1));", "eval"),
     ("x = some_unknown_function(1);\nrho = x;", "could not compute"),
-    ("x = rand;\nshocks; var e; stderr x; end;", "could not compute"),
+    ("x = gamrnd(1, 1);\nshocks; var e; stderr x; end;", "could not compute"),
     ("error('calibration is inconsistent');", "calibration is inconsistent"),
     ("M_.params(5) = 1;", "must not change size|out of bound"),
     ("load_params_from_somewhere;\nif exist('q', 'var')\n rho = 0.1;\nend", "param_init"),

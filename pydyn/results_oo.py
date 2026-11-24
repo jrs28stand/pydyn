@@ -352,8 +352,14 @@ class CommandsMixin:
         if mom.variance_decomposition_me is not None:
             self.set_oo("variance_decomposition_ME", R.mat(mom.variance_decomposition_me))
         if mom.conditional_variance_decomposition is not None:
-            self.refuse("oo_", ["conditional_variance_decomposition", "conditional_variance_decomposition_ME"],
-                        "a 3-dimensional array")
+            if theoretical:
+                # disp_th_moments.m: (nvar, nsteps, nexo) fractions; _ME is (nobs, nsteps, nexo + 1) or []
+                self.set_oo("conditional_variance_decomposition", R.mat(mom.conditional_variance_decomposition))
+                me = mom.conditional_variance_decomposition_me
+                self.set_oo("conditional_variance_decomposition_ME", R.mat(me) if me is not None else np.zeros((0, 0)))
+            else:
+                self.refuse("oo_", ["conditional_variance_decomposition", "conditional_variance_decomposition_ME"],
+                            "Dynare computes it with theoretical moments only (periods = 0)")
 
     # ------------------------------------------------------------------ irfs
     def _irfs(self, dr, names, ivar, irf, order, pruning, replic, Sigma):
