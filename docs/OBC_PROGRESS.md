@@ -228,3 +228,28 @@ relevant, their mean is the expected path); it only acts when the bound binds in
 (2) Under Octave DynareOBC's root truncation dropped the largest eigenvalue (unordered `schur`); patched.
 (3) Dynare's Sobol direction numbers differ from SciPy's beyond dimension 2, so exact agreement needs the
 points exported. Not yet compared: several regions (needs DynareOBC's clustering), order 3, CATCH rules.
+
+## Several cubature regions against DynareOBC (24 Nov, evening)
+
+`HigherOrderNews(regions=k)` now implements DynareOBC's region splitting (principal components of the relevant
+paths and their negative parts, repeated Otsu splits). Against DynareOBC with `CubatureRegions=4`, same root and
+Sobol points: 294 of 300 periods agree to 3e-16; six differ by up to 0.006 (a near-tie in a split).
+
+The number of regions matters far more than expected. Small NK model, order 2, level 9, mean over 300 periods:
+
+| regions | mean c | mean pi | max change from no cubature | pydyn ms/period |
+|---|---|---|---|---|
+| none | 0.99609 | 0.99902 | 0 | 0.04 |
+| 1 (DynareOBC default) | 0.99608 | 0.99902 | 5e-05 | 0.4 |
+| 2 | 0.97082 | 0.98962 | 0.056 | 8.7 |
+| 4 | 0.95777 | 0.98480 | 0.095 | 10.0 |
+| 8 | 0.95199 | 0.98268 | 0.096 | 12.6 |
+| 16 | 0.94557 | 0.98027 | 0.111 | 14.9 |
+| 32 | 0.94128 | 0.97864 | 0.121 | 26.0 |
+| every point (plain quasi-Monte Carlo) | 0.92191 | 0.97134 | 0.158 | 37.3 |
+
+One region is close to "no cubature"; the full integral lowers mean consumption by 7%, and convergence in the
+number of regions is slow. The size here owes much to the model (no endogenous state, news 32 periods ahead in a
+purely forward-looking NK model, i.e. the forward-guidance puzzle), but the ordering is general: the mean of the
+relevant points is usually a path that does not bind, so one region prices almost no risk.
+Cost in Python is the per-period SVD for the split, not the LCP solves.

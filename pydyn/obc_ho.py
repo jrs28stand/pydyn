@@ -304,7 +304,47 @@ class HigherOrderNews:
             for j in range(idx.size):
                 acc += self._solve(pr[:, j])
             return acc / npts
-        raise NotImplementedError("regions must be 1 or 'all' in this prototype")
+        k = int(self.regions)                                      # DynareOBC's CubatureRegions > 1
+        if idx.size <= k:
+            ids, k = np.arange(idx.size), idx.size
+        else:
+            ids = self._split_regions(pr, k)
+        acc = np.zeros(self.T)
+        for i in range(k):
+            sel = ids == i
+            acc += (sel.sum() / npts) * self._solve(pr[:, sel].mean(axis=1))
+        return acc
+
+    def _split_regions(self, pr, k):
+        """DynareOBC's region rule (PerformCubature.m, CubatureClusteringEffort = 0): describe each relevant path
+        by its direction and the direction of its negative part, reduce by principal components, then split the
+        region with the largest within-sum-of-squares along its first principal axis at Otsu's threshold,
+        until there are k regions. Returns region numbers 0..k-1 per column of ``pr``."""
+        X = pr / np.sqrt((pr * pr).sum(axis=0))
+        X = np.concatenate([X.T, np.minimum(0.0, X.T)], axis=1)
+        X = X - X.mean(axis=0)
+        U, sv, _ = np.linalg.svd(X, full_matrices=False)
+        lat = sv ** 2 / max(1, X.shape[0] - 1)
+        keep = lat >= self.pruning_cutoff * lat[0] if self.pruning_cutoff is not None else np.ones(lat.size, bool)
+        keep[self.max_cubature_dimension:] = False
+        keep &= lat > np.finfo(float).eps
+        Z = U[:, keep] * sv[keep]                                  # principal-component scores
+        ids = np.zeros(Z.shape[0], dtype=int)
+        for n in range(1, k):
+            if n == 1:
+                pi_, proj = np.arange(Z.shape[0]), Z[:, 0]
+            else:
+                sse = [((Z[ids == i] - Z[ids == i].mean(axis=0)) ** 2).sum() for i in range(n)]
+                pi_ = np.nonzero(ids == int(np.argmax(sse)))[0]
+                ev, V = np.linalg.eigh(np.cov(Z[pi_].T).reshape(Z.shape[1], Z.shape[1]))
+                proj = Z[pi_] @ V[:, int(np.argmax(np.abs(ev)))]
+            proj = proj - proj.mean()
+            srt = np.sort(proj)
+            cs = np.cumsum(srt[:-1])
+            j = np.arange(1, proj.size)
+            cut = srt[int(np.argmax(cs * cs / (j * (proj.size - j))))]
+            ids[pi_[proj > cut]] = n
+        return ids
 
     # ----------------------------------------------------------------------------------------- simulation
     def simulate(self, shocks, init=None):

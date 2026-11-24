@@ -58,3 +58,15 @@ def test_cubature_matches_dynareobc(nk):
     assert np.abs(own - E).max() < 5e-6                                 # SciPy's Sobol points
     h.R, h.xi = Rd, loadmat(REF / "sob_o2cub.mat")["x"]               # DynareOBC's own root and points
     np.testing.assert_allclose(h.simulate(S)["with_bound"], E, atol=1e-13)
+
+
+def test_four_region_cubature_matches_dynareobc(nk):
+    """DynareOBC's region splitting (CubatureRegions=4). With its root and points, 294 of 300 periods agree to
+    rounding; in the others a near-tie in the split falls differently (Octave's pca/eigs against LAPACK here)."""
+    m, S = nk
+    r, E = _ref(m, "ref_o2cub4.mat")
+    assert np.abs(E - _ref(m, "ref_o2.mat")[1]).max() > 0.05          # several regions matter a great deal
+    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=9, regions=4)
+    h.R, h.xi = np.real(_ref(m, "ref_o2cub.mat")[0]["Rcc"]), loadmat(REF / "sob_o2cub.mat")["x"]
+    d = np.abs(h.simulate(S)["with_bound"] - E).max(axis=1)
+    assert (d < 1e-12).sum() >= 290 and d.max() < 0.01
