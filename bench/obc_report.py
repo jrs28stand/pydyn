@@ -27,11 +27,11 @@ def p1(files):
                     print(f"| {model} | {meth} | {impl or 'n/a'} | ERROR {r['error']} | | | | | | |")
                     continue
                 sp = r["split"]
+                tail = (f"{r['max_path_diff_vs_before']:.1e} | {r['regimes_equal_before']} |" if "max_path_diff_vs_before" in r
+                        else " | |")
                 print(f"| {model} | {meth} | {impl or '-'} | {r['share_binding']:.3f} | {r['us_per_period']['min']:.1f} | "
                       f"{r['us_per_period']['median']:.1f} | {fmt(sp['us_nothing_binds'])} | {fmt(sp['us_binds'])} | "
-                      f"{r.get('max_path_diff_vs_occbin', float('nan')):.1e} | {r.get('regime_histories_equal_occbin')} | "
-                      f"{r['max_path_diff_vs_before']:.1e} | {r['regimes_equal_before']} |" if 'max_path_diff_vs_before' in r else
-                      f"{r.get('max_path_diff_vs_occbin', float('nan')):.1e} | {r.get('regime_histories_equal_occbin')} | | |")
+                      f"{r.get('max_path_diff_vs_occbin', float('nan')):.1e} | {r.get('regime_histories_equal_occbin')} | " + tail)
 
 
 def p2(files):

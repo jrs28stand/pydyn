@@ -1,0 +1,59 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "sw": 0.25
+  },
+  "impls": [
+   "after"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 09:08",
+  "load_avg": [
+   1.5576171875,
+   1.83642578125,
+   1.87548828125
+  ]
+ },
+ "data": {
+  "sw": {
+   "0.5": {
+    "methods": {
+     "occbin": {
+      "solved": 182,
+      "failed": 18,
+      "failures": {
+       "OccbinLoopError:313": 18
+      },
+      "seconds": 0.23713842999904955,
+      "solved_with_binding": 48
+     },
+     "regime/after": {
+      "solved": 182,
+      "failed": 18,
+      "failures": {
+       "OBCError:not_converged": 17,
+       "OBCError:horizon_too_short": 1
+      },
+      "seconds": 8.777128234999964,
+      "solved_with_binding": 48
+     }
+    },
+    "pairs": {
+     "occbin vs regime/after": {
+      "both_solved": 182,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 18
+     }
+    },
+    "before_vs_after": {}
+   }
+  }
+ }
+}

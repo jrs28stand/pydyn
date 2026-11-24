@@ -397,6 +397,7 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
                 o.milp_time_limit = milp_limit
         out[name] = {}
         for s in scales:
+            t_start = timer()
             hist = {c: [None] * n_states for c in confs}
             bind = {c: [False] * n_states for c in confs}
             errs = {c: [None] * n_states for c in confs}
@@ -440,7 +441,7 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
                     same[meth] = dict(identical_outcomes=all(
                         (hist[a][j] == hist[b][j]) and ((errs[a][j] is None) == (errs[b][j] is None)) for j in range(n_states)))
             out[name][str(s)] = dict(methods=res, pairs=pairs, before_vs_after=same)
-            print(f"[r1] {name} s={s} done", flush=True)
+            print(f"[r1] {name} s={s} done in {timer() - t_start:.0f} s", flush=True)
     return out
 
 
@@ -504,6 +505,9 @@ def main():
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--tag", default="")
     ap.add_argument("--s", default="", help="override shock scales, e.g. zlb=1,sw=3")
+    ap.add_argument("--milp-limit", type=float, default=2.0, help="R1: time limit (s) of RegimeOBC's integer programme")
+    ap.add_argument("--n-states", type=int, default=2000, help="R1: number of states")
+    ap.add_argument("--scales", default="0.5,1,1.5,2", help="R1: shock scales")
     a = ap.parse_args()
     for kv in filter(None, a.s.split(",")):
         k, v = kv.split("=")
@@ -534,7 +538,8 @@ def main():
         elif w == "warm":
             save("warm", warm(models, a.reps, a.seed))
         elif w == "r1":
-            save("r1", r1(models, impls, a.seed))
+            save("r1", r1(models, impls, a.seed, n_states=a.n_states, scales=tuple(float(x) for x in a.scales.split(",")),
+                          milp_limit=a.milp_limit))
 
 
 if __name__ == "__main__":
