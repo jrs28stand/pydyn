@@ -222,7 +222,7 @@ silently, and `simulate` attaches the period number). Measured:
 * **borrcon**: 13% of perturbed points have no solution; regions=1 fine, "all" raises in every period (43 ms at level 9, 344 ms at level 12). The active-set iteration runs 20+ lockstep passes (cycling states).
 * nk, zlb, zlb2, nkm and all pad models: 0 failures at levels 9 and 12 (zlb2: 57 of 6,220 relevant points failed in the random-draw check of the test, i.e. ~1%, enough to raise most periods
   when the points are drawn from perturbed *random* states; none on the realistic base path above).
-Proposed rule (not implemented; it changes behaviour): keep `raise` as the default, as DynareOBC does unless `IgnoreBoundFailures`. Add `on_failure="raise"|"drop"`: `drop` leaves failing points
+Proposed rule (since implemented: see "Cubature defaults and failure handling"): keep `raise` as the default, as DynareOBC does unless `IgnoreBoundFailures`. Add `on_failure="raise"|"drop"`: `drop` leaves failing points
 out of the average with the weight of the remaining points renormalised, counts them (`stats["dropped"]`) and raises anyway if more than a stated share (say 5%) of a period's relevant points fail;
 and give the MILP in the cubature path a time limit (1 s) because it only needs to say "no solution". The regions=k mean points need the same rule.
 
@@ -316,7 +316,7 @@ Failure handling at the default level 11, 8 periods:
 Cost of tolerance mode is ~2.3-5 ms per failed point (the two LPs; scipy/HiGHS call overhead dominates a 64 x 33 LP): it must classify every failed point, so it is the expensive mode on models that fail often. No MILP was needed in any of these runs.
 
 ## State / next step
-Done and pushed (wip/obc-ho-perf): Parts 1-2, Scaling, and "Cubature defaults and failure handling". Tests: 76 pass (tests/test_obc_ho.py 23, test_obc_dynareobc.py, test_obc.py, test_obc_perf.py).
+Done and pushed (wip/obc-ho-perf): Parts 1-2, Scaling, and "Cubature defaults and failure handling". Tests: 76 pass (tests/test_obc_ho.py 18, test_obc_dynareobc.py, test_obc.py, test_obc_perf.py).
 Open: the LP classification calls scipy `linprog` (~2.3 ms per point); a direct HiGHS call or a batched/dual-warm-started LP would cut tolerance mode several-fold; whether (b) failures are cured by a longer horizon is only
 evidenced on borrcon (a second `HigherOrderNews` with a longer horizon would test it per point); not measured: level 13, cubature with more than two constraints, real SW (refused: tied wedge).
 Run: `python3 bench/obc_ho_bench.py compare tests/data/obc_ho_baseline.npz`, `... compare tests/data/obc_ho_regions_baseline.npz --regions`, `python3 bench/obc_ho_scale.py run MODEL`.
