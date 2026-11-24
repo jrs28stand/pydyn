@@ -1,0 +1,220 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "zlb": 2.0,
+   "zlb2": 2.0,
+   "nkm": 4.0,
+   "sw": 0.25
+  },
+  "impls": [
+   "before"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 08:45",
+  "load_avg": [
+   3.0859375,
+   2.34326171875,
+   1.255859375
+  ]
+ },
+ "data": {
+  "zlb": {
+   "iters": 50,
+   "periods": 200,
+   "params": [
+    "beta",
+    "phi"
+   ],
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 5.73895435299994,
+      "median": 7.282678473999681,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 114.7790870599988,
+      "median": 145.65356947999362
+     },
+     "setup_s": {
+      "min": 0.05880373200000122,
+      "median": 0.06572412599985,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true
+    },
+    "news/before": {
+     "total_s": {
+      "min": 3.607877880000501,
+      "median": 4.335472048000042,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 72.15755760001002,
+      "median": 86.70944096000085
+     },
+     "setup_s": {
+      "min": 0.7474861050000072,
+      "median": 0.8725946760004035,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 4.884981308350689e-15,
+     "regime_histories_equal_occbin": true
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 2.0844892140005413,
+      "median": 2.389569219999885,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 41.68978428001083,
+      "median": 47.791384399997696
+     },
+     "setup_s": {
+      "min": 0.5718895790002989,
+      "median": 0.6754308649998393,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 4.884981308350689e-15,
+     "regime_histories_equal_occbin": true
+    }
+   }
+  },
+  "zlb2": {
+   "iters": 50,
+   "periods": 200,
+   "params": [
+    "beta",
+    "phi"
+   ],
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 8.617267842000274,
+      "median": 9.239728721000233,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 172.34535684000548,
+      "median": 184.79457442000464
+     },
+     "setup_s": {
+      "min": 0.07398811800032945,
+      "median": 0.08348328099987157,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true
+    },
+    "news/before": {
+     "total_s": {
+      "min": 5.578060352000648,
+      "median": 5.822761166000646,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 111.56120704001296,
+      "median": 116.45522332001292
+     },
+     "setup_s": {
+      "min": 1.6374776000004658,
+      "median": 1.7038872259995514,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 4.440892098500626e-15,
+     "regime_histories_equal_occbin": true
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 4.124403781000069,
+      "median": 4.4461305930001345,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 82.48807562000138,
+      "median": 88.92261186000269
+     },
+     "setup_s": {
+      "min": 1.2287253770000461,
+      "median": 1.3772125800002186,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 4.440892098500626e-15,
+     "regime_histories_equal_occbin": true
+    }
+   }
+  },
+  "nkm": {
+   "iters": 50,
+   "periods": 200,
+   "params": [
+    "beta",
+    "thetap"
+   ],
+   "rows": {
+    "occbin": {
+     "error": "OccbinLoopError: period 3: regime guesses cycle without converging (error 313) (iteration 4)"
+    },
+    "news/before": {
+     "error": "OBCError: no solution returns to the reference regime within the news horizon (iteration 4)"
+    },
+    "regime/before": {
+     "error": "OBCError: a constraint still binds after the news horizon: increase obc_horizon (iteration 4)"
+    }
+   }
+  },
+  "sw": {
+   "iters": 50,
+   "periods": 200,
+   "params": [
+    "csigma",
+    "crpi"
+   ],
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 4.96767574699993,
+      "median": 5.307070586999316,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 99.3535149399986,
+      "median": 106.14141173998632
+     },
+     "setup_s": {
+      "min": 0.07942548600044574,
+      "median": 0.10056590199997117,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 4.535329526000396,
+      "median": 5.006852639999806,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 90.70659052000792,
+      "median": 100.13705279999613
+     },
+     "setup_s": {
+      "min": 1.3119642949995978,
+      "median": 1.4415772039997137,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 3.943512183468556e-13,
+     "regime_histories_equal_occbin": true
+    }
+   }
+  }
+ }
+}

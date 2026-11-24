@@ -1,0 +1,88 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "nkm": 4.0
+  },
+  "impls": [
+   "before"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 08:54",
+  "load_avg": [
+   2.1298828125,
+   2.796875,
+   1.9990234375
+  ]
+ },
+ "data": {
+  "nkm": {
+   "iters": 50,
+   "periods": 200,
+   "params": [
+    "chi",
+    "eta"
+   ],
+   "rows": {
+    "occbin": {
+     "total_s": {
+      "min": 9.741168777000667,
+      "median": 10.391546479001136,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 194.82337554001333,
+      "median": 207.8309295800227
+     },
+     "setup_s": {
+      "min": 0.06682603100034612,
+      "median": 0.07092710200049623,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 0.0,
+     "regime_histories_equal_occbin": true
+    },
+    "news/before": {
+     "total_s": {
+      "min": 4.136229888000116,
+      "median": 4.742516070000647,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 82.72459776000233,
+      "median": 94.85032140001294
+     },
+     "setup_s": {
+      "min": 0.7707904720000442,
+      "median": 0.8527946230001362,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 3.907985046680551e-12,
+     "regime_histories_equal_occbin": true
+    },
+    "regime/before": {
+     "total_s": {
+      "min": 3.2198888349994377,
+      "median": 3.455929530000276,
+      "n": 5
+     },
+     "per_iteration_ms": {
+      "min": 64.39777669998875,
+      "median": 69.11859060000552
+     },
+     "setup_s": {
+      "min": 0.6093449849997796,
+      "median": 0.6865447840002616,
+      "n": 5
+     },
+     "max_path_diff_vs_occbin": 3.907985046680551e-12,
+     "regime_histories_equal_occbin": true
+    }
+   }
+  }
+ }
+}

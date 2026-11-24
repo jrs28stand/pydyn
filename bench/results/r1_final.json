@@ -1,0 +1,1293 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "zlb": 2.0,
+   "zlb2": 2.0,
+   "nkm": 4.0
+  },
+  "impls": [
+   "before",
+   "after"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 09:07",
+  "load_avg": [
+   1.9404296875,
+   1.9306640625,
+   1.90478515625
+  ]
+ },
+ "data": {
+  "zlb": {
+   "0.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.016582882001785,
+      "solved_with_binding": 609
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6503844599978947,
+      "solved_with_binding": 609
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.519182187012575,
+      "solved_with_binding": 609
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.3915870319806345,
+      "solved_with_binding": 609
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.597874826005409,
+      "solved_with_binding": 609
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.1503269869904216,
+      "solved_with_binding": 667
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6782206369971391,
+      "solved_with_binding": 667
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.37405635399818493,
+      "solved_with_binding": 667
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.34083014402312983,
+      "solved_with_binding": 667
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.5659694919950198,
+      "solved_with_binding": 667
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.1719370529813204,
+      "solved_with_binding": 728
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6891685630189386,
+      "solved_with_binding": 728
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.495254907000799,
+      "solved_with_binding": 728
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.3212382580031772,
+      "solved_with_binding": 728
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.4725103250098073,
+      "solved_with_binding": 728
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "2.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.0558337779934845,
+      "solved_with_binding": 775
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6267991009854086,
+      "solved_with_binding": 775
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.3670566550076728,
+      "solved_with_binding": 775
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.30450984999379216,
+      "solved_with_binding": 775
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.46167552401584544,
+      "solved_with_binding": 775
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   }
+  },
+  "zlb2": {
+   "0.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.3894855390094563,
+      "solved_with_binding": 664
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6428214199977447,
+      "solved_with_binding": 664
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.43743294799241994,
+      "solved_with_binding": 664
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.4655588159976105,
+      "solved_with_binding": 664
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6102533659859546,
+      "solved_with_binding": 664
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.5496154630104684,
+      "solved_with_binding": 721
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7547372600010931,
+      "solved_with_binding": 721
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.41788226402195505,
+      "solved_with_binding": 721
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.44085873499398076,
+      "solved_with_binding": 721
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.46287499100344576,
+      "solved_with_binding": 721
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.512009350999051,
+      "solved_with_binding": 783
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7501720039772408,
+      "solved_with_binding": 783
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.4584816340093312,
+      "solved_with_binding": 783
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.495577041008346,
+      "solved_with_binding": 783
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.5190414849985245,
+      "solved_with_binding": 783
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "2.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.6730059519959468,
+      "solved_with_binding": 817
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7119310709931597,
+      "solved_with_binding": 817
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.416484150998258,
+      "solved_with_binding": 817
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6307059630016738,
+      "solved_with_binding": 817
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.49316427099347493,
+      "solved_with_binding": 817
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   }
+  },
+  "nkm": {
+   "0.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.699881548004214,
+      "solved_with_binding": 82
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7234012619856003,
+      "solved_with_binding": 82
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.37271658199460944,
+      "solved_with_binding": 82
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.3031913730033011,
+      "solved_with_binding": 82
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.39955890700593955,
+      "solved_with_binding": 82
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 1.0553741899957458,
+      "solved_with_binding": 106
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6616230680028821,
+      "solved_with_binding": 106
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.499524679996739,
+      "solved_with_binding": 106
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.357944284009136,
+      "solved_with_binding": 106
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.40307089798943707,
+      "solved_with_binding": 106
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "1.5": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7980350610014284,
+      "solved_with_binding": 142
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.48089416998618617,
+      "solved_with_binding": 141
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.34577591500101335,
+      "solved_with_binding": 141
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.3078447190027873,
+      "solved_with_binding": 142
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.5455661610062634,
+      "solved_with_binding": 142
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   },
+   "2.0": {
+    "methods": {
+     "occbin": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7954081259917984,
+      "solved_with_binding": 190
+     },
+     "news/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.5412398160028715,
+      "solved_with_binding": 191
+     },
+     "news/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.6276629129861249,
+      "solved_with_binding": 191
+     },
+     "regime/before": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.4149595460035016,
+      "solved_with_binding": 190
+     },
+     "regime/after": {
+      "solved": 2000,
+      "failed": 0,
+      "failures": {},
+      "seconds": 0.7136389679922104,
+      "solved_with_binding": 190
+     }
+    },
+    "pairs": {
+     "occbin vs news/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs news/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "occbin vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/before vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/before": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     },
+     "news/after vs regime/after": {
+      "both_solved": 2000,
+      "different_regimes": 1,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 0
+     }
+    },
+    "before_vs_after": {
+     "news": {
+      "identical_outcomes": true
+     },
+     "regime": {
+      "identical_outcomes": true
+     }
+    }
+   }
+  }
+ }
+}
