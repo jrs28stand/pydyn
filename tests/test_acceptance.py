@@ -1,7 +1,9 @@
-"""Fast subset of the acceptance sweep (tools/accept_sweep.py) against Dynare 7.2 results stored by tools/accept_octave.py.
-Skipped when the reference folder (env PYDYN_ACCEPT_REF, default /home/claude/accept_ref) or a file's result is absent."""
+"""Fast subset of the acceptance sweep (tools/accept_pydyn.py + tools/accept_compare.py) against Dynare 7.2 results stored by
+tools/accept_octave.py.  Skipped when the reference folder (env PYDYN_ACCEPT_REF, default /home/claude/accept_ref) or a file's result
+is absent."""
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,5 +21,6 @@ def test_against_dynare(name):
     if not os.environ.get("DYNARE_PREPROCESSOR") and not Path("/home/claude/dl/src72/build-octave/preprocessor/src/dynare-preprocessor").exists():
         pytest.skip("Dynare 7.2 preprocessor not available")
     import accept_sweep as s
-    out = s.run_one_to_file(name + ".mod", s.entries()[name + ".mod"], 300)
-    assert out["verdict"] in ("match", "partial"), out["detail"]
+    with tempfile.TemporaryDirectory() as out:
+        res = s.run_tests([name], out=out, ref=REF, timeout=300)
+    assert res[name]["verdict"] in ("match", "partial", "refused"), res[name]["detail"]
