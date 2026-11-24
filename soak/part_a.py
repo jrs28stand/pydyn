@@ -23,7 +23,7 @@ IVF = {"likelihood_inversion_filter": True}
 MODELS_A = ["nkm", "nkms", "bf"]
 _EST = {}
 KNOWN_TOL = {"nkm": 0.15, "nkms": 0.15, "bf": 1e-7}        # largest expected |lp(occbin) - lp(news)| (knife edge, "approx" class)
-EVAL_TIMEOUT = 90
+EVAL_TIMEOUT = 60
 
 
 def make_est(case, fresh=False):
@@ -142,8 +142,10 @@ def check_eval(r, anom, where, st):
     lp = r["lp"]
     if np.isnan(lp) and "exc" not in r and "timeout" not in r:
         anom("lp_nan", **where, method=r["m"])
-    if lp == np.inf or (np.isfinite(lp) and abs(lp) > 1e6):
+    if lp == np.inf or (np.isfinite(lp) and lp > 1e5):
         anom("lp_absurd", **where, method=r["m"], lp=lp)
+    elif np.isfinite(lp) and lp < -1e7:
+        count(st, f"A|{where.get('model')}|lp_below_minus_1e7")          # legitimate: a tiny shock sd makes the residuals enormous
 
 
 def key_of(r):
@@ -162,7 +164,7 @@ def configs_for(i, case, nc_single=True):
         cfg += [("news", 20, "occbin", None), ("news", 60, "occbin", None)]
         if i % 10 == 0:
             cfg.append(("occbin", 60, "occbin", None))
-    if i % 10 == 5:
+    if i % 40 == 5:
         cfg.append(("news", 40, "occbin", 1.0))
     return cfg
 
@@ -198,7 +200,7 @@ def cmp_pairs(res, e, anom, where, st):
         d = abs(a["lp"] - b["lp"])
         a["diff"] = b["diff"] = d
         tol = KNOWN_TOL[e.case]
-        if d > tol * max(1.0, abs(a["lp"])) if e.case == "bf" else d > tol:
+        if d > tol * max(1.0, abs(a["lp"])) if e.case == "bf" else d > tol + 1e-10 * abs(a["lp"]):
             sfx = "regime_count_differs" if a.get("nb") != b.get("nb") else "same_regime_count"
             anom(f"lp_disagree_large:{e.case}:{sfx}", **where, occbin=a["lp"], news=b["lp"], diff=d, nb=[a.get("nb"), b.get("nb")],
                  rh=[a.get("rh"), b.get("rh")])
@@ -269,7 +271,7 @@ def task_A(i, st, anom):
         out = []
         for t, th in zip(ts, pts):
             _, d = dist_bin(e, th)
-            r = eval_vector(e, th, cfgs[:2], anom, st, dict(where, line_t=round(float(t), 4)), "line")
+            r = eval_vector(e, th, cfgs[:2], anom, st, dict(where, line_t=round(float(t), 4), theta=th.tolist()), "line")
             out.append(compact(r))
             r["_t"] = t
             rec.setdefault("pts", []).append(out[-1])

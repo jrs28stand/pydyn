@@ -92,7 +92,13 @@ def _clean(o):
     return str(o)
 
 
+NO_WRITE = False
+
+
 def append(name, rec):
+    if NO_WRITE:
+        print("ANOMALY", json.dumps(rec, default=_clean)[:1500])
+        return
     with open(RES / name, "a") as f:
         f.write(json.dumps(rec, default=_clean, separators=(",", ":")) + "\n")
         f.flush()

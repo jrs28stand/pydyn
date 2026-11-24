@@ -21,6 +21,9 @@ def get_task(part):
     return part_cd.task_C if part == "C" else part_cd.task_D
 
 
+_LAST = [0.0]
+
+
 def run_part(part, budget, replay=None):
     st = load_state(part)
     task = get_task(part)
@@ -29,6 +32,7 @@ def run_part(part, budget, replay=None):
     rss0 = rss_mb()
     n = 0
     if replay is not None:
+        lib.NO_WRITE = True
         st = dict(next=replay, seconds=0.0, kinds={}, warnings={}, counts={}, medians={}, notes={})
         budget = 0
     while True:
@@ -51,6 +55,9 @@ def run_part(part, budget, replay=None):
         lib.VERIFY.clear()
         rec["sec"] = round(time.time() - t0, 2)
         rec["rss"] = round(rss_mb(), 1)
+        if _LAST[0] and rec["rss"] - _LAST[0] > 100:
+            anom("memory_jump", task=i, mb=rec["rss"] - _LAST[0], rss=rec["rss"], rep=f"soak/run.py {part} --replay {i}")
+        _LAST[0] = rec["rss"]
         if anom.new:
             rec["anom"] = anom.new
         if replay is not None:
