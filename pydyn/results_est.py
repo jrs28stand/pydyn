@@ -176,11 +176,14 @@ class EstimationMixin:
         self._estimation_order(st, "estimation")
         m = self.model
         mh_replic = int(np.max(np.atleast_1d(self.opt("mh_replic", 0) or 0)))
-        for key in ("load_mh_file", "mh_recover", "bayesian_irf", "moments_varendo", "forecast", "particle.status",
+        h_fc = int(self.opt("forecast", 0) or 0)
+        st_vars = self._estimation_var_list(st)
+        for key in ("load_mh_file", "mh_recover", "bayesian_irf", "moments_varendo", "particle.status",
                     "mode_check.status", "mh_posterior_mode_estimation"):
             if self.opt_flag(key):
                 raise R.ResultsError(f"estimation option {key} is not supported by pydyn.dynare()")
         self._refuse_unfaithful_smoother()
+        old_dr = self.oo_.get("dr")                  # what a preceding check / stoch_simul left
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -200,20 +203,26 @@ class EstimationMixin:
         self._set_prior(est)
         mc = None
         if mode is not None:
-            self._set_mode(est, mode, mode.x)
-        if mh_replic > 0:
-            if mode is None:
-                raise R.ResultsError("estimation with mh_replic>0 needs a mode (mode_compute or mode_file)")
+            self._set_mode(est, mode, mode.x, no_density=bool(mode_file))
+        # dynare_estimation_1.m returns right after the smoother when mode_compute=0 and there is no mode file: no MCMC
+        early = mode is None
+        if mh_replic > 0 and not early:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    mc = est.sample(mode=mode, rng="octave")
+                    mc = self._run_chains(est, mode)
                     theta = self._set_posterior(est, mc, mode)
             except (EstimationError, NotImplementedError, ValueError) as exc:
                 raise R.ResultsError(f"estimation: {exc}") from None
         cal = est.calibration(theta, correlation_me=True)
         m.params[:] = np.asarray(cal["params"], float)
         m.Sigma_e = np.asarray(cal["Sigma_e"], float)
+        if est._groups["cx"]:                          # set_all_parameters.m stores the estimated correlations
+            C = np.array(est._corr0, float)
+            o = len(est._groups["vx"]) + len(est._groups["vn"])
+            for i, (_, (k1, k2), _) in enumerate(est._groups["cx"]):
+                C[k1, k2] = C[k2, k1] = np.asarray(theta, float)[o + i]
+            m.Correlation_matrix = C
         Hc = cal.get("H")
         if Hc is not None and (est._groups["vn"] or est._groups["cn"]) and m.varobs:
             # the estimated measurement-error covariances become the model's (calibrated covariances are kept)
@@ -224,30 +233,312 @@ class EstimationMixin:
             if est._groups["vn"] or est._groups["cn"]:        # set_all_parameters stores M_.Correlation_matrix_ME then
                 self.set_M("Correlation_matrix_ME", R.mat(np.atleast_2d(np.asarray(cal["Correlation_matrix_ME"], float))))
         self._solve_dr_at_current()
-        self._steady_at_init(est)
+        self._steady_at_init(est, est.load_mode(mode_file)[0] if mode_file else None)
         if mc is not None:
             self._set_metropolis(est, mc)
-        bayes_smoother = mc is not None and (self.opt_flag("smoother") or self.opt_flag("filtered_vars")
-                                              or bool(self.opt("filter_step_ahead")) or bool(self.opt("forecast")))
-        if bayes_smoother:
-            for f in ("SmoothedVariables", "UpdatedVariables", "FilteredVariables", "SmoothedShocks",
-                      "SmoothedMeasurementErrors", "Smoother", "Constant", "forecast", "PointForecast", "MeanForecast"):
-                self._drop_oo(f)
-            self.refuse("oo_", ["SmoothedVariables", "UpdatedVariables", "FilteredVariables", "SmoothedShocks",
-                                "SmoothedMeasurementErrors", "Smoother", "Constant", "forecast", "PointForecast",
-                                "MeanForecast"],
-                        "the posterior distributions of smoothed objects and forecasts use random sub-draws from "
-                        "Octave's rand stream, which pydyn does not reproduce (pydyn.posterior_moments computes them "
-                        "with numpy's generator)")
+        posterior_stats = mc is not None and (self.opt_flag("smoother") or bool(self.opt("filter_step_ahead"))
+                                              or self.opt_flag("filtered_vars") or h_fc > 0)
+        bayes_smoother = mc is not None and self.opt_flag("smoother")
+        if posterior_stats:
+            self._posterior_statistics(est, mc, st_vars, h_fc)
+        if bayes_smoother or (early and not self.opt_flag("smoother")):
+            # no classical smoother (dynare_estimation_1.m): nothing recomputes oo_.dr, which keeps what the commands
+            # before estimation left, plus the state-space ordering of dynare_estimation_init
+            self._partial_dr(old_dr)
         else:                         # options_.frequentist_smoother is true by default: classical smoother at the estimates
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    res = smooth(m, estimation=est, theta=theta)
-            except (SmootherError, NotImplementedError) as exc:
-                raise R.ResultsError(f"estimation: smoother: {exc}") from None
-            self._store_smoother(res, bool(self.opt_flag("filtered_vars")) or bool(self.opt("filter_step_ahead")))
+            if not self.opt_flag("frequentist_smoother"):
+                if h_fc > 0 and mc is None:
+                    raise R.ResultsError("estimation: forecast without the classical smoother (frequentist_smoother=0)")
+            else:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        res = smooth(m, estimation=est, theta=theta)
+                except (SmootherError, NotImplementedError) as exc:
+                    raise R.ResultsError(f"estimation: smoother: {exc}") from None
+                self._store_smoother(res, bool(self.opt_flag("filtered_vars")) or bool(self.opt("filter_step_ahead")))
+                if h_fc > 0 and mc is None:
+                    self._forecast_at_mode(res, st_vars, h_fc)
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_estimation", np.bool_(True)))
+
+    # ------------------------------------------------------------------ forecasts after estimation
+    def _estimation_var_list(self, st):
+        """The variables after ``estimation`` (dynare_estimation.m: check_list_of_variables.m): repeated names are
+        dropped; without a list the endogenous variables chosen by consider_all_endogenous... or, for the outputs that
+        need one, all original endogenous variables (what Dynare takes with nointeractive, or when its prompt reads
+        nothing)."""
+        R = _R()
+        m = self.model
+        names = [str(x) for x in (st.get("symbol_list") or [])]
+        unknown = [v for v in names if v not in m.endo_names]
+        if unknown:
+            raise R.ResultsError("estimation: The following symbols are not endogenous variables: " + " ".join(unknown))
+        out = list(dict.fromkeys(names))
+        if out:
+            return out
+        orig = list(m.endo_names[:m.raw.get("orig_endo_nbr", m.n_endo)])
+        kind = self.opt("endo_vars_for_moment_computations_in_estimation", None)
+        if kind == "all_endogenous_variables":
+            return orig
+        if kind == "all_endogenous_and_auxiliary_variables":
+            return list(m.endo_names)
+        if kind == "only_observed_variables":
+            return list(m.varobs)
+        return orig
+
+    def _forecast_at_mode(self, res, var_list, horizon):
+        """oo_.forecast = forecasts.run(var_list_, M_, options_, oo_, 'smoother', dataset_info) after the classical smoother
+        at the mode (or at the estimates): the forecast from the end-of-sample smoothed state."""
+        from .forecast import forecast_at
+        R = _R()
+        cs = self.opt("forecasts.conf_sig", 0.9)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fc = forecast_at(self.model, smoothed=res, horizon=horizon, conf_sig=float(cs), var_list=list(var_list))
+        except (NotImplementedError, ValueError, KeyError) as exc:
+            raise R.ResultsError(f"estimation: forecast: {exc}") from None
+        self._store_forecast(fc)
+
+    def _store_forecast(self, fc):
+        R = _R()
+        out = R.rstruct("oo_.forecast")
+        for key in ("Mean", "HPDinf", "HPDsup", "HPDinf_ME", "HPDsup_ME", "Exogenous"):
+            d = getattr(fc, key)
+            if d:
+                s = R.rstruct(f"oo_.forecast.{key}")
+                for v, x in d.items():
+                    s[v] = R.col(x)
+                out[key] = s
+        self.set_oo("forecast", out)
+
+    def _run_chains(self, est, mode):
+        """The Metropolis chains with Dynare's random numbers (seeded from set_dynare_seed); afterwards the results'
+        shared random streams are those of the last chain, as in Dynare (posterior_sampler.m loads each chain's own
+        generator states into the global generators)."""
+        R = _R()
+        seed = float(self.seed)
+        if not (seed == np.floor(seed) and 0 <= seed < 2 ** 32 - 1):
+            raise R.ResultsError(f"estimation: the seed {seed} of the random generators is not an integer in [0, 2^32 - 1)")
+        from . import posterior as _post
+        kw = {}
+        kind = est.options.get("mcmc_jumping_covariance")
+        if isinstance(kind, str) and kind not in ("hessian", "prior_variance", "identity_matrix"):
+            # set_mcmc_jumping_covariance.m: the matrix of the user's file is a Hessian (Dynare inverts it)
+            kw["cov"] = _post.jumping_covariance(est, kind, as_dynare=True)
+        mc = est.sample(mode=mode, rng="octave", seed=int(seed), **kw)
+        fr = getattr(mc, "final_rng", None)
+        if fr is not None:
+            self.rng.u, self.rng.n = fr.u, fr.n
+            self.I.rng_unknown = None
+        return mc
+
+    def _dynare_subsample(self, mc, B, npar):
+        """get_posterior_subsample.m, draw for draw: per draw ``ceil(rand*mh_nblck)`` then ``ceil(rand*draws per chain)``
+        from the uniform stream, the sample ordered by (mh file, chain) with Dynare's file size
+        ``ceil(MaxNumberOfBytes/(npar+2)/8)``; when B equals the kept draws per chain prior_posterior_statistics
+        takes the first B pooled draws instead (GetAllPosteriorDraws)."""
+        nb, total = mc.draws.shape[0], mc.draws.shape[1]
+        drop = float(self.opt("mh_drop", 0.5))
+        first = int(np.floor(drop * total))                         # 0-based index of FirstDraw
+        per_chain = total - first
+        if B == per_chain:
+            pooled = mc.draws[:, first:, :].reshape(-1, mc.draws.shape[2])
+            return np.array(pooled[:B], float)
+        max_runs = int(np.ceil(float(self.opt("MaxNumberOfBytes", 1e8)) / (npar + 2) / 8))
+        u = self.rng.u.uniforms(2 * B)
+        chain = np.ceil(u[0::2] * nb).astype(int)                   # 1-based
+        draw = np.ceil(u[1::2] * per_chain).astype(int)
+        absolute = first + draw                                     # FirstDraw + DrawNumber - 1, 1-based
+        mhfile = -(-absolute // max_runs)
+        order = np.lexsort((np.arange(B), chain, mhfile))           # sortrows(SampleAddress, [3 2]) is stable
+        chain, absolute = chain[order], absolute[order]
+        return np.array(mc.draws[chain - 1, absolute - 1, :], float)
+
+    def _posterior_statistics(self, est, mc, var_list, horizon):
+        """prior_posterior_statistics('posterior', ...): the smoother (and the forecasts) at the sub-draws and the posterior
+        moments of the results (pm3.m): oo_.SmoothedVariables, UpdatedVariables, SmoothedShocks, SmoothedMeasurementErrors,
+        Constant, Smoother.{TrendCoeff, Init_State, Trend}, FilteredVariables and the k-step ahead ones, and
+        oo_.MeanForecast, PointForecast and PointForecastME, with Dynare's draws and shocks."""
+        from .forecast import posterior_forecast
+        from .smoother import smooth, SmootherError
+        R = _R()
+        nb, total = mc.draws.shape[0], mc.draws.shape[1]
+        drop = float(self.opt("mh_drop", 0.5))
+        per_chain = total - int(np.floor(drop * total))
+        sub = self.opt("sub_draws", None)
+        B = int(min(float(self.opt("posterior_max_subsample_draws", 1200)), np.ceil(per_chain * nb))) if sub is None else int(sub)
+        self.set_options("sub_draws", np.float64(B))                 # set_number_of_subdraws.m
+        if B == 0:
+            return
+        if B > per_chain * nb * nb:
+            raise R.ResultsError("estimation: I cannot compute the posterior statistics! (sub_draws is greater than "
+                                 "the number of available draws in the MCMC)")
+        for key in ("smoothed_state_uncertainty", "filter_covariance"):
+            if self.opt_flag(key):
+                raise R.ResultsError(f"estimation: the posterior distribution of the {key} is not implemented in "
+                                     "pydyn.dynare() (smoothed_state_uncertainty draws random numbers; the covariances "
+                                     "are not stored)")
+        if getattr(mc, "final_rng", None) is None:
+            raise R.ResultsError("estimation: the posterior statistics draw random numbers from the state the posterior "
+                                 "sampler leaves; pydyn reproduces it only for the Metropolis-Hastings-type samplers")
+        fsa = self.opt("filter_step_ahead", None)
+        fsa = [] if fsa is None else (fsa if isinstance(fsa, list) else [fsa])
+        fsa = [int(k) for k in fsa if k]
+        m = self.model
+        npar = mc.draws.shape[2]
+        params = self._dynare_subsample(mc, B, npar)
+        sm = R.rstruct("oo_.Smoother")
+        sm["loglinear"] = np.bool_(self.opt_flag("loglinear"))
+        self.set_oo("Smoother", sm)
+        mcs = float(self.opt("mh_conf_sig", 0.9))
+        smoothers = []
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                for b in range(B):
+                    smoothers.append(smooth(m, estimation=est, theta=params[b]))
+        except (SmootherError, NotImplementedError, ValueError) as exc:
+            raise R.ResultsError(f"estimation: posterior smoother: {exc}") from None
+        endo, exo, obs = list(m.endo_names), list(m.exo_names), list(m.varobs)
+        vl = list(var_list)
+        cols = [endo.index(v) for v in vl]
+        gend = smoothers[0].nobs
+
+        def stack(get, names):
+            return np.stack([np.column_stack([np.asarray(get(r)[v], float) for v in names]) for r in smoothers])
+
+        if self.opt_flag("smoother"):
+            sm_draws = stack(lambda r: r.SmoothedVariables, endo)
+            self._store_pm3("SmoothedVariables", sm_draws, vl, cols, mcs)
+            self._store_pm3("SmoothedShocks", stack(lambda r: r.SmoothedShocks, exo), exo, list(range(len(exo))), mcs)
+            sm = self.oo_["Smoother"]
+            tc = np.stack([np.asarray(r.TrendCoeffs, float) for r in smoothers])[:, None, :]       # (B, 1, n_endo)
+            self._store_pm3("TrendCoeff", tc, vl, cols, mcs, parent="Smoother")
+            # a0T + the steady state, and for the observed variables the trend of the first period and the prefilter
+            # correction (the classical Init_State has neither)
+            def init_state(r):
+                ys = np.log(r.SteadyState) if r.loglinear else np.asarray(r.SteadyState, float)
+                return [float(r.Init_State[v]) + (float(r.Trend[v][0]) + float(r.Constant[v][0]) - ys[i] if v in obs else 0.0)
+                        for i, v in enumerate(endo)]
+            init = np.stack([init_state(r) for r in smoothers])[:, None, :]
+            self._store_pm3("Init_State", init, vl, cols, mcs, parent="Smoother")
+            self._store_pm3("Constant", stack(lambda r: r.Constant, endo), vl, cols, mcs)
+            trend = np.stack([np.column_stack([np.asarray(r.Trend[v], float) if v in obs else np.full(gend, np.nan)
+                                               for v in endo]) for r in smoothers])    # NaN where the variable is not observed
+            self._store_pm3("Trend", trend, vl, cols, mcs, parent="Smoother")
+            self._store_pm3("UpdatedVariables", stack(lambda r: r.UpdatedVariables, endo), vl, cols, mcs)
+            if int(self._estimated_me_count(est)):
+                names = ["SE_EOBS_" + v for v in obs]
+                me = np.stack([np.column_stack([np.asarray(r.SmoothedMeasurementErrors[v], float) for v in obs])
+                               for r in smoothers])
+                self._store_pm3("SmoothedMeasurementErrors", me, names, list(range(len(obs))), mcs)
+        if self.opt_flag("filtered_vars") or fsa:
+            self._store_filtered(smoothers, vl, cols, fsa, mcs, gend)
+        if not horizon:
+            return
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                pf = posterior_forecast(est, params=params, rng=self.rng, horizon=horizon, var_list=list(var_list),
+                                        mh_conf_sig=mcs, smoothers=smoothers, keep_draws=True)
+        except (SmootherError, NotImplementedError, ValueError) as exc:
+            raise R.ResultsError(f"estimation: posterior forecasts: {exc}") from None
+        idx = {v: m._ie[v] for v in var_list}
+        self._store_pm3("MeanForecast", pf.mean_draws, vl, [idx[v] for v in vl], mcs)
+        self._store_pm3("PointForecast", pf.point_draws, vl, [idx[v] for v in vl], mcs)
+        H = self.M_.get("H")
+        me_declared = not (np.ndim(H) == 0 and float(H) == 0.0) if H is not None else False
+        sel = sorted(v for v in set(obs) & set(vl))
+        if me_declared and sel:
+            if pf.me_draws is None:
+                raise R.ResultsError("estimation: posterior forecasts with measurement errors that are all zero are "
+                                     "not supported")
+            self._store_pm3("PointForecastME", pf.me_draws, sel, [obs.index(v) for v in sel], mcs)
+
+    def _partial_dr(self, old_dr):
+        """oo_.dr when no smoother recomputes it: the dr before ``estimation`` (a Struct or []) with order_var and
+        inv_order_var (set_state_space) and restrict_var_list and restrict_columns (refused here)."""
+        R = _R()
+        cur = self.oo_.get("dr")
+        dr = R.rstruct("oo_.dr")
+        if isinstance(old_dr, Struct):
+            dr.update(old_dr)
+        for k in ("order_var", "inv_order_var"):
+            if isinstance(cur, Struct) and k in cur:
+                dr[k] = cur[k]
+        self.set_oo("dr", dr)
+        self.refuse("oo_.dr", ["restrict_var_list", "restrict_columns"], "state-space restriction of dr1.m")
+
+    def _estimated_me_count(self, est):
+        """estim_params_.nvn: the number of estimated standard deviations of measurement errors."""
+        return sum(1 for n in est.names if n.startswith("stderr ") and n[7:] not in self.model.exo_names)
+
+    def _store_filtered(self, smoothers, vl, cols, fsa, mcs, gend):
+        """pm3.m on the _filter_step_ahead files: oo_.FilteredVariables (the first entry of filter_step_ahead, entries 2 to
+        gend+1 of the stored array, as Dynare does), oo_.Filtered_Variables_<k>_step_ahead, and the Mean-based
+        oo_.FilteredVariablesKStepAhead (and ...Variances, which Dynare fills with the same means)."""
+        from . import posterior as _post
+        R = _R()
+        arr = np.stack([np.asarray(r.FilteredVariablesKStepAhead, float) for r in smoothers])   # (B, steps, n_endo, gend+max)
+        if arr.ndim != 4:
+            raise R.ResultsError("estimation: the smoother returned no k-step ahead filtered variables")
+        self._store_pm3("FilteredVariables", np.transpose(arr[:, 0, :, 1:1 + gend], (0, 2, 1)), vl, cols, mcs)
+        nvar = len(vl)
+        kmax = max(fsa)
+        means = np.zeros((len(fsa), nvar, gend + kmax))
+        for ii, k in enumerate(fsa):
+            d = np.transpose(arr[:, ii, :, k:gend + k], (0, 2, 1))                               # (B, gend, n_endo)
+            s = self._pm3_struct(f"Filtered_Variables_{k}_step_ahead", d, vl, cols, mcs)
+            self.set_oo(f"Filtered_Variables_{k}_step_ahead", s)
+            for i, v in enumerate(vl):
+                means[ii, i, k:gend + k] = np.asarray(s["Mean"][v], float).ravel()
+        self.set_oo("FilteredVariablesKStepAhead", R.mat(means))
+        self.set_oo("FilteredVariablesKStepAheadVariances", R.mat(means.copy()))
+
+    def _drop_posterior_objects(self):
+        for f in ("SmoothedVariables", "UpdatedVariables", "FilteredVariables", "SmoothedShocks",
+                  "SmoothedMeasurementErrors", "Smoother", "Constant", "FilteredVariablesKStepAhead"):
+            self._drop_oo(f)
+
+    def _pm3_struct(self, tag, draws, names, columns, mh_conf_sig):
+        """pm3.m's moments of ``draws`` (draws, periods, variables) as the struct oo_.<tag>: {Mean, Median, Var, deciles,
+        HPDinf, HPDsup, density}.<variable>."""
+        from . import posterior as _post
+        R = _R()
+        ko = {"gridpoints": int(self.opt("estimation.moments_posterior_density.gridpoints", 512)),
+              "bandwidth": self.opt("estimation.moments_posterior_density.bandwidth", 0),
+              "kernel_function": self.opt("estimation.moments_posterior_density.kernel_function", "gaussian")}
+        dens = self.opt_flag("estimation.moments_posterior_density.indicator")
+        T = draws.shape[1]
+        out = {k: R.rstruct(f"oo_.{tag}.{k}") for k in ("Mean", "Median", "Var", "deciles", "HPDinf", "HPDsup")}
+        if dens:
+            out["density"] = R.rstruct(f"oo_.{tag}.density")
+        for v, c in zip(names, columns):
+            mom = [_post.posterior_moments(draws[:, t, c], mh_conf_sig, density=dens, kernel_options=ko) for t in range(T)]
+            out["Mean"][v] = R.col([x["mean"] for x in mom])
+            out["Median"][v] = R.col([x["median"] for x in mom])
+            out["Var"][v] = R.col([x["variance"] for x in mom])
+            out["deciles"][v] = R.mat(np.column_stack([x["deciles"] for x in mom]))
+            out["HPDinf"][v] = R.col([x["hpd"][0] for x in mom])
+            out["HPDsup"][v] = R.col([x["hpd"][1] for x in mom])
+            if dens:
+                d = np.stack([x["density"] for x in mom], axis=2)
+                out["density"][v] = R.mat(d[:, :, 0] if T == 1 else d)
+        s = R.rstruct(f"oo_.{tag}")
+        for k, v in out.items():
+            s[k] = v
+        return s
+
+    def _store_pm3(self, name, draws, names, columns, mh_conf_sig, parent=None):
+        """pm3.m: oo_.<name> (or oo_.<parent>.<name>) from ``draws`` shaped (draws, periods, variables)."""
+        R = _R()
+        tag = name if parent is None else f"{parent}.{name}"
+        s = self._pm3_struct(tag, draws, names, columns, mh_conf_sig)
+        if parent is None:
+            self.set_oo(name, s)
+        else:
+            self.set_oo(parent, R.struct_set(self.oo_[parent], name, s))
 
     def _set_likelihood_at_initial_parameters(self, est, mode_file):
         """initial_estimation_checks.m: with options_.debug, oo_.likelihood_at_initial_parameters is the objective
@@ -264,15 +555,16 @@ class EstimationMixin:
             raise R.ResultsError(f"estimation: the likelihood at the initial parameters cannot be computed: {exc}") from None
         self.set_oo("likelihood_at_initial_parameters", _F(fval))
 
-    def _steady_at_init(self, est):
+    def _steady_at_init(self, est, theta0=None):
         """oo_.steady_state as dynare_estimation_init leaves it: the steady state at the initial values of the
-        estimated parameters (M_.params and oo_.dr are at the calibration, or the mode)."""
+        estimated parameters, or at the vector of the mode file (M_.params and oo_.dr are at the calibration, or the
+        mode)."""
         from .steady import steady_state
         R = _R()
         m = self.model
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            cal = est.calibration(est.x0, correlation_me=True)
+            cal = est.calibration(est.x0 if theta0 is None else theta0, correlation_me=True)
             xs = np.array([m._oo.get(v, 0.0) for v in m.exo_names], float)
             ys, _ = steady_state(m, params=np.asarray(cal["params"], float).copy(), exo=xs)
         self.set_oo("steady_state", R.col(ys))
@@ -342,14 +634,14 @@ class EstimationMixin:
         else:
             tree["parameters"][name] = value
 
-    def _set_mode(self, est, mode, theta):
+    def _set_mode(self, est, mode, theta, no_density=False):
         R = _R()
         ml = bool(np.all(np.asarray(est.prior.shape) == 0))
         post = R.rstruct("oo_.posterior")
         opt = R.rstruct("oo_.posterior.optimization")
         opt["mode"] = R.col(theta)
         opt["Variance"] = R.mat(mode.inv_hessian) if mode.inv_hessian is not None else np.zeros((0, 0))
-        opt["log_density"] = _F(float(mode.log_posterior))
+        opt["log_density"] = np.zeros((0, 0)) if no_density else _F(float(mode.log_posterior))   # no fval from a mode file
         post["optimization"] = opt
         self.set_oo("posterior", post)
         self.refuse("oo_.posterior.optimization", ["optimization_info"], "optimizer run time and counters")
@@ -688,12 +980,37 @@ class EstimationMixin:
         return np.asarray(stats.mean, float)
 
     def _set_metropolis(self, est, mc):
+        """oo_.posterior.metropolis.{mean, Variance} as GetPosteriorMeanVariance.m computes them: chain after chain and
+        file after file (``ceil(MaxNumberOfBytes/(npar+2)/8)`` draws per file), recursively, the demeaned products
+        divided by the number of kept draws (not N - 1) and the mean of the first file's kept draws fixed by
+        ``ceil(mh_drop*draws - draws already seen + 1)``."""
         R = _R()
-        kept = mc.kept(est.options.get("mh_drop"))
+        d = np.asarray(mc.draws, float)
+        nb, T, npar = d.shape
+        drop = float(self.opt("mh_drop", 0.5))
+        max_runs = int(np.ceil(float(self.opt("MaxNumberOfBytes", 1e8)) / (npar + 2) / 8))
+        mean, var, kept_n = np.zeros(npar), np.zeros((npar, npar)), 0
+        thr = drop * T
+        for i in range(nb):
+            seen = 0
+            for j in range(int(np.ceil(T / max_runs))):
+                x2 = d[i, j * max_runs:min((j + 1) * max_runs, T)]
+                nf = x2.shape[0]
+                if seen + nf <= thr:
+                    seen += nf
+                    continue
+                if seen < thr:
+                    x2 = x2[int(np.ceil(thr - seen + 1)) - 1:]
+                k = x2.shape[0]
+                mean = (kept_n * mean + x2.sum(axis=0)) / (kept_n + k)
+                dm = x2 - mean
+                var = (kept_n * var + dm.T @ dm) / (kept_n + k)
+                seen += nf
+                kept_n += k
         post = self.oo_.get("posterior")
         met = R.rstruct("oo_.posterior.metropolis")
-        met["mean"] = R.col(kept.mean(axis=0))
-        met["Variance"] = R.mat(np.cov(kept.T, bias=False))
+        met["mean"] = R.col(mean)
+        met["Variance"] = R.mat(var)
         new = R.rstruct("oo_.posterior")
         if isinstance(post, Struct):
             new.update(post)

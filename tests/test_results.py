@@ -20,14 +20,16 @@ from pydyn.matlab import Cell, Struct, Tainted, Unsupported
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
          "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
-         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst"]
+         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst",
+         "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
+         "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
 #: flat in some directions (the log density agrees to 6e-5, the parameters to 1e-2, i.e. 0.4 standard errors).
 #: osr1: the loss is flat near its minimum (6e-7 apart in value), so csminwel's stopping point differs in the
 #: rule coefficients by 1e-3 (numerical vs analytic derivatives in Dynare's osr).
-TOL = {"est_mode4": 1e-3, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3}
+TOL = {"est_mode4": 1e-3, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3, "est_fc_mode": 1e-3, "est_fc_mh": 2e-3, "est_fc_mh2": 2e-3}
 
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
 SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
@@ -100,6 +102,10 @@ def runs(tmp_path_factory):
     for c in CASES:
         shutil.copy(REF / f"{c}.mod", d / f"{c}.mod")
         shutil.copy(REF / "fsdat_simul.m", d / "fsdat_simul.m")
+        if "est_nk_data" in (REF / f"{c}.mod").read_text():       # the data of the est_nk cases lives one level up
+            shutil.copy(REF.parent / "est_nk_data.m", d / "est_nk_data.m")
+        for aux in REF.glob(f"{c}_*.mat"):                          # a mode file, a jumping covariance
+            shutil.copy(aux, d / aux.name)
         out[c] = pydyn.dynare(d / f"{c}.mod")
     return out
 

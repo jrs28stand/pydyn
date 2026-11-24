@@ -72,7 +72,7 @@ once in an ``UnsupportedOptionWarning`` (display-only options excepted).
 
 Not implemented: orders above one, ``lik_init`` 4 and 5, the univariate filters with correlated
 measurement errors, calibrated measurement-error covariances, ``estimated_params_bounds``,
-``estimated_params_init(use_calibration)``, endogenous priors, prior restrictions,
+endogenous priors, prior restrictions,
 ``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers
 (DIME, online), ``mode_compute`` 2, 6, 10 and above, ``mh_recover``,
 ``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior distributions of
@@ -1263,12 +1263,14 @@ class Estimation:
         self._H_check = np.flatnonzero(nz)
 
     def _apply_init_blocks(self, init):
-        """``estimated_params_init`` blocks: explicit initial values (``use_calibration`` is not supported)."""
+        """``estimated_params_init`` blocks: explicit initial values; with ``use_calibration`` the estimated parameters
+        that have none start at their calibrated values (``do_parameter_initialization.m``: the calibrated standard
+        deviation of a shock or measurement error that is 0 with an inverse gamma prior (IG1) is not used)."""
+        use_cal = False
         for st in self.model.statements:
             if st.get("statementName") != "estimated_params_init":
                 continue
-            if st.get("use_calibration_initialization") or st.get("use_calibration"):
-                raise NotImplementedError("estimated_params_init(use_calibration) is not supported")
+            use_cal = use_cal or bool(st.get("use_calibration_initialization") or st.get("use_calibration"))
             for e in st.get("params", []):
                 if "param" in e:
                     name = e["param"]
@@ -1279,6 +1281,31 @@ class Estimation:
                 if name not in self.names:
                     raise EstimationError(f"estimated_params_init: {name} is not estimated")
                 init[self.names.index(name)] = self._num(e["init_val"])
+        if use_cal:
+            m, g = self.model, self._groups
+            Q, H = np.array(m.Sigma_e, float), np.array(m.me_H(self.varobs), float)
+            C = getattr(m, "Correlation_matrix", None)
+            CH = np.array(m.me_corr_matrix(self.varobs), float)
+            calib = []
+            for _, k, _ in g["vx"]:
+                calib.append(np.sqrt(Q[k, k]))
+            for _, k, _ in g["vn"]:
+                calib.append(np.sqrt(H[k, k]))
+            for _, (k1, k2), _ in g["cx"]:
+                calib.append(C[k1, k2] if C is not None and np.shape(C) == Q.shape else np.nan)
+            for _, (k1, k2), _ in g["cn"]:
+                calib.append(CH[k1, k2])
+            for _, k, _ in g["p"]:
+                calib.append(m.params[k])
+            calib = np.array(calib, float)
+            shape = np.asarray(self.prior.shape)
+            nstd = len(g["vx"]) + len(g["vn"])
+            calib[:nstd][(calib[:nstd] == 0) & (shape[:nstd] == 4)] = np.nan   # violates the inverse gamma prior
+            if not self.prior.is_bayesian and np.any(np.isnan(init) & np.isnan(calib)):
+                raise EstimationError("When using the use_calibration option with ML, the parameters must be properly "
+                                      "initialized.")
+            fill = np.isnan(init) & ~np.isnan(calib)
+            init[fill] = calib[fill]
 
     def covariances(self, theta):
         """Structural-shock covariance matrix and measurement-error covariance matrix implied by
