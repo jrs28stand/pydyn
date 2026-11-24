@@ -136,3 +136,38 @@ def test_precomputed_gap_equals_expected_path(nkm):
             u = 0.01 * rg.normal(size=m.n_exo)
             q0 = h.gap_path(h.expected_path(y1, y2, o), prev, u)
             np.testing.assert_allclose(h.gap_from_state(y1, y2, o, prev, u), q0, rtol=0, atol=1e-13)
+
+
+def test_regions_match_stored_baseline():
+    """regions='all' and regions=k (levels 9; both models) against paths of the code before the batch solver
+    (tests/data/obc_ho_regions_baseline.npz, ``bench/obc_ho_bench.py baseline --regions``)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))
+    import obc_ho_bench as b
+    base = np.load(Path(__file__).resolve().parent / "data" / "obc_ho_regions_baseline.npz")
+    new = b.rpaths("after", prefix="L9")
+    assert new and all(k in base.files for k in new)
+    for k in new:
+        np.testing.assert_allclose(new[k], base[k], rtol=0, atol=1e-12, err_msg=k)
+    assert any("rall" in k for k in new)
+
+
+def test_batch_active_set_equals_scalar():
+    """solve_active_set_batch returns, column by column, what solve_active_set returns (and fails where it fails)."""
+    from pydyn.obc import solve_active_set, solve_active_set_batch
+    rg = np.random.default_rng(3)
+    n = 12
+    for trial in range(30):
+        A = rg.normal(size=(n, n)) * 0.3
+        M = np.vstack([np.eye(n) + np.tril(A), rg.normal(size=(6, n)) * 0.2])        # n_s = n complementarity rows + 6 extra
+        Q = rg.normal(size=(n + 6, 40)) + 0.6
+        cache = {}
+        Y, ok = solve_active_set_batch(M, Q, n, cache=cache)
+        Y2, ok2 = solve_active_set_batch(M, Q, n, cache=cache)                         # warm cache gives the same
+        np.testing.assert_array_equal(ok, ok2)
+        for j in range(Q.shape[1]):
+            y = solve_active_set(M, Q[:, j], n)
+            assert (y is not None) == bool(ok[j])
+            if y is not None:
+                np.testing.assert_allclose(Y[:, j], y, rtol=0, atol=1e-11)
+                np.testing.assert_allclose(Y2[:, j], y, rtol=0, atol=1e-11)

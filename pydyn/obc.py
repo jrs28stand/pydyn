@@ -279,7 +279,41 @@ def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None, scale=None):
     return None
 
 
-def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None):
+def _batch_factor(Ms, idx, scale, cache, n_s, cond_max=1e4):
+    """Cache entry for the guessed set ``idx``: (0,) failed block (singular or pivot <= PIVOT_RTOL * scale, as
+    ``_solve_checked``); (1, id) the solution operator -M_AA^{-1} embedded in an n_s x n_s matrix stored in
+    ``cache[('_ops', |A|)][id]`` (compact, |A| x |A|; used only when cond_1(M_AA) <= cond_max, so applying it differs from the LU solve of the scalar
+    code by at most ~cond_max * 1e-16 relative); (2, idx, lu, piv) otherwise."""
+    if idx.size:
+        A = Ms[idx[:, None], idx]
+        lu, piv, info = _dgetrf(A)
+        bad = info != 0
+        if not bad:
+            d = lu.diagonal()
+            bad = bool(abs(d[0]) <= PIVOT_RTOL * scale if d.size == 1 else abs(d).min() <= PIVOT_RTOL * scale)
+        if bad:
+            return (0,)
+        X, _ = _dgetrs(lu, piv, -np.eye(idx.size))
+        if np.abs(A).sum(axis=0).max() * np.abs(X).sum(axis=0).max() > cond_max:
+            return (2, idx, lu, piv)
+    sz = idx.size
+    if sz == 0:
+        return (1, 0, 0)
+    sz_pad = 1 << (sz - 1).bit_length()                          # operators are stored padded to a power of two
+    ck, cn = ("_ops", sz_pad), ("_n", sz_pad)
+    n = cache.get(cn, 0)
+    ops = cache.get(ck)
+    if ops is None or n >= ops.shape[0]:
+        new = np.zeros((max(16, 2 * n), sz_pad, sz_pad))
+        if ops is not None:
+            new[:n] = ops[:n]
+        cache[ck] = ops = new
+    ops[n][:sz, :sz] = X
+    cache[cn] = n + 1
+    return (1, sz_pad, n)
+
+
+def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None, tail=8):
     """``solve_active_set`` on every column of ``Q`` (N x k) at once: the same guess-and-verify iteration run in lockstep.
 
     Equivalence with the scalar routine holds by construction: per column the sequence of binding-set guesses
@@ -299,19 +333,38 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
         cache = {}
     qscale = np.maximum(1.0, np.abs(Q).max(axis=0)) if Q.size else np.ones(k)
     S = Q[:n_s] < -tol
+    Qext = np.zeros((n_s + 1, k))                                 # extra zero row absorbs the padding of batched solves
+    Qext[:n_s] = Q[:n_s]
+    Yext = np.zeros((n_s + 1, k))
     act = np.arange(k)
-    seen = [None] * k
+    seen = {}
     nb = (n_s + 7) // 8
     for it in range(maxit):
         if act.size == 0:
             break
+        if it > 0 and act.size <= tail:
+            # few columns left: the scalar routine from their current guess (same iteration; only the cycle memory restarts,
+            # and a cycle is a failure either way)
+            for c in act:
+                y = solve_active_set(M, Q[:, c], n_s, tol, maxit - it, start=S[:, c], scale=scale)
+                if y is not None:
+                    Y[:, c], ok[c] = y, True
+            break
         Sa = S[:, act]
-        keys = np.ascontiguousarray(np.packbits(Sa, axis=0).T).view(f"V{nb}").ravel()
+        pk = np.packbits(Sa, axis=0).T
+        if nb <= 8:                                               # the guessed set as one uint64 (sorts fast, hashes fast)
+            keys = np.zeros((act.size, 8), np.uint8)
+            keys[:, :nb] = pk
+            keys = keys.view(np.uint64).ravel()
+        else:
+            keys = np.ascontiguousarray(pk).view(f"V{nb}").ravel()
         if it > 0:                                                # cycle check, as the scalar ``seen`` set
             kb = keys.tolist()
             keep = np.ones(act.size, bool)
             for i, c in enumerate(act):
-                sc = seen[c]
+                sc = seen.get(c)
+                if sc is None:
+                    sc = seen[c] = {first_keys[c]}
                 if kb[i] in sc:
                     keep[i] = False
                 else:
@@ -321,36 +374,52 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
                 if act.size == 0:
                     break
         else:
-            kb = keys.tolist()
-            for i, c in enumerate(act):
-                seen[c] = {kb[i]}
+            first_keys = keys.tolist()                            # column j (act = arange(k) here) -> its first guess
+        if len(cache) > 20000:
+            cache.clear()
         uk, first, inv = np.unique(keys, return_index=True, return_inverse=True)
-        order = np.argsort(inv, kind="stable")
-        bounds = np.searchsorted(inv[order], np.arange(uk.size + 1))
         Ya = np.zeros((n_s, act.size))
         good = np.ones(act.size, bool)
+        ukl = uk.tolist()                                         # python ints (or bytes): the cache keys
+        facs = [cache.get(key) for key in ukl]
         for g in range(uk.size):
-            cols = order[bounds[g]:bounds[g + 1]]
-            idx = np.flatnonzero(Sa[:, first[g]])
-            if idx.size == 0:
-                continue
-            key = uk[g].tobytes()
-            fac = cache.get(key)
-            if fac is None:
-                lu, piv, info = _dgetrf(Ms[idx[:, None], idx])
-                bad = info != 0
-                if not bad:
-                    d = lu.diagonal()
-                    bad = bool(abs(d[0]) <= PIVOT_RTOL * scale if d.size == 1 else abs(d).min() <= PIVOT_RTOL * scale)
-                fac = (None, None) if bad else (lu, piv)
-                if len(cache) > 20000:
-                    cache.clear()
-                cache[key] = fac
-            if fac[0] is None:
-                good[cols] = False
-                continue
-            x, _info = _dgetrs(fac[0], fac[1], -Q[idx[:, None], act[cols]])
-            Ya[idx[:, None], cols] = x
+            if facs[g] is None:
+                facs[g] = cache[ukl[g]] = _batch_factor(Ms, np.flatnonzero(Sa[:, first[g]]), scale, cache, n_s)
+        kind = np.fromiter((f[0] for f in facs), np.int8, uk.size)        # 0 failed block, 1 solution operator, 2 LU solve
+        opid = np.fromiter((f[2] if f[0] == 1 else 0 for f in facs), np.intp, uk.size)
+        slow = [g for g in range(uk.size) if kind[g] == 2] if (kind == 2).any() else []
+        kc = kind[inv]
+        good &= kc != 0
+        sel = np.flatnonzero(kc == 1)
+        if sel.size:                                              # y_A = Phi_A q_A, batched by |A| rounded up to 2^j
+            Ss = Sa[:, sel]
+            sizes = Ss.sum(axis=0)
+            cl = np.zeros(sel.size, np.intp)
+            nz = sizes > 0
+            cl[nz] = 1 << np.ceil(np.log2(sizes[nz])).astype(np.intp)
+            cc, rr = np.nonzero(Ss.T)                             # columns increasing, rows increasing within a column
+            rank = np.arange(cc.size) - (np.cumsum(sizes) - sizes)[cc]
+            loc = np.zeros(sel.size, np.intp)
+            for c in np.unique(cl[nz]):
+                colsel = np.flatnonzero(cl == c)
+                loc[colsel] = np.arange(colsel.size)
+                em = cl[cc] == c
+                pos = np.full((colsel.size, c), n_s, np.intp)     # padding points at the extra zero row n_s
+                pos[loc[cc[em]], rank[em]] = rr[em]
+                ac = act[sel[colsel]]
+                rhs = Qext[pos, ac[:, None]]
+                ops = cache[("_ops", int(c))][opid[inv[sel[colsel]]]]
+                Yext[pos, sel[colsel][:, None]] = np.matmul(ops, rhs[:, :, None])[:, :, 0]
+            Ya[:] = Yext[:n_s, :act.size]
+            Yext[:] = 0.0
+        if slow:                                                  # ill-conditioned blocks: LU solve as in the scalar code
+            order = np.argsort(inv, kind="stable")
+            bounds = np.searchsorted(inv[order], np.arange(uk.size + 1))
+            for g in slow:
+                cols = order[bounds[g]:bounds[g + 1]]
+                _k, idx, lu, piv = facs[g]
+                x, _info = _dgetrs(lu, piv, -Q[idx[:, None], act[cols]])
+                Ya[idx[:, None], cols] = x
         gs = Q[:n_s][:, act] + Ms @ Ya
         drop = Sa & (Ya < -tol)
         add = (~Sa) & (gs < -tol)
@@ -359,7 +428,9 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
         if fin.any():
             cf = act[fin]
             Yf = Ya[:, fin]
-            G = Q[:, cf] + M @ Yf
+            G = np.empty((M.shape[0], cf.size))
+            G[:n_s] = gs[:, fin]                                  # rows n_s.. : the check-ahead rows, once
+            G[n_s:] = Q[n_s:, cf] + M[n_s:] @ Yf
             sc = qscale[cf] * tol
             v = ((Yf >= -sc).all(axis=0) & (G >= -sc).all(axis=0)
                  & (np.minimum(np.abs(Yf), np.abs(G[:n_s])) <= sc).all(axis=0))

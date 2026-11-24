@@ -161,12 +161,14 @@ def paths(impl="after"):
     return out
 
 
-def rpaths(impl="after"):
+def rpaths(impl="after", prefix=""):
     out = {}
     cls = impl_class(impl)
     for name in MODELS:
         m, S, h = load(name)
         for case, (kw, nper) in RCASES.items():
+            if not case.startswith(prefix):
+                continue
             r = build(cls, m, h, case).simulate(S[:nper])
             for k in ("with_bound", "wedges"):
                 out[f"{name}_{case}_{k}"] = r[k]
