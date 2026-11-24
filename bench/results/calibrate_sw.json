@@ -1,0 +1,170 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "sw": 1.0
+  },
+  "impls": [
+   "before",
+   "after"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 08:38",
+  "load_avg": [
+   1.4775390625,
+   0.78173828125,
+   0.33349609375
+  ]
+ },
+ "data": {
+  "sw": [
+   {
+    "s": 0.5,
+    "occbin": {
+     "error": "OccbinLoopError: period 16: regime guesses cycle without converging (error 313)",
+     "period": 16,
+     "sec": 0.01422480399997994
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 16,
+     "sec": 30.014232280999977
+    }
+   },
+   {
+    "s": 1,
+    "occbin": {
+     "error": "OccbinLoopError: period 8: regime guesses cycle without converging (error 313)",
+     "period": 8,
+     "sec": 0.01091130599996859
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 8,
+     "sec": 30.012018618000013
+    }
+   },
+   {
+    "s": 1.5,
+    "occbin": {
+     "error": "OccbinLoopError: period 1: regime guesses cycle without converging (error 313)",
+     "period": 1,
+     "sec": 0.004314739999983885
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.011158039999998
+    }
+   },
+   {
+    "s": 2,
+    "occbin": {
+     "error": "OccbinLoopError: period 1: regime guesses cycle without converging (error 313)",
+     "period": 1,
+     "sec": 0.004026921999980004
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.009581384000057
+    }
+   },
+   {
+    "s": 3,
+    "occbin": {
+     "error": "OccbinMaxitError: period 1: no convergence in 30 iterations (error 311)",
+     "period": 1,
+     "sec": 0.04999106100001427
+    },
+    "regime": {
+     "error": "OBCError: a constraint still binds after the news horizon: increase obc_horizon",
+     "period": 1,
+     "sec": 0.0007711960000733598
+    }
+   },
+   {
+    "s": 4,
+    "occbin": {
+     "error": "OccbinLoopError: period 1: regime guesses cycle without converging (error 313)",
+     "period": 1,
+     "sec": 0.0013402689999111317
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.009084092999956
+    }
+   },
+   {
+    "s": 5,
+    "occbin": {
+     "error": "OccbinPeriodicError: period 1: regime guesses alternate between two regimes (error 310); use periodic",
+     "period": 1,
+     "sec": 0.002265825999984372
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.00891332699996
+    }
+   },
+   {
+    "s": 6,
+    "occbin": {
+     "error": "OccbinPeriodicError: period 1: regime guesses alternate between two regimes (error 310); use periodic",
+     "period": 1,
+     "sec": 0.0020054039999877205
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.009298560000047
+    }
+   },
+   {
+    "s": 8,
+    "occbin": {
+     "error": "OccbinPeriodicError: period 1: regime guesses alternate between two regimes (error 310); use periodic",
+     "period": 1,
+     "sec": 0.004398545000071863
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.00990943299996
+    }
+   },
+   {
+    "s": 10,
+    "occbin": {
+     "error": "OccbinPeriodicError: period 1: regime guesses alternate between two regimes (error 310); use periodic",
+     "period": 1,
+     "sec": 0.008371553999950265
+    },
+    "regime": {
+     "error": "OBCError: the integer programme over regime sequences did not finish in 30 s (this big-M f",
+     "period": 1,
+     "sec": 30.01354182400007
+    }
+   },
+   {
+    "s": 12,
+    "occbin": {
+     "error": "OccbinLoopError: period 1: regime guesses cycle without converging (error 313)",
+     "period": 1,
+     "sec": 0.0459780779999619
+    },
+    "regime": {
+     "error": "OBCError: a constraint still binds after the news horizon: increase obc_horizon",
+     "period": 1,
+     "sec": 0.002967253999941022
+    }
+   }
+  ]
+ }
+}
