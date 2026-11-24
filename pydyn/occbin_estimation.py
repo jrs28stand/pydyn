@@ -66,6 +66,9 @@ class OccbinEstimation(Estimation):
     def obc_selection(self, value):
         self._obc_selection = _check_obc_selection(value)
 
+    #: seconds the news solver's integer programme may use at one trial point of the inversion filter (None: its default)
+    obc_milp_time_limit = None
+
     def __init__(self, model, data=None, occbin=None, obc_method=None, obc_horizon=None, obc_selection=None, **options):
         if not getattr(model, "occbin_constraints", None):
             raise ValueError("the model has no occbin_constraints block: use pydyn.Estimation")
@@ -209,7 +212,8 @@ class OccbinEstimation(Estimation):
                 raise EstimationError("obc_selection other than 'occbin' needs obc_method='news'")
             return None
         from .obc_filter import NewsFilterSolver
-        self.last_news_solver = NewsFilterSolver(ob, horizon=self._obc_horizon, selection=self._obc_selection)
+        self.last_news_solver = NewsFilterSolver(ob, horizon=self._obc_horizon, selection=self._obc_selection,
+                                                 milp_time_limit=self.obc_milp_time_limit)
         return self.last_news_solver
 
     def _minus_loglik(self, theta, return_lik=False):

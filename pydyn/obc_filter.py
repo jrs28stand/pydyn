@@ -33,7 +33,11 @@ class NewsFilterSolver(_Solver):
     selection='occbin')`` returns a :class:`LCPFilterSolver` when every constraint is one complementary pair and a
     :class:`RegimeFilterSolver` otherwise (the choice of ``Occbin.simulate``)."""
 
-    milp_time_limit = 1.0        # seconds per fallback solve; a time-out counts as a failed trial point
+    # Seconds the integer programme may take at a trial point where the cheap checks (active-set iteration, proof of
+    # non-existence by a linear programme) did not decide.  0 (default): none, the trial point has failed (error 313,
+    # as OccBin's own failures: at every such point seen OccBin failed too, see docs/OBC_ESTIMATION.md).  A positive
+    # value runs the integer programme with that limit; a time-out is a failure as well.
+    milp_time_limit = 0.0
 
     def __new__(cls, ob: Occbin, *args, **kw):
         if cls is NewsFilterSolver:
@@ -41,12 +45,14 @@ class NewsFilterSolver(_Solver):
             cls = LCPFilterSolver if lcp else RegimeFilterSolver
         return object.__new__(cls)
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin"):
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None):
         super().__init__(ob)
         self.selection = selection
+        if milp_time_limit is not None:
+            self.milp_time_limit = float(milp_time_limit)
         self._maps = {}
         self._tol = 1e-8
-        self.calls = self.fallbacks = self.proved_infeasible = 0
+        self.calls = self.fallbacks = self.proved_infeasible = self.timeouts = self.skipped = self.rescued = 0
         self.errors = {}                     # error code -> number of failed calls
 
     def _fail(self, code):
@@ -77,8 +83,8 @@ class NewsFilterSolver(_Solver):
 class LCPFilterSolver(NewsFilterSolver):
     """One complementary pair per constraint (``NewsOBC``)."""
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin"):
-        super().__init__(ob, horizon, check_ahead, selection)
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None):
+        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit)
         self.news = NewsOBC(ob, horizon=horizon, check_ahead=check_ahead)
         nb = self.news
         self._S0 = np.hstack([ob.P, ob.Q])
@@ -103,6 +109,7 @@ class LCPFilterSolver(NewsFilterSolver):
         ob, nb, n = self.ob, self.news, self.ob.n
         self.calls += 1
         u, x = self._x(shocks, init, exo_pos)
+        f0 = self.fallbacks
         q = nb.q0 + nb.Qm @ x
         n_s = nb.n_c * nb.T
         scale = max(1.0, float(np.abs(q).max()))
@@ -120,9 +127,17 @@ class LCPFilterSolver(NewsFilterSolver):
                     self.proved_infeasible += 1
                     return self._fail(313)
                 T = nb.T
-                y, _st = solve_news(nb.Mo, q, n_s, tol=self._tol, n_c=nb.n_c, horizons=[T], time_limit=self.milp_time_limit)
+                if self.milp_time_limit > 0:
+                    y, st = solve_news(nb.Mo, q, n_s, tol=self._tol, n_c=nb.n_c, horizons=[T],
+                                       time_limit=self.milp_time_limit)
+                    if y is None and st == "time_limit":
+                        self.timeouts += 1
+                else:
+                    self.skipped += 1
             if y is None:
                 return self._fail(313)
+            if self.fallbacks > f0:
+                self.rescued += 1                        # the integer programme found what the cheap checks did not
             on = y > 1e-9 * max(1.0, float(np.abs(y).max()))
             S, s0, regime = self._map(on)
         return self._finish(S, s0, regime, x)
@@ -133,8 +148,8 @@ class RegimeFilterSolver(NewsFilterSolver):
     binding periods are ``w = -R[S,S]^-1 (a0 + Am [state; shock])[S]`` (S: binding positions), so the next state is
     ``[P Q] x + V0[:, S] w``: affine in x, and the first period's rule (T, R, C) is read off and cached per S."""
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin"):
-        super().__init__(ob, horizon, check_ahead, selection)
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None):
+        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit)
         self.rb = rb = RegimeOBC(ob, horizon=horizon, check_ahead=check_ahead)
         rb.milp_time_limit = self.milp_time_limit        # fail fast: the filter's root finder tries implausible shocks
         self._S0 = np.hstack([ob.P, ob.Q])
@@ -161,12 +176,18 @@ class RegimeFilterSolver(NewsFilterSolver):
         u, x = self._x(shocks, init, exo_pos)
         try:
             z, w, _nxt, info = rb._step(x[:self.ob.n], u)
-        except OBCError:
+        except OBCError as err:
             self.fallbacks += 1
+            if err.status == "not_converged":          # the integer programme hit its time limit
+                self.timeouts += 1
+            elif err.status == "no_solution":
+                self.proved_infeasible += "linear programme infeasible" in str(err)
+                self.skipped += "not attempted" in str(err)
             return self._fail(313)
         except (np.linalg.LinAlgError, FloatingPointError, ValueError):
             return self._fail(311)
         if info["used"] not in ("none", "guess_verify"):
             self.fallbacks += 1
+            self.rescued += 1
         S, s0, regime = self._map(rb._index(z), z)
         return self._finish(S, s0, regime, x)

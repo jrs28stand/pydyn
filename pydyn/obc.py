@@ -260,7 +260,8 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_lim
     ``alpha q_s + M_s yn <= omega (1 - z)`` with z binary; then ``y = yn / alpha``.  alpha > 0 at the optimum if
     and only if a solution exists with wedges confined to the horizon.  ``horizons`` lists the numbers of leading
     periods (per constraint) in which wedges are allowed, tried in order; the first that works is returned, so
-    shorter binding spells are preferred.  Returns (y, status)."""
+    shorter binding spells are preferred.  Returns (y, status); status is 'ok', 'no_solution' or, when the
+    ``time_limit`` stopped a solve before it found anything, 'time_limit' (then no solution is proved)."""
     q = np.asarray(q, float)
     if np.all(q >= -tol * max(1.0, np.abs(q).max(initial=0.0))):
         return np.zeros(n_s), "ok"
@@ -280,6 +281,7 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_lim
     cons = [LinearConstraint(A1, -np.inf, 0.0), LinearConstraint(A2, 0.0, np.inf),
             LinearConstraint(A3, -np.inf, omega)]
     integrality = np.r_[np.zeros(n_s + 1), np.ones(n_s)]
+    limit_hit = False
     for Tss in horizons:
         ub_y = np.zeros(n_s)
         for c in range(n_c):
@@ -290,9 +292,11 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_lim
             opts["time_limit"] = float(time_limit)
         res = milp(cobj, constraints=cons, integrality=integrality, bounds=bounds, options=opts)
         if res.x is None or not res.success:
+            limit_hit = limit_hit or res.status == 1
             continue
         alpha = res.x[n_s]
         if alpha <= 1e-9:
+            limit_hit = limit_hit or res.status == 1      # the incumbent is the trivial point alpha = 0
             continue
         y = np.maximum(res.x[:n_s] / alpha, 0.0) * qn / msc
         z = res.x[n_s + 1:] > 0.5
@@ -307,7 +311,7 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_lim
                 pass
         if verify_lcp(M, q, y, n_s, max(tol, 1e-7)):
             return y, "ok"
-    return None, "no_solution"
+    return None, "time_limit" if limit_hit else "no_solution"
 
 
 def _is_p_exact(A):
@@ -761,7 +765,7 @@ class RegimeOBC:
     be preferred there because the theory on M (existence, uniqueness) applies to it.
     """
 
-    milp_time_limit = 30.0
+    milp_time_limit = 30.0       # seconds for each integer programme; 0 switches the integer-programme fallbacks off
 
     def __init__(self, model_or_occbin, params=None, horizon=40, check_ahead=40):
         self.ob = ob = model_or_occbin if isinstance(model_or_occbin, Occbin) else Occbin(model_or_occbin, params)
@@ -1045,13 +1049,15 @@ class RegimeOBC:
         proof = ("no solution exists that returns to the reference regime within the news horizon: the constraint "
                  "cannot be kept satisfied in every period by any non-negative wedges (linear programme infeasible)")
         zsol = None
+        no_milp = "integer programme not attempted (milp_time_limit = 0)"
         if G is None:
             y = solve_active_set(M, q, T)
-            if y is None:
+            if y is None and self.milp_time_limit > 0:
                 y, _status = solve_news(M, q, T, horizons=sorted({max(1, T // 4), max(1, T // 2), T}))
             if y is None:
                 feas = linprog(np.zeros(T), A_ub=-M, b_ub=q, bounds=[(0, None)] * T)
                 raise OBCError(proof if feas.status == 2 else
+                               no_milp if self.milp_time_limit <= 0 else
                                "no solution within the news horizon (the linear complementarity problem has none)",
                                "no_solution")
             zsol = y > 1e-9 * max(1.0, float(np.abs(y).max()))
@@ -1061,6 +1067,8 @@ class RegimeOBC:
                            bounds=[(0, None)] * T + [(0, 1)] * T)
             if feas.status == 2:
                 raise OBCError(proof, "no_solution")
+            if self.milp_time_limit <= 0:
+                raise OBCError(no_milp, "no_solution")
             sc = max(np.abs(q).max(), 1e-12)
             dg = np.abs(np.diag(M[:T]))
             U = 1e3 * sc / max(float(dg[dg > 0].min()) if (dg > 0).any() else 1.0, 1e-12)
@@ -1210,6 +1218,8 @@ class RegimeOBC:
     def _milp(self, Y, a):
         """Regime indicators from a mixed-integer programme on the linearised conditions: minimise the number
         of periods spent in the alternative regimes subject to the regime logic (big-M)."""
+        if self.milp_time_limit <= 0:
+            raise OBCError("integer programme not attempted (milp_time_limit = 0)", "no_solution")
         T, N, n, nb, nc = self.T, self.N, self.ob.n, len(self.cols), self.n_c
         nw, nz = nb * T, nc * T
         Yw = self.Yw
