@@ -40,13 +40,20 @@ def knife_edge(case, theta):
         u[ests[meth].ivf_mapping] = r.filtered_errs[t0]
         d = {}
         # OccBin's solution at this state and shock, and OccBin's own test (bind/relax conditions, in levels) on each path
-        occ = ob.simulate(u[None, :], periods=3, init=init, check_ahead_periods=200)
+        occ = ob.simulate(u[None, :], periods=nb.T, init=init, check_ahead_periods=200)
         y, path, info = nb.solve_period(init, u)
         for label, z, hist in (("occbin_solution", occ.piecewise, occ.regime_history[0]),
-                               ("news_solution", path[:3] + ob.ys, nb_regime(y, nb))):
+                               ("news_solution", path[:nb.T] + ob.ys, nb_regime(y, nb))):
             binding, relax, eb, er = ob.check(z)
-            d[label] = dict(regime=str(hist), bind_condition_true_in_period1=bool(binding[0, 0]), relax_condition_true_in_period1=bool(relax[0, 0]),
-                            bind_margin=float(eb[0, 0]), relax_margin=float(er[0, 0]))
+            (regime, start), = hist
+            ind = np.zeros(z.shape[0], bool)
+            for r_, s0, s1 in zip(regime, start, list(start[1:]) + [len(ind) + 1]):
+                ind[s0 - 1:s1 - 1] = bool(r_)
+            passes = np.where(ind, ~relax[:, 0], ~binding[:, 0])           # OccBin's test in each period
+            margin = np.where(passes, 1.0, -1.0) * np.where(ind, er[:, 0], eb[:, 0])
+            tmin = int(np.argmin(np.abs(margin[:len(ind)])))
+            d[label] = dict(regime=str(hist), passes_occbin_test=bool(passes.all()), failing_periods=[int(t) + 1 for t in np.flatnonzero(~passes)],
+                            smallest_margin_to_the_condition=float(margin[tmin]), at_period=tmin + 1)
         q = nb.q0 + nb.Qm @ np.r_[init, u]
         d["gap_without_wedges_period1"] = float(q[0])
         d["wedge_period1"] = float(y[0])
@@ -57,7 +64,7 @@ def knife_edge(case, theta):
 
 def nb_regime(y, nb):
     from pydyn.obc import _regime_history
-    return _regime_history(y, nb.T, nb.n_c)[0]
+    return _regime_history(y, nb.T, nb.n_c)
 
 
 if __name__ == "__main__":

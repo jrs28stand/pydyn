@@ -106,6 +106,7 @@ Simulation loop: identical to OccBin's `simul` loop, with the regime iteration r
 - In the mod file, on its own line before `occbin_setup`: `options_.occbin.obc_method = 'minnorm';` Also `options_.occbin.obc_horizon = 40;`.
 - On the live workspace: keyword `obc_method` (and `obc_horizon`) on the OccBin simulate and IRF functions in each port.
 - Unknown method names are an error.
+- *(Added 2026-11-24, pydyn)* `options_.occbin.obc_selection = 'occbin' | 'shortest' | 'longest' | 'min_wedge';` (keyword `obc_selection`; with `obc_method = 'news'` only, one constraint): which solution the news method returns when a state has several. `'occbin'` (default) is the solution that the active-set / guess-and-verify iteration reaches; the others choose among the single-spell solutions (fewest binding periods, most, smallest sum of squared wedges). `res.news` gets `n_single_spell` and `selection_fallback` per shock period. The same three options (`obc_method`, `obc_horizon`, `obc_selection`) exist on the estimation object (`OccbinEstimation`), inversion filter only; see `docs/OBC_ESTIMATION.md`.
 - Results go where OccBin's go (`oo_.occbin.simul.*` in JDyn, the same result object in pydyn), so `irf_occbin`, graphs and tables work unchanged.
 - Extra results under `oo_.occbin.news`: `method`, the wedges per period, `status` per period, and for `news` the diagnostics on `M`.
 

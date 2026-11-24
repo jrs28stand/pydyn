@@ -1,0 +1,181 @@
+{
+ "occbin": {
+  "acceptance_rate": [
+   0.357,
+   0.338
+  ],
+  "wall_s": [
+   500.85353224300025,
+   465.38718221800036
+  ],
+  "total_wall_s": 966.2407144610006,
+  "mean": [
+   1.2407948212655937,
+   0.23417948650013096,
+   0.03722162463650355
+  ],
+  "sd": [
+   0.06966199101271361,
+   0.028148859974791343,
+   0.0037300988204610305
+  ],
+  "n_kept": 2000,
+  "evaluations": 4002,
+  "rejected_by_error_code": {
+   "4": 75
+  },
+  "evaluations_with_infinite_lp": 75,
+  "trial_point_failures_inside_filter": {},
+  "median_seconds_per_evaluation": 0.2288809055000911
+ },
+ "news": {
+  "acceptance_rate": [
+   0.357,
+   0.338
+  ],
+  "wall_s": [
+   79.73351972199998,
+   76.55388867200008
+  ],
+  "total_wall_s": 156.28740839400007,
+  "mean": [
+   1.2407948212655937,
+   0.23417948650013096,
+   0.03722162463650355
+  ],
+  "sd": [
+   0.06966199101271361,
+   0.028148859974791343,
+   0.0037300988204610305
+  ],
+  "n_kept": 2000,
+  "evaluations": 4002,
+  "rejected_by_error_code": {
+   "4": 75
+  },
+  "evaluations_with_infinite_lp": 75,
+  "trial_point_failures_inside_filter": {},
+  "median_seconds_per_evaluation": 0.03516666900009113
+ },
+ "comparison": [
+  {
+   "chain": 0,
+   "identical": true,
+   "first_different_draw": null,
+   "max_abs_draw_difference": 0.0,
+   "max_abs_lp_difference_where_same_draws": 0.04354451499739298,
+   "accepted_differs_at": null,
+   "first_evaluation_with_different_likelihood": {
+    "index": 56,
+    "occbin": 1518.3344893404594,
+    "news": 1518.3101185574742,
+    "diff": 0.024370782985215556,
+    "theta": [
+     1.2164234136243601,
+     0.2233068736559763,
+     0.03758183459609824
+    ],
+    "explained": {
+     "lp_occbin": 1518.3344893404594,
+     "lp_news": 1518.3101185574742,
+     "periods_with_different_regime": [
+      66
+     ],
+     "regimes": {
+      "66": {
+       "occbin": "(((0,), (1,)),)",
+       "news": "(((1, 0), (1, 2)),)"
+      }
+     }
+    }
+   },
+   "n_evaluations_with_different_likelihood_at_same_theta": 5
+  },
+  {
+   "chain": 1,
+   "identical": true,
+   "first_different_draw": null,
+   "max_abs_draw_difference": 0.0,
+   "max_abs_lp_difference_where_same_draws": 0.02435353788246175,
+   "accepted_differs_at": null,
+   "first_evaluation_with_different_likelihood": {
+    "index": 46,
+    "occbin": 1517.5987056331128,
+    "news": 1517.5743520952303,
+    "diff": 0.02435353788246175,
+    "theta": [
+     1.2164434090244514,
+     0.2256475849008624,
+     0.034477142098204794
+    ],
+    "explained": {
+     "lp_occbin": 1517.5987056331128,
+     "lp_news": 1517.5743520952303,
+     "periods_with_different_regime": [
+      66
+     ],
+     "regimes": {
+      "66": {
+       "occbin": "(((0,), (1,)),)",
+       "news": "(((1, 0), (1, 2)),)"
+      }
+     }
+    }
+   },
+   "n_evaluations_with_different_likelihood_at_same_theta": 12
+  }
+ ],
+ "settings": {
+  "replic": 2000,
+  "chains": 2,
+  "seed": 20261124,
+  "jscale": 1.3,
+  "pilot": [
+   [
+    0.25,
+    0.83
+   ],
+   [
+    0.4,
+    0.7533333333333333
+   ],
+   [
+    0.6,
+    0.6366666666666667
+   ],
+   [
+    0.9,
+    0.51
+   ],
+   [
+    1.3,
+    0.34
+   ],
+   [
+    1.8,
+    0.17333333333333334
+   ],
+   [
+    2.4,
+    0.08666666666666667
+   ],
+   [
+    3.2,
+    0.05333333333333334
+   ]
+  ],
+  "starts": [
+   [
+    1.239566304896553,
+    0.180590186602144,
+    0.032247587463400534
+   ],
+   [
+    1.0868902667805747,
+    0.20698125486085203,
+    0.028917507203554127
+   ]
+  ],
+  "cov": "inverse Hessian at OccBin's mode"
+ }
+}

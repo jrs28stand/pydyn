@@ -1,0 +1,52 @@
+{
+ "lp_occbin": 1666.6437438430476,
+ "lp_news": 1666.7677677672818,
+ "periods_different": [
+  47
+ ],
+ "period": 47,
+ "regime_occbin": "(((1, 0), (1, 9)),)",
+ "regime_news": "(((1, 0), (1, 8)),)",
+ "at_occbin_state_and_shock": {
+  "occbin_solution": {
+   "regime": "[([1, 0], [1, 9])]",
+   "passes_occbin_test": true,
+   "failing_periods": [],
+   "smallest_margin_to_the_condition": 9.589932292719539e-09,
+   "at_period": 8
+  },
+  "news_solution": {
+   "regime": "[([1, 0], [1, 8])]",
+   "passes_occbin_test": false,
+   "failing_periods": [
+    8
+   ],
+   "smallest_margin_to_the_condition": -8.275193419393645e-09,
+   "at_period": 8
+  },
+  "gap_without_wedges_period1": -0.008918289580735591,
+  "wedge_period1": 0.010364440406655314,
+  "ratio_wedge_to_gap": -1.1621556255633991
+ },
+ "at_news_state_and_shock": {
+  "occbin_solution": {
+   "regime": "[([1, 0], [1, 9])]",
+   "passes_occbin_test": true,
+   "failing_periods": [],
+   "smallest_margin_to_the_condition": 9.589931515563421e-09,
+   "at_period": 8
+  },
+  "news_solution": {
+   "regime": "[([1, 0], [1, 8])]",
+   "passes_occbin_test": false,
+   "failing_periods": [
+    8
+   ],
+   "smallest_margin_to_the_condition": -8.275192642237528e-09,
+   "at_period": 8
+  },
+  "gap_without_wedges_period1": -0.008918289580734585,
+  "wedge_period1": 0.010364440406653963,
+  "ratio_wedge_to_gap": -1.1621556255633787
+ }
+}

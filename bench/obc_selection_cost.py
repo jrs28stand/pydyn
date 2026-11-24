@@ -17,7 +17,7 @@ from scipy.io import loadmat
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import pydyn  # noqa: E402
-from pydyn.obc import NewsOBC, RegimeOBC  # noqa: E402
+from pydyn.obc import NewsOBC, OBCError, RegimeOBC  # noqa: E402
 from pydyn.occbin_estimation import OccbinEstimation  # noqa: E402
 
 REF = ROOT / "reference"
@@ -36,10 +36,14 @@ def binding_states(obc, shocks):
     """(state, shock) of the shock periods in which something binds, along a default simulation."""
     y, out = np.zeros(obc.ob.n), []
     for sh in shocks:
-        if isinstance(obc, NewsOBC):
-            wedge, nxt, _info = obc._step(y, sh)
-        else:
-            _z, wedge, nxt, _info = obc._step(y, sh)
+        try:
+            if isinstance(obc, NewsOBC):
+                wedge, nxt, _info = obc._step(y, sh)
+            else:
+                _z, wedge, nxt, _info = obc._step(y, sh)
+        except OBCError:                  # a state without a solution (Smets-Wouters): start again from the steady state
+            y = np.zeros(obc.ob.n)
+            continue
         if wedge.any():
             out.append((y.copy(), sh.copy()))
         y = nxt
@@ -91,11 +95,14 @@ def main():
     rb = RegimeOBC(ob3, horizon=40, check_ahead=60)
     sd3 = np.sqrt(np.diag(m3.Sigma_e))
     S3 = np.random.default_rng(7).normal(size=(120, m3.n_exo)) * sd3 * 0.25
-    ext = np.zeros((1, m3.n_exo))
-    ext[0, m3._ix["eb"]] = -4.0
-    cases.append(("Smets-Wouters (RegimeOBC, 32 variables)", rb, np.vstack([S3, ext, ext * 0.5])))
+    cases.append(("Smets-Wouters (RegimeOBC, 32 variables)", rb, S3))
     for name, obc, shocks in cases:
         states = binding_states(obc, shocks)
+        if isinstance(obc, RegimeOBC):             # plus eb shocks from the steady state (several solutions)
+            for v in (-2.0, -3.0, -3.5, -4.0):
+                sh = np.zeros(m3.n_exo)
+                sh[m3._ix["eb"]] = v
+                states.append((np.zeros(obc.ob.n), sh))
         best, nsp = timeit(obc, states, repeats=5)
         row = dict(n_binding_states=len(states))
         for sel in SELS:

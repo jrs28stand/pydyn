@@ -1,0 +1,55 @@
+[
+ {
+  "model": "NKM nkm",
+  "parameter_vectors": 64,
+  "finite_likelihood": 64,
+  "trial_points_reaching_the_fallbacks": 2,
+  "news_flag_occbin_flag": {
+   "313/313": 2
+  },
+  "integer_programme_1s": {
+   "milp_time_limit": 1,
+   "milp_no_solution": 1
+  },
+  "wall_s": 3.5493666489992393
+ },
+ {
+  "model": "NKM nkms",
+  "parameter_vectors": 103,
+  "finite_likelihood": 97,
+  "trial_points_reaching_the_fallbacks": 0,
+  "news_flag_occbin_flag": {},
+  "integer_programme_1s": {},
+  "wall_s": 3.6862102000004597
+ },
+ {
+  "model": "estimation/slice/bf.mod",
+  "parameter_vectors": 26,
+  "finite_likelihood": 24,
+  "trial_points_reaching_the_fallbacks": 104,
+  "news_flag_occbin_flag": {
+   "313/310": 57,
+   "313/313": 47
+  },
+  "integer_programme_1s": {
+   "milp_not_converged": 27,
+   "milp_no_solution": 77
+  },
+  "wall_s": 249.05039937699985
+ },
+ {
+  "model": "occbin/ppf/bf_ppf.mod",
+  "parameter_vectors": 26,
+  "finite_likelihood": 24,
+  "trial_points_reaching_the_fallbacks": 104,
+  "news_flag_occbin_flag": {
+   "313/310": 57,
+   "313/313": 47
+  },
+  "integer_programme_1s": {
+   "milp_not_converged": 35,
+   "milp_no_solution": 69
+  },
+  "wall_s": 344.7411139619999
+ }
+]

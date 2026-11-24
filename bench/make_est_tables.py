@@ -46,7 +46,7 @@ def mode_tables(case, start):
     sd = np.array(d["occbin"]["std"]) if d["occbin"]["std"] else None
     out += ["", f"Same path: {c['identical_path']}. Evaluations: OccBin {c['n_occbin']}, news {c['n_news']}. First evaluation at which the "
             f"iterates differ (> 1e-9): {c['first_evaluation_with_different_theta']}. |mode difference|: {vec(dx, 3)}"
-            + (f", as a share of the posterior sd: {vec(dx / sd, 3)}." if sd is not None and np.all(np.isfinite(sd)) else "."),
+            + (f", as a share of the posterior sd: {vec(dx / sd, 3)}." if sd is not None and np.all(np.isfinite(sd)) and _pd(d["occbin"].get("hessian")) else "."),
             f"News evaluated at the {c['n_points_checked']} points OccBin's run visited: {c['n_equal']} agree (largest difference "
             f"{c['max_abs_lp_difference_where_equal']:.2e}), {len(c['occbin_trace_points_where_likelihoods_differ'])} differ "
             f"(largest difference {max([abs(x['diff']) for x in c['occbin_trace_points_where_likelihoods_differ']] or [0]):.4f})."]
