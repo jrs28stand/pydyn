@@ -13,7 +13,7 @@ import pytest
 from scipy.io import loadmat
 
 import pydyn
-from pydyn.obc import (NewsOBC, OBCClassError, OBCError, constraint_objects, m_diagnostics, solve_active_set,
+from pydyn.obc import (NewsOBC, OBCClassError, OBCError, RegimeOBC, constraint_objects, m_diagnostics, solve_active_set,
                        solve_news, verify_lcp)
 
 REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))
@@ -198,12 +198,64 @@ def test_nkm_lower_bound_approximate_class(tmp_path):
     ("occbin/ppf/bf_ppf.mod", DYNARE_TESTS, {"zlb": "multi_equation"}),
     ("estimation/slice/bf.mod", DYNARE_TESTS, {"zlb": "multi_equation"}),
 ])
-def test_classification_and_refusal(tmp_path, rel, base, expected):
+def test_classification_of_dynare_files(tmp_path, rel, base, expected):
     m = _dynare_model(tmp_path, rel, base)
     ob = pydyn.Occbin(m)
     assert {c.name: c.cls for c in constraint_objects(ob)} == expected
     with pytest.raises(OBCClassError, match="obc_method='occbin'"):
-        ob.simulate(np.zeros((1, m.n_exo)), periods=5, obc_method="news")
+        NewsOBC(ob)                                     # the LCP class refuses; the dispatcher uses RegimeOBC
+
+
+# --------------------------------------------------------------------------- general regime formulation
+def test_regime_formulation_equals_lcp_and_occbin(zlb, zlb2):
+    rng = np.random.default_rng(5)
+    for m, ob in (zlb, zlb2):
+        S = rng.normal(0, 0.02, (150, 1))
+        a = ob.simulate(S, periods=150)
+        b = RegimeOBC(ob, horizon=40, check_ahead=40).simulate(S, periods=150)
+        c = NewsOBC(ob, horizon=40, check_ahead=40).simulate(S, periods=150)
+        np.testing.assert_allclose(b.piecewise, a.piecewise, atol=1e-11)
+        np.testing.assert_allclose(b.piecewise, c.piecewise, atol=1e-11)
+        assert b.regime_history == a.regime_history
+
+
+def test_regime_integer_programme_one_constraint(zlb):
+    m, ob = zlb
+    rb = RegimeOBC(ob, horizon=20, check_ahead=40)
+    z, w, path, info = rb.solve_period(np.zeros(m.n_endo), np.array([-0.05]), method="milp")
+    z2, w2, path2, info2 = rb.solve_period(np.zeros(m.n_endo), np.array([-0.05]))
+    assert info["used"] == "milp" and info2["used"] == "guess_verify"
+    np.testing.assert_array_equal(z, z2)
+    np.testing.assert_allclose(path, path2, atol=1e-12)
+
+
+@needs_dynare
+@pytest.mark.parametrize("rel", ["occbin/ppf/bf_ppf.mod", "estimation/slice/bf.mod"])
+def test_multi_equation_lower_bound_equals_occbin(tmp_path, rel):
+    """Lower bound in which the rule's lag term also switches (two equations per constraint)."""
+    m = _dynare_model(tmp_path, rel)
+    ob = pydyn.Occbin(m)
+    rng = np.random.default_rng(7)
+    sd = np.sqrt(np.diag(m.Sigma_e))
+    sd[sd < 1e-9] = 0.01
+    a, b = _compare(ob, rng.normal(size=(200, m.n_exo)) * sd * 2, 200, atol=1e-10)
+    assert b.news["formulation"] == "regime" and b.news["solver"].count("guess_verify") > 20
+
+
+@needs_dynare
+def test_rbc_occbin_two_constraints_equals_occbin(tmp_path):
+    """Dynare's example: IRR is a complementary pair, INEG switches adjustment costs on (not a bound), and
+    INEG stays in its alternative regime for more than 100 periods."""
+    m = _dynare_model(tmp_path, "occbin/rbc_occbin.mod", EXAMPLES)
+    ob = pydyn.Occbin(m)
+    S = ob.surprise_shocks()
+    a = ob.simulate(S, periods=200, check_ahead_periods=200)
+    b = ob.simulate(S, periods=200, check_ahead_periods=70, obc_method="news", obc_horizon=130)
+    np.testing.assert_allclose(b.piecewise, a.piecewise, atol=1e-11)
+    assert b.regime_history == a.regime_history
+    with pytest.raises(OBCError) as err:
+        ob.simulate(S, periods=200, obc_method="news", obc_horizon=40)
+    assert err.value.status == "horizon_too_short"
 
 
 # ---------------------------------------------------------------------------------------------- the solvers
@@ -244,3 +296,16 @@ def test_diagnostics_small_matrices():
     M = np.array([[1.0, -3.0], [0.0, 1.0]])
     d = m_diagnostics(M)
     assert d["is_p"] is True and d["symmetric_part_positive_definite"] is False
+
+
+def test_p_matrix_recursion_matches_minors():
+    from pydyn.obc import _is_p_exact, _is_p_minors
+    rng = np.random.default_rng(11)
+    seen = set()
+    for _ in range(300):
+        n = int(rng.integers(1, 7))
+        A = np.eye(n) * rng.uniform(0.2, 2.0) + rng.normal(0, 0.45, (n, n))
+        r = _is_p_exact(A)
+        assert r == _is_p_minors(A)
+        seen.add(r)
+    assert seen == {True, False}

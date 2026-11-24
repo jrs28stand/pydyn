@@ -31,7 +31,7 @@ from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 from .expr import NAMESPACE, Translator
 from .occbin import Occbin, OccbinResult, _split_comparison
 
-__all__ = ["OBCError", "OBCClassError", "ConstraintObject", "NewsOBC", "constraint_objects", "solve_news",
+__all__ = ["OBCError", "OBCClassError", "ConstraintObject", "NewsOBC", "RegimeOBC", "constraint_objects", "solve_news",
            "solve_active_set", "m_diagnostics", "verify_lcp"]
 
 
@@ -268,15 +268,24 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1):
 
 
 def _is_p_exact(A):
+    """P-matrix test by the recursion of Tsatsomeros and Li (2000): A is P iff a11 > 0 and both A[1:,1:] and
+    the Schur complement of a11 are P.  2^n small steps instead of 2^n determinants."""
+    A = np.asarray(A, float)
+    if not A[0, 0] > 0:
+        return False
+    if A.shape[0] == 1:
+        return True
+    B = A[1:, 1:]
+    return _is_p_exact(B) and _is_p_exact(B - np.outer(A[1:, 0], A[0, 1:]) / A[0, 0])
+
+
+def _is_p_minors(A):
+    """Reference implementation by enumeration of principal minors (tests only)."""
     n = A.shape[0]
-    for r in range(1, n + 1):
-        for idx in combinations(range(n), r):
-            if np.linalg.det(A[np.ix_(idx, idx)]) <= 0:
-                return False
-    return True
+    return all(np.linalg.det(A[np.ix_(idx, idx)]) > 0 for r in range(1, n + 1) for idx in combinations(range(n), r))
 
 
-def m_diagnostics(Ms, n_c=1, max_exact=12):
+def m_diagnostics(Ms, n_c=1, max_exact=16):
     """Existence and uniqueness diagnostics on the square matrix M (Holden's theory paper).
 
     * ``is_s``: M is an S-matrix (some y > 0 has M y > 0); necessary for a solution to exist for every q.
@@ -524,5 +533,276 @@ class NewsOBC:
         res.news = dict(method=method, wedges=wedges, solver=used, horizon=T)
         return res
 
-    def diagnostics(self, max_exact=12):
+    def diagnostics(self, max_exact=16):
         return m_diagnostics(self.Ms, n_c=self.n_c, max_exact=max_exact)
+
+
+# --------------------------------------------------------------------------- general regime formulation
+class RegimeOBC:
+    """News-shock solution for any model OccBin accepts, including constraints that switch several equations
+    or whose bind/relax conditions are not the mirror image of the switched equation.
+
+    Every equation that a constraint switches gets its own wedge on the reference version.  In a period in
+    which the constraint is in its alternative regime the wedges are whatever makes the alternative versions
+    hold; otherwise they are zero.  A regime sequence is accepted when OccBin's own test passes: the bind
+    condition is false wherever the reference regime is assumed and the relax condition is false wherever the
+    alternative regime is assumed (conditions evaluated in levels, as OccBin does).  The result is therefore
+    OccBin's piecewise-linear solution; what changes is how it is found: the responses to wedges are computed
+    once per parameter set, each guess costs one small linear solve, and a mixed-integer programme over the
+    regime indicators is the fallback when the guess-and-verify iteration cycles.
+
+    With one equation per constraint and mirror-image conditions this is the LCP of ``NewsOBC``, which should
+    be preferred there because the theory on M (existence, uniqueness) applies to it.
+    """
+
+    milp_time_limit = 30.0
+
+    def __init__(self, model_or_occbin, params=None, horizon=40, check_ahead=40):
+        self.ob = ob = model_or_occbin if isinstance(model_or_occbin, Occbin) else Occbin(model_or_occbin, params)
+        self.T, self.L, self.n_c = int(horizon), int(check_ahead), ob.k
+        n, nx = ob.n, ob.n_exo
+        ref_all = np.column_stack(ob.regime_matrices(tuple([False] * ob.k)))
+        self.cols, self.alt_rows = [], []                 # (constraint, equation) per wedge block; affine alt rows
+        per_reg = []
+        for j in range(ob.k):
+            alt_all = np.column_stack(ob.regime_matrices(tuple(i == j for i in range(ob.k))))
+            scale = np.maximum(np.maximum(np.abs(ref_all).max(axis=1), np.abs(alt_all).max(axis=1)), 1.0)
+            rows = [int(r) for r in np.nonzero(np.abs(alt_all - ref_all).max(axis=1) > 1e-12 * scale)[0]]
+            if not rows:
+                raise OBCClassError(f"constraint '{ob.names[j]}': no equation changes between the regimes")
+            per_reg.append((alt_all, rows))
+            for r in rows:
+                self.cols.append((j, r))
+                self.alt_rows.append(alt_all[r].copy())
+        if ob.k == 2:                                     # an equation's version may depend on one constraint only
+            both = np.column_stack(ob.regime_matrices((True, True)))
+            expect = ref_all.copy()
+            for alt_all, rows in per_reg:
+                expect[rows] = alt_all[rows]
+            shared = set(per_reg[0][1]) & set(per_reg[1][1])
+            if shared or np.abs(both - expect).max() > 1e-10 * max(1.0, np.abs(both).max()):
+                raise OBCClassError("an equation's version depends on both constraints jointly; the news-shock "
+                                    "methods need each switched equation to depend on one constraint. "
+                                    "Use obc_method='occbin' for this model.")
+        self._cond = []                                   # linearised conditions, for the integer programme
+        for c in ob.model.occbin_constraints:
+            d_b = _affine_condition(ob, c["bind"], enter=True)
+            relax = c.get("relax") or None
+            d_r = _affine_condition(ob, relax, enter=False) if relax else d_b
+            self._cond.append((d_b, d_r))
+        self._build(self.T + self.L)
+
+    def _build(self, N):
+        ob, n, nx, T = self.ob, self.ob.n, self.ob.n_exo, self.T
+        C0, B0, A0, _J0, _D0 = ob.regime_matrices(tuple([False] * ob.k))
+        F = np.linalg.inv(B0 + A0 @ ob.P)
+        G = -F @ A0
+        self.N, nb = N, len(self.cols)
+        Yw = np.zeros((N + 1, n, nb * T))
+        for b, (_j, row) in enumerate(self.cols):
+            e = np.zeros(n)
+            e[row] = 1.0
+            k = [F @ e]
+            for _ in range(T - 1):
+                k.append(G @ k[-1])
+            for s in range(T):
+                y = np.zeros(n)
+                for t in range(N + 1):
+                    y = ob.P @ y + (k[s - t] if t <= s else 0.0)
+                    Yw[t, :, b * T + s] = y
+        self.Yw = Yw
+        # alternative residuals in periods 0..T-1: a = a0 + Am [init; shock] + R w
+        Yb = np.zeros((N + 1, n, n + nx))
+        y = np.hstack([np.eye(n), np.zeros((n, nx))])
+        for t in range(N + 1):
+            y = ob.P @ y
+            if t == 0:
+                y[:, n:] = ob.Q
+            Yb[t] = y
+        self.Yb = Yb
+        R = np.zeros((nb * T, nb * T))
+        Am = np.zeros((nb * T, n + nx))
+        a0 = np.zeros(nb * T)
+        for b, a in enumerate(self.alt_rows):
+            aC, aB, aA, aJ = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx]
+            for t in range(T):
+                for Y, out in ((Yw, R), (Yb, Am)):
+                    v = aB @ Y[t] + aA @ Y[t + 1]
+                    if t > 0:
+                        v = v + aC @ Y[t - 1]
+                    out[b * T + t] = v
+            a0[b * T:(b + 1) * T] = a[-1]
+            Am[b * T, :n] += aC
+            Am[b * T, n:] += aJ
+        self.R, self.Am, self.a0 = R, Am, a0
+
+    # -------------------------------------------------------------------------------------------- pieces
+    def _index(self, z):
+        """Positions (in the stacked wedge vector) of the periods in which each block's constraint binds."""
+        T = self.T
+        return np.concatenate([b * T + np.nonzero(z[:T, j])[0] for b, (j, _r) in enumerate(self.cols)]).astype(int)
+
+    def _wedges(self, z, a):
+        w = np.zeros(len(self.cols) * self.T)
+        S = self._index(z)
+        if S.size:
+            w[S] = np.linalg.solve(self.R[np.ix_(S, S)], -a[S])
+        return w
+
+    def _violations(self, z, path):
+        binding, relax, _eb, _er = self.ob.check(path[:self.N] + self.ob.ys)
+        return binding & ~z, relax & z
+
+    def solve_period(self, init, shock, maxit=60, method="news"):
+        """Regime indicators (N, n_c), wedges and path (N+1, n; deviations) for one shock period."""
+        T, N = self.T, self.N
+        x = np.r_[np.asarray(init, float), np.asarray(shock, float)]
+        Y = np.tensordot(self.Yb, x, axes=(2, 0))
+        a = self.a0 + self.Am @ x
+        z = np.zeros((N, self.n_c), bool)
+        seen, info = set(), dict(used="none", iterations=0)
+        ok = beyond = False
+        if method != "milp":
+            for it in range(maxit):
+                if z[T:].any():
+                    beyond = True                           # the iteration wants a regime change after the horizon
+                    break
+                try:
+                    w = self._wedges(z, a)
+                except np.linalg.LinAlgError:
+                    break
+                path = Y + self.Yw @ w
+                vb, vr = self._violations(z, path)
+                if not vb.any() and not vr.any():
+                    ok = True
+                    info.update(used="guess_verify" if it else "none", iterations=it)
+                    break
+                key = z.tobytes()
+                if key in seen:
+                    break
+                seen.add(key)
+                z = (z & ~vr) | vb
+        if not ok and beyond and method != "milp":
+            raise OBCError("a constraint still binds after the news horizon: increase obc_horizon", "horizon_too_short")
+        if not ok and method == "guess_verify":
+            raise OBCError("the guess-and-verify iteration cycles", "not_converged")
+        if not ok:
+            try:
+                z = self._milp(Y, a)
+            except OBCError as err:
+                if beyond:
+                    raise OBCError("a constraint still binds after the news horizon: increase obc_horizon",
+                                   "horizon_too_short") from err
+                raise
+            info["used"] = "milp"
+            w = self._wedges(z, a)
+            path = Y + self.Yw @ w
+            vb, vr = self._violations(z, path)
+            if vb[T:].any():
+                raise OBCError("a constraint still binds after the news horizon: increase obc_horizon",
+                               "horizon_too_short")
+            if vb.any() or vr.any():
+                raise OBCError("the regime sequence found by the integer programme (linearised conditions) fails "
+                               "OccBin's test on the conditions in levels", "not_converged")
+        return z, w, path, info
+
+    def _milp(self, Y, a):
+        """Regime indicators from a mixed-integer programme on the linearised conditions: minimise the number
+        of periods spent in the alternative regimes subject to the regime logic (big-M)."""
+        T, N, n, nb, nc = self.T, self.N, self.ob.n, len(self.cols), self.n_c
+        nw, nz = nb * T, nc * T
+        Yw = self.Yw
+        # linearised conditions along the path: d = d0 + D w   (rows: constraint-major, period-minor, N periods)
+        Db, Dr, b0, r0 = (np.zeros((nc * N, nw)), np.zeros((nc * N, nw)), np.zeros(nc * N), np.zeros(nc * N))
+        for j, (d_b, d_r) in enumerate(self._cond):
+            for d, D, d0 in ((d_b, Db, b0), (d_r, Dr, r0)):
+                g = d[n:2 * n]
+                D[j * N:(j + 1) * N] = np.tensordot(g, Yw[:N], axes=(0, 1))
+                d0[j * N:(j + 1) * N] = Y[:N] @ g + d[-1]
+        sc = max(np.abs(a).max(), np.abs(b0).max(), np.abs(r0).max(), 1e-12)
+        diag = np.abs(np.diag(self.R))
+        W = 1e3 * sc / max(float(np.median(diag[diag > 0])) if (diag > 0).any() else 1.0, 1e-12)
+        Om = 1e3 * sc
+        eps = 1e-9 * sc
+        rows, lo, hi = [], [], []
+
+        def add(Aw, Az, lower, upper):
+            rows.append(np.hstack([Aw, Az]))
+            lo.append(np.broadcast_to(lower, (Aw.shape[0],)).copy())
+            hi.append(np.broadcast_to(upper, (Aw.shape[0],)).copy())
+
+        Zb = np.zeros((nw, nz))                              # block (wedge) -> its constraint's indicator
+        for b, (j, _r) in enumerate(self.cols):
+            Zb[b * T:(b + 1) * T, j * T:(j + 1) * T] = np.eye(T)
+        Iw = np.eye(nw)
+        add(Iw, -W * Zb, -np.inf, 0.0)                       #  w <= W z
+        add(Iw, W * Zb, 0.0, np.inf)                         # -w <= W z
+        add(self.R, Om * Zb, -np.inf, Om - a)                #  alt residual <= Om (1 - z)
+        add(self.R, -Om * Zb, -Om - a, np.inf)               #  alt residual >= -Om (1 - z)
+        for j in range(nc):
+            sel = np.zeros((T, nz))
+            sel[:, j * T:(j + 1) * T] = np.eye(T)
+            r_in = slice(j * N, j * N + T)
+            r_out = slice(j * N + T, (j + 1) * N)
+            add(Db[r_in], Om * sel, -b0[r_in] - eps, np.inf)         # reference regime: bind condition false
+            add(Dr[r_in], Om * sel, -np.inf, Om - r0[r_in] + eps)    # alternative regime: relax condition false
+            if N > T:
+                add(Db[r_out], np.zeros((N - T, nz)), -b0[r_out] - eps, np.inf)
+        A = np.vstack(rows)
+        cons = LinearConstraint(A, np.concatenate(lo), np.concatenate(hi))
+        cobj = np.r_[np.zeros(nw), np.ones(nz)]
+        res = milp(cobj, constraints=[cons], integrality=np.r_[np.zeros(nw), np.ones(nz)],
+                   bounds=Bounds(np.r_[np.full(nw, -W), np.zeros(nz)], np.r_[np.full(nw, W), np.ones(nz)]),
+                   options=dict(time_limit=self.milp_time_limit))
+        if res.status == 1 and res.x is None:
+            raise OBCError(f"the integer programme over regime sequences did not finish in {self.milp_time_limit:g} s "
+                           "(this big-M formulation is slow with several constraints or long horizons)", "not_converged")
+        if res.x is None or not res.success:
+            # distinguish a horizon that is too short from no solution: drop the rows beyond the horizon
+            raise OBCError("no regime sequence within the news horizon satisfies the model (linearised conditions)",
+                           "no_solution")
+        z = np.zeros((N, nc), bool)
+        z[:T] = (res.x[nw:] > 0.5).reshape(nc, T).T
+        return z
+
+    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None) -> OccbinResult:
+        ob, n, T = self.ob, self.ob.n, self.T
+        shocks_in = np.atleast_2d(np.asarray(shocks, float))
+        if exo_pos is None:
+            exo_idx = tuple(range(ob.n_exo))
+        else:
+            exo_idx = tuple(ob.model._ix[p] if isinstance(p, str) else int(p)
+                            for p in np.atleast_1d(np.asarray(exo_pos, dtype=object)))
+        S = shocks_in.shape[0]
+        sh = np.zeros((S, ob.n_exo))
+        sh[:, list(exo_idx)] = shocks_in
+        n_periods = max(periods, S)
+        if n_periods - S + 1 > self.N:
+            self._build(n_periods - S + 1)
+        y0 = np.zeros(n) if init is None or np.size(init) == 0 else np.asarray(init, float).ravel().copy()
+        init_orig = y0.copy()
+        piecewise = np.zeros((n_periods, n))
+        history, used, wedges = [], [], np.zeros((S, len(self.cols) * T))
+        path = None
+        for sp in range(S):
+            try:
+                z, w, path, info = self.solve_period(y0, sh[sp], method=method)
+            except OBCError as err:
+                err.period = sp + 1
+                raise
+            wedges[sp] = w
+            used.append(info["used"])
+            history.append([Occbin.map_regime(z[:, j].astype(int)) for j in range(self.n_c)])
+            y0 = path[0].copy()
+            piecewise[sp] = y0
+        piecewise[S:] = path[1:n_periods - S + 1]
+        linear = np.empty((n_periods, n))
+        yl = init_orig
+        for t in range(n_periods):
+            yl = ob.P @ yl + (ob.Q @ sh[t] if t < S else 0.0)
+            linear[t] = yl
+        res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
+                           regime_history=history, ys=ob.ys, exo_pos=exo_idx)
+        res.news = dict(method=method, formulation="regime", wedges=wedges, solver=used, horizon=T,
+                        blocks=list(self.cols))
+        return res
