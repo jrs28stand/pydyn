@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 
 from .matlab import Cell, Struct, Tainted, Unsupported, farr, _F
+from .results_post import PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMixin, ModeCheckMixin, FileOutputMixin, EstimationChecksMixin
 
 
 def _R():
@@ -22,7 +23,7 @@ def _R():
     return results
 
 
-class EstimationMixin:
+class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMixin, ModeCheckMixin, FileOutputMixin, EstimationChecksMixin):
     # ------------------------------------------------------------------ smoother results
     def _store_smoother(self, res, nk_filtered):
         """oo_.SmoothedVariables, ... as matlab/kalman/store_smoother_results.m writes them (columns, T x 1)."""
@@ -146,8 +147,9 @@ class EstimationMixin:
             m.Sigma_e = np.asarray(res.Sigma_e, float)
         self.push()
         self._solve_dr_at_current()
-        self._set_prior_if_any()
+        est_ = self._set_prior_if_any()
         self._store_smoother(res, bool(self.opt_flag("filtered_vars")))
+        self.fig_classical_smoother(res, 0 if est_ is None else self._estimated_me_count(est_))
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_calib_smoother", np.bool_(True)))
 
     def _refuse_unfaithful_smoother(self):
@@ -178,8 +180,8 @@ class EstimationMixin:
         mh_replic = int(np.max(np.atleast_1d(self.opt("mh_replic", 0) or 0)))
         h_fc = int(self.opt("forecast", 0) or 0)
         st_vars = self._estimation_var_list(st)
-        for key in ("load_mh_file", "mh_recover", "bayesian_irf", "moments_varendo", "particle.status",
-                    "mode_check.status", "mh_posterior_mode_estimation"):
+        for key in ("load_mh_file", "mh_recover", "particle.status",
+                    "mh_posterior_mode_estimation"):
             if self.opt_flag(key):
                 raise R.ResultsError(f"estimation option {key} is not supported by pydyn.dynare()")
         self._refuse_unfaithful_smoother()
@@ -188,6 +190,7 @@ class EstimationMixin:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 est = Estimation(m)
+                self._initial_estimation_checks(est)
                 mc_ = est.options["mode_compute"]
                 mode_file = est.options["mode_file"]
                 theta = est.x0
@@ -203,9 +206,16 @@ class EstimationMixin:
             self.set_options("nobs", _F(float(est.nobs)))
         self._set_likelihood_at_initial_parameters(est, mode_file)
         self._set_prior(est)
+        if self.opt_flag("plot_priors") and np.any(np.asarray(est.prior.shape) > 0):
+            self.fig_priors(est)
         mc = None
+        if mode is None and self.opt_flag("mode_check.status"):
+            raise R.ResultsError("estimation: mode_check without a computed mode (mode_compute=0 and no mode_file) is not "
+                                 "supported by pydyn.dynare()")
         if mode is not None:
             self._set_mode(est, mode, mode.x, no_density=bool(mode_file))
+            if self.opt_flag("mode_check.status"):
+                self._mode_check(est, mode.x)
         # dynare_estimation_1.m returns right after the smoother when mode_compute=0 and there is no mode file: no MCMC
         early = mode is None
         if mh_replic > 0 and not early:
@@ -237,7 +247,11 @@ class EstimationMixin:
         self._solve_dr_at_current()
         self._steady_at_init(est, est.load_mode(mode_file)[0] if mode_file else None)
         if mc is not None:
+            self._mcmc_diagnostics(est, mc)
             self._set_metropolis(est, mc)
+            self.fig_prior_posterior(est)
+        if mc is not None:
+            self._posterior_analysis(est, mc, st_vars, st)
         posterior_stats = mc is not None and (self.opt_flag("smoother") or bool(self.opt("filter_step_ahead"))
                                               or self.opt_flag("filtered_vars") or h_fc > 0)
         bayes_smoother = mc is not None and self.opt_flag("smoother")
@@ -259,6 +273,7 @@ class EstimationMixin:
                 except (SmootherError, NotImplementedError) as exc:
                     raise R.ResultsError(f"estimation: smoother: {exc}") from None
                 self._store_smoother(res, bool(self.opt_flag("filtered_vars")) or bool(self.opt("filter_step_ahead")))
+                self.fig_classical_smoother(res, self._estimated_me_count(est))
                 if h_fc > 0 and mc is None:
                     self._forecast_at_mode(res, st_vars, h_fc)
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_estimation", np.bool_(True)))
@@ -314,6 +329,7 @@ class EstimationMixin:
                     s[v] = R.col(x)
                 out[key] = s
         self.set_oo("forecast", out)
+        self.fig_forecast(fc)
 
     def _run_chains(self, est, mode):
         """The Metropolis chains with Dynare's random numbers (seeded from set_dynare_seed); afterwards the results'
@@ -336,7 +352,7 @@ class EstimationMixin:
             self.I.rng_unknown = None
         return mc
 
-    def _dynare_subsample(self, mc, B, npar):
+    def _dynare_subsample(self, mc, B, npar, exact_random=False):
         """get_posterior_subsample.m, draw for draw: per draw ``ceil(rand*mh_nblck)`` then ``ceil(rand*draws per chain)``
         from the uniform stream, the sample ordered by (mh file, chain) with Dynare's file size
         ``ceil(MaxNumberOfBytes/(npar+2)/8)``; when B equals the kept draws per chain prior_posterior_statistics
@@ -345,7 +361,7 @@ class EstimationMixin:
         drop = float(self.opt("mh_drop", 0.5))
         first = int(np.floor(drop * total))                         # 0-based index of FirstDraw
         per_chain = total - first
-        if B == per_chain:
+        if B == per_chain and not exact_random:
             pooled = mc.draws[:, first:, :].reshape(-1, mc.draws.shape[2])
             return np.array(pooled[:B], float)
         max_runs = int(np.ceil(float(self.opt("MaxNumberOfBytes", 1e8)) / (npar + 2) / 8))
@@ -459,6 +475,21 @@ class EstimationMixin:
                                      "not supported")
             self._store_pm3("PointForecastME", pf.me_draws, sel, [obs.index(v) for v in sel], mcs)
 
+    def _posterior_analysis(self, est, mc, var_list, st):
+        """After the chains (dynare_estimation_1.m): set_number_of_subdraws, then PosteriorIRF and compute_moments_varendo,
+        each drawing its sub-sample from the shared stream before the smoother and forecasts do."""
+        R = _R()
+        B, too_many = self._number_of_subdraws(mc)
+        if B == 0:
+            return
+        if too_many and (self.opt_flag("bayesian_irf") or self.opt_flag("moments_varendo")):
+            raise R.ResultsError("estimation: I cannot compute the posterior IRFs or moments! (sub_draws is greater than "
+                                 "the number of available draws in the MCMC)")
+        if self.opt_flag("bayesian_irf"):
+            self._bayesian_irf(est, mc, [str(x) for x in (st.get("symbol_list") or [])], B)
+        if self.opt_flag("moments_varendo"):
+            self._moments_varendo(est, mc, var_list, B)
+
     def _partial_dr(self, old_dr):
         """oo_.dr when no smoother recomputes it: the dr before ``estimation`` (a Struct or []) with order_var and
         inv_order_var (set_state_space) and restrict_var_list and restrict_columns (refused here)."""
@@ -542,6 +573,8 @@ class EstimationMixin:
             self.set_oo(name, s)
         else:
             self.set_oo(parent, R.struct_set(self.oo_[parent], name, s))
+        if parent is None or name == "Trend":
+            self.fig_pm3(name, s, names)
 
     def _set_likelihood_at_initial_parameters(self, est, mode_file):
         """initial_estimation_checks.m: with options_.debug, oo_.likelihood_at_initial_parameters is the objective
@@ -584,8 +617,11 @@ class EstimationMixin:
                 est = Estimation(m)
             self._steady_at_init(est)
         except Exception:                       # a by-product here; the smoother does not need it
-            return
+            return None
         self._set_prior(est)
+        if self.opt_flag("plot_priors") and np.any(np.asarray(est.prior.shape) > 0):
+            self.fig_priors(est)
+        return est
 
     def _set_prior(self, est):
         from .smoother import prior_mode
@@ -625,6 +661,15 @@ class EstimationMixin:
                     g[k] = _F(v)
                 out[key] = g
         return out
+
+    def _get_param(self, tree, name):
+        m = self.model
+        if name.startswith("stderr "):
+            return tree["shocks_std" if name[7:] in m.exo_names else "measurement_errors_std"][name[7:]]
+        if name.startswith("corr "):
+            a, b = [x.strip() for x in name[5:].split(",")]
+            return tree["shocks_corr" if a in m.exo_names else "measurement_errors_corr"][f"{a}_{b}"]
+        return tree["parameters"][name]
 
     def _put_param(self, tree, name, value):
         m = self.model
@@ -710,6 +755,7 @@ class EstimationMixin:
                     s[v] = R.col(x)
                 out[key] = s
         self.set_oo("forecast", out)
+        self.fig_forecast(fc)
 
     # ------------------------------------------------------------------ shock decompositions
     def _decomposition_smoother(self, kind, run=True):
@@ -761,6 +807,7 @@ class EstimationMixin:
             raise R.ResultsError(f"{kind}: plot_shock_decomposition with init2shocks or realtime writes more to oo_ "
                                  "than pydyn.dynare() follows")
         res = self._decomposition_smoother(kind)
+        self._sd_initial_date = self._decomp_initial_date(res)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sd = shock_decomposition(self.model, res, init_state=int(self.opt("shock_decomp.init_state", 0) or 0))
@@ -779,17 +826,58 @@ class EstimationMixin:
             if "i_var" in info:
                 i_var = np.unique(np.concatenate([i_var.ravel(), np.asarray(farr(info["i_var"]), float).ravel()])).reshape(-1, 1)
             self.set_oo("plot_shock_decomposition_info", R.struct_set(info, "i_var", R.mat(i_var)))
+            self.fig_shock_decomposition(i_var.ravel())
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_shock_decomposition", np.bool_(True)))
+
+    def st_plot_shock_decomposition(self, st):
+        """``plot_shock_decomposition.m``: the figures (plain decompositions) and the variables recorded in oo_."""
+        from .matlab import BUILTINS
+        R = _R()
+        # set_default_plot_shock_decomposition_options
+        empty = np.zeros((0, 0))
+        for key, val in (("use_shock_groups", ""), ("colormap", ""), ("graph_format", "eps"), ("detail_plot", np.bool_(False)),
+                         ("init2shocks", empty), ("interactive", np.bool_(False)), ("screen_shocks", np.bool_(False)),
+                         ("steadystate", np.bool_(False)), ("type", ""), ("fig_name", ""), ("write_xls", np.bool_(False)),
+                         ("realtime", np.float64(0)), ("vintage", np.float64(0)), ("plot_init_date", empty),
+                         ("plot_end_date", empty), ("diff", np.bool_(False)), ("flip", np.bool_(False)),
+                         ("max_nrows", np.float64(6)), ("forecast_length", empty)):
+            self.set_options("plot_shock_decomp." + key, val)
+        self.set_options("shock_decomp.forecast_type", empty)
+        self._refresh_options(st)
+        if not isinstance(self.oo_.get("shock_decomposition"), (np.ndarray, Struct)) and "shock_decomposition" not in self.oo_:
+            raise R.ResultsError("plot_shock_decomposition: oo_.shock_decomposition is missing: run shock_decomposition first")
+        names = list(st.get("symbol_list") or [])
+        m = self.model
+        allnames = names or list(m.endo_names[:int(self.M_["orig_endo_nbr"])])
+        i_var = BUILTINS["varlist_indices"](self.I, [Cell(allnames, (len(allnames), 1)), self.M_["endo_names"]], 1)
+        i_var = np.asarray(farr(i_var), float).reshape(-1, 1)
+        info0 = self.oo_.get("shock_decomposition_info")
+        if names and not (isinstance(info0, Struct) and "i_var" in info0):
+            info = self.oo_.get("plot_shock_decomposition_info")
+            info = info if isinstance(info, Struct) else R.rstruct("oo_.plot_shock_decomposition_info")
+            iv = i_var
+            if "i_var" in info:
+                iv = np.unique(np.concatenate([i_var.ravel(), np.asarray(farr(info["i_var"]), float).ravel()])).reshape(-1, 1)
+            self.set_oo("plot_shock_decomposition_info", R.struct_set(info, "i_var", R.mat(iv)))
+        if not self.opt_flag("no_graph.plot_shock_decomposition"):
+            self.fig_shock_decomposition(i_var.ravel())
 
     def st_initial_condition_decomposition(self, st):
         """initial_condition_decomposition.m: oo_.initval_decomposition (endo_nbr x endo_nbr + 2 x T)."""
         from .smoother import initial_condition_decomposition
         R = _R()
+        empty = np.zeros((0, 0))
+        for key, val in (("colormap", ""), ("graph_format", "eps"), ("fig_name", ""), ("detail_plot", np.bool_(False)),
+                         ("init2shocks", empty), ("steadystate", np.bool_(False)), ("write_xls", np.bool_(False)),
+                         ("type", ""), ("plot_init_date", empty), ("plot_end_date", empty), ("diff", np.bool_(False)),
+                         ("flip", np.bool_(False)), ("max_nrows", np.float64(6))):
+            self.set_options("initial_condition_decomp." + key, val)         # set_default_initial_condition_decomposition_options
         self._refresh_options(st)
         kind = "initial_condition_decomposition"
         if self.opt_flag("initial_condition_decomp.with_epilogue"):
             raise R.ResultsError(f"{kind}: with_epilogue is not supported by pydyn.dynare()")
         if "initval_decomposition" in self.oo_:
+            self._plot_initval_decomposition(st)
             return                  # Dynare keeps the decomposition it has (and only plots it again)
         res = self._decomposition_smoother(kind)
         with warnings.catch_warnings():
@@ -798,6 +886,25 @@ class EstimationMixin:
         self.set_oo("initval_decomposition", R.mat(icd.z))
         self.unrefuse("oo_", ["initval_decomposition"])
         self._decomp_info("initval_decomposition.parameter_set", "calibration")
+        self._plot_initval_decomposition(st)
+
+    def _plot_initval_decomposition(self, st):
+        """The plot of initial_condition_decomposition.m: plot_shock_decomposition on the initial-condition decomposition
+        with the endogenous variables as the components."""
+        if not self.fig_on():
+            return
+        from .matlab import BUILTINS
+        for key in ("colormap", "nodisplay", "graph_format", "fig_name", "detail_plot", "init2shocks", "steadystate", "write_xls",
+                    "type", "plot_init_date", "plot_end_date", "diff", "flip", "max_nrows"):
+            v = self.opt("initial_condition_decomp." + key, None)
+            if v is not None:
+                self.set_options("plot_shock_decomp." + key, v)
+        self.set_options("plot_shock_decomp.realtime", np.float64(0))
+        self.set_options("plot_shock_decomp.use_shock_groups", "")
+        names = list(st.get("symbol_list") or [])
+        allnames = names or list(self.model.endo_names[:int(self.M_["orig_endo_nbr"])])
+        i_var = BUILTINS["varlist_indices"](self.I, [Cell(allnames, (len(allnames), 1)), self.M_["endo_names"]], 1)
+        self.fig_shock_decomposition(np.asarray(farr(i_var), float).ravel(), init_cond=True)
 
     def st_realtime_shock_decomposition(self, st):
         """realtime_shock_decomposition.m: oo_.realtime_shock_decomposition, .conditional_shock_decomposition,
@@ -871,6 +978,18 @@ class EstimationMixin:
         self.set_oo("dr", self._make_dr(ob.ref, ob.ref.as_dr(), 1, self._qz()))    # the reference regime's rules
         self.refuse("oo_.occbin.simul", ["regime_history"], "a struct array")
         self._occbin_shocks = np.asarray(res.shocks, float)
+
+    def st_rplot(self, st):
+        """``rplot(var_list_)``."""
+        self.fig_rplot([str(x) for x in (st.get("symbol_list") or [])])
+
+    def st_occbin_graph(self, st):
+        """``occbin.graph(M_, options_, options_occbin_, oo_, var_list_)``."""
+        opts = st.get("options") or {}
+        ss = opts.get("graph.steady_state", True)             # noconstant sets it to false (deviations from the steady state)
+        if isinstance(ss, str):
+            ss = ss.strip().lower() not in ("false", "0")
+        self.fig_occbin([str(x) for x in (st.get("symbol_list") or [])], bool(ss))
 
     def fn_unpack_simulations(self, args, nargout):
         R = _R()

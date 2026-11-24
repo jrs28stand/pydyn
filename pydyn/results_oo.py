@@ -165,9 +165,9 @@ class CommandsMixin:
             replic = 1
         pruning = self.opt_flag("pruning")
         loglinear = self.opt_flag("loglinear")
-        for key in ("partial_information", "discretionary_policy"):
-            if self.opt_flag(key):
-                raise R.ResultsError(f"stoch_simul with {key} is not supported")
+        if self.opt_flag("partial_information"):
+            raise R.ResultsError("stoch_simul with partial_information is not supported")
+        disc = self.opt_flag("discretionary_policy")
         qz = self._qz()
         names = list(var_list) if var_list else list(m.orig_endo_names)
         # varlist_indices: unique names, in the order given
@@ -189,9 +189,14 @@ class CommandsMixin:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
             try:
-                sol = first_order(m, qz_criterium=qz, loglinear=loglinear)
-                dr = sol.as_dr()
-                if order >= 2:
+                if disc:
+                    dres = self._discretionary_solution(qz)
+                    dr = dres.dr
+                    sol = type("DiscSol", (), {"params": np.asarray(dr["params"], float)})
+                else:
+                    sol = first_order(m, qz_criterium=qz, loglinear=loglinear)
+                    dr = sol.as_dr()
+                if order >= 2 and not disc:
                     dr = k_order(m, order=order, pruning=pruning)
                     dr["order"] = order
             except BlanchardKahnError as exc:
@@ -202,7 +207,7 @@ class CommandsMixin:
             raise R.ResultsError("stoch_simul: loglinear is only available at order 1")
         m.params[:] = sol.params
         self.push()
-        self.set_oo("dr", self._make_dr(sol, dr, order, qz))
+        self.set_oo("dr", self._discretionary_dr(dres) if disc else self._make_dr(sol, dr, order, qz))
         # --- simulation
         Sigma = np.array(m.Sigma_e, float)
         ys = np.asarray(dr["ys"], float)
@@ -332,8 +337,8 @@ class CommandsMixin:
         if theoretical:
             nar = int(self.opt("ar", 5))
             items = [R.mat(g) for g in mom.gamma_y]
-            single_shock_vd = m.n_exo == 1 and order >= 2 and not self.opt_flag("nodecomposition") and len(items) > nar + 1
-            if single_shock_vd:      # observed under order >= 2 with one shock: Dynare's decomposition has a row per endogenous variable
+            single_shock_vd = m.n_exo == 1 and not self.opt_flag("nodecomposition") and len(items) > nar + 1
+            if single_shock_vd:      # one shock: compute_variance_decomposition.m returns ones(size(ghu,1),1): a row per endogenous variable
                 items[nar + 1] = R.mat(np.ones((m.n_endo, 1)))
             # th_autocovariances gives a column; the pruned state-space moments (order >= 2, pruning) a row
             shape = (1, len(items)) if (pruning and order >= 2) else (len(items), 1)
@@ -345,7 +350,7 @@ class CommandsMixin:
         if mom.skewness is not None:
             self.set_oo("skewness", R.col(mom.skewness))
             self.set_oo("kurtosis", R.col(mom.kurtosis))
-        if theoretical and m.n_exo == 1 and order >= 2 and not self.opt_flag("nodecomposition"):
+        if theoretical and m.n_exo == 1 and not self.opt_flag("nodecomposition"):
             self.set_oo("variance_decomposition", R.mat(100.0 * np.ones((m.n_endo, 1))))
         elif mom.variance_decomposition is not None and (m.n_exo > 1 or not theoretical):
             self.set_oo("variance_decomposition", R.mat(mom.variance_decomposition))
@@ -392,8 +397,13 @@ class CommandsMixin:
                      replic=replic, draws=draws).T                      # n x irf
             if relative and order == 1:
                 y = 100 * y / cs[i, i]
+            rows = []
+            thr = float(self.opt("impulse_responses.plot_threshold", 1e-10))
             for j, name in zip(ivar, names):
                 irfs[f"{name}_{m.exo_names[i]}"] = R.row(y[j, :])
+                if np.max(np.abs(y[j, :])) >= thr:
+                    rows.append((name, y[j, :]))
+            self.fig_irf(m.exo_names[i], rows)
         self.set_oo("irfs", irfs)
 
     # ------------------------------------------------------------------ perfect foresight

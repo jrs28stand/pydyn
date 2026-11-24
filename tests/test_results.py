@@ -16,23 +16,26 @@ import pydyn
 from pydyn import ResultsError
 from pydyn.results_m import known_missing
 from pydyn.matlab import Cell, Struct, Tainted, Unsupported
+from pydyn.results_post import StructArray
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
-         "est_smoother0", "est_mode4", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
+         "est_smoother0", "est_mode4", "est_nm7", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
          "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst",
          "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
          "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal",
-         "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml"]
+         "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
 #: flat in some directions (the log density agrees to 6e-5, the parameters to 1e-2, i.e. 0.4 standard errors).
+#: est_nm7: Nelder-Mead stops when the simplex is smaller than 1e-7; its last steps depend on likelihood values at the 1e-12 level,
+#: so the mode agrees to 4e-7 (parameters) and the steady state to 7e-5 (absolute).
 #: osr1: the loss is flat near its minimum (6e-7 apart in value), so csminwel's stopping point differs in the
 #: rule coefficients by 1e-3 (numerical vs analytic derivatives in Dynare's osr).
 #: cf_mh, cf_ml: the conditional forecasts replay Dynare's draws exactly; they differ by the estimates' optimiser tolerance
 #: (cf_mh: mode 5e-6 in the parameters, 1e-4 in the largest forecast; cf_ml: flat likelihood as in est_ml, 1e-2 in the forecast of k).
-TOL = {"est_mode4": 1e-3, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3, "est_fc_mode": 1e-3, "est_fc_mh": 2e-3, "est_fc_mh2": 2e-3,
+TOL = {"est_mode4": 1e-3, "est_nm7": 1e-5, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3, "est_fc_mode": 1e-3, "est_fc_mh": 2e-3, "est_fc_mh2": 2e-3,
        "cf_mh": 5e-4, "cf_ml": 2e-2}
 
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
@@ -48,6 +51,13 @@ REFUSED = {"oo_.dr.fuu", "oo_.dr.g_0", "oo_.dr.g_1", "oo_.dr.g_2", "oo_.dr.g_3",
 
 def _diff(ref, ours, path, out, tol):
     if path in SKIP:
+        return
+    if isinstance(ours, StructArray):                  # a struct array (oo_.convergence.geweke): element by element
+        if not (isinstance(ref, np.ndarray) and ref.dtype.names) or ref.size != len(ours.items):
+            out.append((path, "struct array size"))
+            return
+        for k, item in enumerate(ours.items):
+            _diff(ref.ravel(order="F")[k:k + 1], item, f"{path}({k + 1})", out, tol)
         return
     if isinstance(ref, np.ndarray) and ref.dtype.names:
         if not isinstance(ours, Struct):

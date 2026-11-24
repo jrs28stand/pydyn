@@ -51,6 +51,8 @@ from .results_bwd import BackwardMixin
 from .results_ep import ExtendedPathMixin
 from .results_var import VarModelMixin
 from .results_cf import ConditionalForecastMixin
+from .gfx import Gfx as _Gfx
+from .figures import FiguresMixin
 
 __all__ = ["dynare", "Results", "ResultsError"]
 
@@ -492,8 +494,8 @@ DECLARATIONS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks
 #: statements that print or write files only: skipped
 IGNORED = {"write_latex_dynamic_model", "write_latex_static_model", "write_latex_original_model",
            "write_latex_steady_state_model", "collect_latex_files", "write_latex_definitions",
-           "write_latex_parameter_table", "write_latex_prior_table", "model_info", "rplot", "resid", "model_diagnostics",
-           "plot_shock_decomposition", "occbin_graph", "dsample", "dynatype", "dynasave",
+           "write_latex_parameter_table", "write_latex_prior_table", "model_info", "resid", "model_diagnostics",
+           "dsample", "dynatype", "dynasave",
            "occbin_write_regimes_xls", "squeeze_shock_decomposition"}
 #: statements whose options Dynare's driver writes into options_ (the rest declare)
 _NO_OPTIONS_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "mshocks", "estimated_params",
@@ -509,7 +511,7 @@ class _Core(CommandsMixin):
     """The workspace of a .mod file run by :func:`dynare`: ``M_``, ``options_``, ``oo_``, the MATLAB variables
     (``vars``), the :class:`pydyn.Model` (``model``) and Dynare's commands as methods."""
 
-    def __init__(self, model: Model, mod_file, *, shocks=None, seed=None):
+    def __init__(self, model: Model, mod_file, *, shocks=None, seed=None, nograph=True):
         from .octave_rng import OctaveRandom
         from .results_m import build_M
         self.model = model
@@ -529,6 +531,8 @@ class _Core(CommandsMixin):
         self.host = _LiveHost(self)
         mod_dir = model.json_dir.parents[2]
         self.I = LiveInterp(mod_dir, self.host, self)
+        from .gfx import Ledger as _Ledger
+        self.gfx = _Gfx(root=mod_dir, ledger=_Ledger(mod_dir, model.json_dir.parents[1] / self._WRITTEN))
         self.I.session = self
         self.I.base.vars = _ml.Workspace(model)
         self.I.base.global_names = set(_HOST_GLOBALS)
@@ -536,7 +540,7 @@ class _Core(CommandsMixin):
         opts = default_options()
         opts["dirname"] = self.name
         opts["dynare_version"] = "7.2"
-        opts["nograph"] = np.bool_(True)
+        opts["nograph"] = np.bool_(bool(nograph))
         if model.linear:
             opts["linear"] = np.bool_(True)
         self.I.globals["M_"] = tag_tree(build_M(model, self.name), "M_")
@@ -1167,7 +1171,7 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin, FiguresMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into
@@ -1212,14 +1216,16 @@ class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPa
 
 
 def dynare(mod_file, *, shocks=None, seed=None, preprocessor=None, functions=None, steady_state_fn=None,
-           run=True) -> Results:
+           run=True, nograph=True) -> Results:
     """Run a .mod file as Dynare does and return its workspace (:class:`Results`: ``M_``, ``options_``, ``oo_``).
 
     ``mod_file`` is a path (the preprocessor runs on it, as ``pydyn.run_preprocessor`` does) or the folder of
     JSON files of an earlier run. ``shocks`` maps the number k of a ``stoch_simul`` with ``periods > 0`` to the
     exogenous path it should use (rows = periods): without it the shocks are Octave's ``randn`` draws from
     Dynare's default seed (``randn('state', 0)``), in Dynare's order, so that a run reproduces Dynare run under
-    Octave; ``seed`` replaces that seed. ``functions`` and ``steady_state_fn`` are as for ``pydyn.Model``.
+    Octave; ``seed`` replaces that seed. ``nograph`` (default true, as in ``dynare file nograph``) is the initial value
+    of ``options_.nograph``: with ``nograph=False`` the commands write Dynare's figures under ``<name>/graphs/``
+    (``graph_format`` eps and pdf; needs matplotlib), unless the file itself says ``nograph``. ``functions`` and ``steady_state_fn`` are as for ``pydyn.Model``.
 
     Raises :class:`ResultsError` where Dynare would stop with an error (``error()`` in a MATLAB line, a failed
     solution) and where pydyn cannot run a statement or MATLAB line faithfully."""
@@ -1232,5 +1238,5 @@ def dynare(mod_file, *, shocks=None, seed=None, preprocessor=None, functions=Non
         json_dir = run_preprocessor(p, preprocessor=preprocessor)
         mod_path = p
     model = Model(json_dir, functions=functions, steady_state_fn=steady_state_fn, run_statements=False)
-    res = Results(model, mod_path, shocks=shocks, seed=seed)
+    res = Results(model, mod_path, shocks=shocks, seed=seed, nograph=nograph)
     return res.run() if run else res

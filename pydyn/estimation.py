@@ -45,7 +45,7 @@ automatic switch to the univariate filter when the forecast-error covariance is 
 Priors: beta, gamma, normal, inverse gamma 1 and 2, uniform, Weibull; none at all means maximum
 likelihood.
 
-Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 5 (newrat, ported), 1, 3, 7, 8, 9 (scipy equivalents),
+Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 5 (newrat, ported), 7 (Octave fminsearch, ported), 1, 3, 8, 9 (scipy equivalents),
 0 with ``mode_file``; ``optim``, ``additional_optimizer_steps``, ``cova_compute``,
 ``use_penalized_objective_for_hessian``. When the ``.mod`` file gives no ``mode_compute`` (Dynare's
 default is 5, newrat) csminwel is used: see ``mode`` for the reasons.
@@ -972,7 +972,7 @@ _HONOURED_BY = {
                                 "smoother", "filtered_vars", "filter_step_ahead"],
 }
 #: mode_compute values: ported algorithm, scipy stand-in, or not available
-_MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"), 7: ("Nelder-Mead", "fminsearch"),
+_MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"),
                              8: ("Nelder-Mead", "Dynare's simplex routine"),
                              9: ("differential_evolution", "CMA-ES (cmaes.m)")}
 
@@ -2002,6 +2002,30 @@ class Estimation:
                 niter += res["iterations"]
                 self.last_newrat = res
                 msgs.append(f"newrat: {res['message']} ({res['iterations']} iterations, {res['fcount']} evaluations)")
+            elif step == 7:                       # fminsearch as Octave runs it (pydyn.fminsearch, ported)
+                from .fminsearch import fminsearch as _fminsearch
+                known = {"maxiter": "MaxIter", "maxfunevals": "MaxFunEvals", "tolfun": "TolFun", "tolx": "TolX"}
+                nm = {"MaxIter": 6000, "MaxFunEvals": 1000000, "TolFun": 1e-8, "TolX": 1e-6}
+                for k_, v_ in opt.items():
+                    key = known.get(str(k_).lower())
+                    if key is None:
+                        if str(k_).lower() in ("display", "funvalcheck", "outputfcn"):
+                            if str(k_).lower() != "display":
+                                raise NotImplementedError(f"optim: {k_} with mode_compute=7 is not supported")
+                            continue
+                        raise NotImplementedError(f"optim: unknown option {k_!r} for mode_compute=7")
+                    nm[key] = float(v_)
+
+                def fm(v):
+                    nfev[0] += 1
+                    return self.objective(v)[0]
+                xs, fs, flag, out_ = _fminsearch(fm, x, tol_x=nm["TolX"], tol_f=nm["TolFun"],
+                                                 max_fun_evals=nm["MaxFunEvals"], max_iter=nm["MaxIter"])
+                x = xs
+                niter += out_["iterations"]
+                ok = ok and flag >= 0
+                msgs.append(f"fminsearch (Octave's Nelder-Mead, ported): {out_['message'].strip()} "
+                            f"({out_['iterations']} iterations, {out_['funcCount']} evaluations)")
             elif step in _MODE_COMPUTE_EQUIVALENTS:
                 name, matlab = _MODE_COMPUTE_EQUIVALENTS[step]
                 _opt.warn_once(self.model, f"mode_compute={step}: Dynare uses {matlab}; pydyn uses scipy's {name}, "

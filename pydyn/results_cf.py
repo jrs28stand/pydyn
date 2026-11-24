@@ -187,7 +187,8 @@ class ConditionalForecastMixin:
 
     # ------------------------------------------------------------------ plot_conditional_forecast
     def st_plot_conditional_forecast(self, st):
-        """``conditional_forecasts.plot(var_list_, periods, options_, oo_)``: the checks of the function; nothing is drawn."""
+        """``conditional_forecasts.plot(var_list_, periods, options_, oo_)``: the checks of the function, then one figure per
+        variable (``build_figure``) unless graphs are off."""
         R = _R()
         self.pull()
         cf = self.oo_.get("conditional_forecast")
@@ -202,6 +203,10 @@ class ConditionalForecastMixin:
                 for grp in ("cond", "uncond"):
                     if v not in cf[grp][part]:
                         raise R.ResultsError(f"MATLAB error in the .mod file: invalid use of undefined value: {v}")
+        per = st.get("periods")
+        if per is None:
+            per = (st.get("options") or {}).get("periods")
+        self.fig_conditional_forecast(cf, names, None if per is None else int(_num(per)))
 
     # ------------------------------------------------------------------ simult_
     def fn_simult_(self, args, nargout):

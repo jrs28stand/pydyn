@@ -186,6 +186,13 @@ folder only (plain file names, no options; files pydyn did not write are never o
 `oo_.Smoother.Variance`/`State_uncertainty`, `oo_.FilteredVariablesKStepAhead(Variances)`, and `oo_.shock_decomposition`,
 `oo_.initval_decomposition` and the realtime decompositions with `parameter_set=calibration`). A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
 supported (estimation, forecast, OccBin, ...) stop the run with an error that names them. `pydyn.Model` is unchanged.
+Figures: with `nograph` unset, `pydyn.dynare()` writes IRF, forecast, conditional forecast, shock/initial-condition decomposition, prior,
+mode-check, classical-smoother, posterior-distribution, posterior-IRF, Brooks-Gelman, OccBin and `rplot` figures under `<fname>/graphs/`
+with Dynare's names (eps/pdf via matplotlib, imported lazily with the Agg backend; `graph_format`, `nograph` and `nodisplay` are honoured;
+a file pydyn did not write is never overwritten). Validated against Dynare's own plotting calls (arrays, titles, layout, names), not images.
+Also: `mode_compute=7` (Octave's `fminsearch`), `bayesian_irf`, `moments_varendo`, `discretionary_policy`, `oo_.convergence`,
+`mode_check` data, `save_params_and_steady_state` (byte-identical file) and `initial_estimation_checks`. Not done: `mode_compute=9`
+(CMA-ES; GPL-3.0-or-later, so portable, but not yet ported), `load_mh_file`, `mh_recover`, `trace_plot` statements.
 Validation: `tests/test_results.py` against `reference/oo/*.mat` (Dynare 7.2 under Octave 8.4).
 
 ## Dynare's shipped examples

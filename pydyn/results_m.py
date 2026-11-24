@@ -33,6 +33,12 @@ KNOWN_UNSUPPORTED = {
 }
 
 
+def _row10(a):
+    """A row vector; ``zeros(1, 0)`` (not 0 x 0) when empty, as Dynare's M_.state_var of a model without states."""
+    a = np.asarray(a, float)
+    return np.zeros((1, 0)) if a.size == 0 else row(a)
+
+
 def build_M(model, mod_name: str) -> Struct:
     """Dynare's M_ for ``model`` before any statement has run (parameters NaN, no shocks)."""
     raw, info = model.raw, model.info
@@ -61,6 +67,8 @@ def build_M(model, mod_name: str) -> Struct:
     M["exo_det_nbr"] = _F(model.n_exo_det)
     M["exo_nbr"] = _F(nx)
     M["endo_nbr"] = _F(n)
+    if any(st.get("statementName") == "discretionary_policy" for st in model.statements):
+        M["discretionary_orig_eq_nbr"] = _F(model.jac_dims[0])          # written by the preprocessor with discretionary_policy
     M["param_nbr"] = _F(len(model.param_names))
     M["orig_endo_nbr"] = _F(raw.get("orig_endo_nbr", n))
     M["aux_vars"] = empty() if not raw.get("aux_vars") else Tainted("M_.aux_vars is a struct array, which pydyn does not represent")
@@ -91,7 +99,7 @@ def build_M(model, mod_name: str) -> Struct:
     order_var, state_var, cnt = dr_ordering(model.lead_lag_incidence)
     inv = np.empty(n, int)
     inv[order_var] = np.arange(n)
-    M["state_var"] = Struct(declaration_order=row(np.asarray(state_var) + 1), dr_order=row(inv[state_var] + 1))
+    M["state_var"] = Struct(declaration_order=_row10(np.asarray(state_var) + 1), dr_order=_row10(inv[state_var] + 1))
     for k in ("maximum_exo_lag", "maximum_exo_lead"):
         if k in info:
             M[k] = _F(info[k])
