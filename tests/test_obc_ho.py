@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import pydyn
-from pydyn.obc import NewsOBC
+from pydyn.obc import NewsOBC, OBCError
 from pydyn.obc_ho import HigherOrderNews
 from pydyn.simulate import simulate
 
@@ -174,3 +174,70 @@ def test_batch_active_set_equals_scalar():
                 np.testing.assert_allclose(Y[:, j], y, rtol=0, atol=1e-11)
                 np.testing.assert_allclose(Y2[:, j], y, rtol=0, atol=1e-11)
     assert n_ok[0] > 200                                       # the comparison is not only about failures
+
+
+# ------------------------------------------------------------------------------------ several constraints
+@pytest.fixture(scope="module")
+def zlb2(tmp_path_factory):
+    d = tmp_path_factory.mktemp("obc_zlb2")
+    shutil.copy(REF / "obc_zlb2.mod", d)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(d / "obc_zlb2.mod"))
+    return m, np.random.default_rng(1).normal(size=(150, m.n_exo)) * 0.02
+
+
+def test_two_constraints_order_one_equals_news(zlb2):
+    m, S = zlb2
+    h = HigherOrderNews(m, order=1, horizon=20, check_ahead=20)
+    assert h.n_c == 2
+    a = h.simulate(S)
+    b = NewsOBC(h.ob, horizon=20, check_ahead=20).simulate(S, periods=150)
+    np.testing.assert_allclose(a["with_bound"], b.piecewise, atol=1e-11)
+    w = a["wedges"]
+    assert (w[:, :20] > 1e-10).any(axis=1).sum() > 10 and (w[:, 20:] > 1e-10).any(axis=1).sum() > 10
+
+
+def test_two_constraints_order_two_and_gap_map(zlb2):
+    m, S = zlb2
+    h = HigherOrderNews(m, order=2, horizon=20, check_ahead=20)
+    r = h.simulate(S)
+    np.testing.assert_allclose(r["without_bound"], simulate(h.dr, S, order=2, pruning=True), atol=1e-11)
+    rg = np.random.default_rng(2)
+    n = m.n_endo
+    for _ in range(4):
+        y1, y2, o, prev = (0.01 * rg.normal(size=n) for _ in range(4))
+        u = 0.01 * rg.normal(size=m.n_exo)
+        np.testing.assert_allclose(h.gap_from_state(y1, y2, o, prev, u), h.gap_path(h.expected_path(y1, y2, o), prev, u),
+                                   rtol=0, atol=1e-13)
+
+
+def test_two_constraints_cubature_and_batch_equal_scalar(zlb2):
+    m, S = zlb2
+    tiny = m.Sigma_e * 1e-12
+    c = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, cubature=True, Sigma_e=tiny, qmc_level=5).simulate(S[:60])
+    b = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, Sigma_e=tiny).simulate(S[:60])
+    np.testing.assert_allclose(c["with_bound"], b["with_bound"], atol=1e-9)
+    h = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, cubature=True, qmc_level=6, regions="all")
+    assert h.R.shape[0] == 2 * h.N
+    qs, h1 = [], HigherOrderNews(m, order=2, horizon=20, check_ahead=20)       # realistic gap paths from a simulation
+    orig = h1.news_shocks
+    h1.news_shocks = lambda q: (qs.append(q.copy()), orig(q))[1]
+    h1.simulate(S)
+    seen = checked = failed = 0
+    for q in qs:
+        idx = h._relevant_points(q)
+        if idx.size == 0:
+            continue
+        seen += 1
+        pr = q[:, None] + h.R @ h.xi[:, idx]
+        try:
+            ref = sum(h._solve(pr[:, j]) for j in range(idx.size)) / h.xi.shape[1]
+        except OBCError:                                             # a perturbed path without solution: both routes raise
+            with pytest.raises(OBCError):
+                h.news_shocks(q)
+            failed += 1
+            continue
+        np.testing.assert_allclose(h.news_shocks(q), ref, rtol=0, atol=1e-11)
+        checked += 1
+    assert checked >= 3 and failed >= 1                      # some perturbed paths have no solution: both routes raise

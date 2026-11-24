@@ -64,18 +64,17 @@ class HigherOrderNews:
             self.ghs2 = dr["ghs2"].ravel()
             self.c2 = 0.5 * (self.ghuu @ self.Sigma.ravel() + self.ghs2)        # E of the shock-quadratic terms
         self.SigS = self.ghus @ self.Sigma @ self.ghus.T
-        co = nb.constraints[0]
-        a = co.s_g * co.alt
-        n, nx = self.n, ob.n_exo
-        self.aC, self.aB, self.aA, self.aJ, self.a0 = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx], a[-1]
+        n, nx, nc = self.n, ob.n_exo, nb.n_c
+        self.n_c, self.nws = nc, nc * nb.T                          # number of constraints; length of the wedge vector
+        a = np.array([co.s_g * co.alt for co in nb.constraints])    # (nc, 3n + nx + 1), one gap functional per constraint
+        self.aC, self.aB, self.aA, self.aJ, self.a0 = a[:, :n], a[:, n:2 * n], a[:, 2 * n:3 * n], a[:, 3 * n:3 * n + nx], a[:, -1]
+        self._row0 = np.argsort(nb._order)[np.arange(nc) * self.N]  # position of each constraint's first gap row in q
         self._build_gap_maps()
         self.cubature = bool(cubature)
         self.pruning_cutoff, self.max_cubature_dimension = pruning_cutoff, int(max_cubature_dimension)
         self.pou, self.qmc_level, self.regions, self.taper, self.seed = (int(periods_of_uncertainty), int(qmc_level),
                                                                          regions, bool(taper), seed)
         if self.cubature:
-            if nb.n_c != 1:
-                raise NotImplementedError("cubature with more than one constraint")
             self.R = self.conditional_root()
             self.xi = self._points(self.R.shape[1])
         self._fac_cache = {}
@@ -96,15 +95,18 @@ class HigherOrderNews:
         ns, two = len(ist), self.order == 2
         F, ghx = self.ghxs, self.ghx
         K = N + 1
-        Ay = np.vstack([self.aB[ov], self.aA[ov], self.aC[ov]])      # DR order, for the y-parts   (3, n)
-        Ao = np.vstack([self.aB, self.aA, self.aC])                   # declaration order, for the o-part
-        rY = np.zeros((K, 3, n)); rY[0] = Ay
-        rO = np.empty((K, 3, n)); rO[0] = Ao
+        nc = self.n_c
+        # rows 3c, 3c+1, 3c+2: (aB, aA, aC) of constraint c
+        Ay = np.vstack([np.vstack([self.aB[c][ov], self.aA[c][ov], self.aC[c][ov]]) for c in range(nc)])   # DR order (y-parts)
+        Ao = np.vstack([np.vstack([self.aB[c], self.aA[c], self.aC[c]]) for c in range(nc)])               # declaration order (o)
+        m3 = 3 * nc
+        rY = np.zeros((K, m3, n)); rY[0] = Ay
+        rO = np.empty((K, m3, n)); rO[0] = Ao
         Vy = Ay @ ghx                                                 # (3, ns): a ghx F^(k-1)
         P = self.ob.P
         if two:
             nn = ns * ns
-            rW = np.zeros((K, 3, nn)); rc = np.zeros((K, 3))
+            rW = np.zeros((K, m3, nn)); rc = np.zeros((K, m3))
             Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = row i of ghxx @ vec(W_j)
             Z = np.zeros((ns, nn))                                    # state rows of the W0-coefficient of m2_k
             zc = np.zeros(ns)                                         # state rows of the constant of m2_k
@@ -123,15 +125,21 @@ class HigherOrderNews:
                 S = F @ S @ F.T + self.SigS
                 Cj = np.matmul(np.matmul(F.T, Cj), F)
             Vy = Vy @ F
-        def comb(r):                                                  # q_h <- rB_h + rA_{h+1} + rC_{h-1}
-            G = r[:N, 0] + r[1:K, 1]
-            G[1:] += r[:N - 1, 2]
-            return G
+        order = self.news._order                                       # rows: complementarity rows first, as NewsOBC
+
+        def comb(r):                                                  # q_h <- rB_h + rA_{h+1} + rC_{h-1}, per constraint
+            out = []
+            for c in range(nc):
+                G = r[:N, 3 * c] + r[1:K, 3 * c + 1]
+                G[1:] += r[:N - 1, 3 * c + 2]
+                out.append(G)
+            return np.vstack(out)[order]
         cols = [comb(rY)]
-        q0 = np.full(N, float(self.a0))
+        q0 = np.repeat(self.a0, N).astype(float)
         if two:
             cols.append(comb(rW))
             q0 += comb(rc[:, :, None])[:, 0]
+        q0 = q0[order]
         cols.append(comb(rO))
         self._q0 = q0
         self._Gz = np.ascontiguousarray(np.hstack(cols))
@@ -152,7 +160,7 @@ class HigherOrderNews:
         z[-n:] = o_pre
         q = self._Gz @ z
         q += self._q0
-        q[0] += self.aC @ prev_total + self.aJ @ shock
+        q[self._row0] += self.aC @ prev_total + self.aJ @ shock
         return q
 
     # --------------------------------------------------------------------------------------- expected path
@@ -181,27 +189,32 @@ class HigherOrderNews:
     def gap_path(self, path, prev_total, shock):
         """q: the gap along an expected path (N periods)."""
         N = self.N
-        q = self.a0 + path[:N] @ self.aB + path[1:N + 1] @ self.aA
-        q[1:] += path[:N - 1] @ self.aC
-        q[0] += self.aC @ prev_total + self.aJ @ shock
-        return q
+        out = []
+        for c in range(self.n_c):
+            q = self.a0[c] + path[:N] @ self.aB[c] + path[1:N + 1] @ self.aA[c]
+            q[1:] += path[:N - 1] @ self.aC[c]
+            q[0] += self.aC[c] @ prev_total + self.aJ[c] @ shock
+            out.append(q)
+        return np.concatenate(out)[self.news._order]
 
     # ------------------------------------------------------------------------------------------- cubature
     def conditional_root(self):
         """R with R R' = covariance of the gap path caused by shocks arriving in the next ``pou`` periods,
         to first order, with DynareOBC's cosine taper w_i = (1 + cos(pi (i-1)/pou))/2 (shock i periods ahead)."""
         nb, N, nx = self.news, self.N, self.ob.n_exo
-        Gq = nb.Qm[:, self.n:]                                   # gap at horizon h after a shock at horizon 0
+        nc = self.n_c
+        Gq_all = nb.Qm[np.argsort(nb._order), self.n:]           # constraint-major rows (c*N + h): gap at horizon h after a shock now
         w, V = np.linalg.eigh(self.Sigma)
         L = V[:, w > 1e-14 * max(w.max(), 1e-300)] * np.sqrt(w[w > 1e-14 * max(w.max(), 1e-300)])
         blocks = []
         for i in range(1, self.pou + 1):
             wi = 0.5 * (1 + np.cos(np.pi * (i - 1) / self.pou)) if self.taper else 1.0
-            B = np.zeros((N, L.shape[1]))
+            B = np.zeros((nc * N, L.shape[1]))
             if i < N:
-                B[i:] = np.sqrt(wi) * (Gq[:N - i] @ L)
-            blocks.append(B)
-        R = np.hstack(blocks) if blocks else np.zeros((N, 0))
+                for c in range(nc):
+                    B[c * N + i:(c + 1) * N] = np.sqrt(wi) * (Gq_all[c * N:c * N + N - i] @ L)
+            blocks.append(B[nb._order])
+        R = np.hstack(blocks) if blocks else np.zeros((nc * N, 0))
         if R.shape[1] == 0 or self.pruning_cutoff is None:
             return R
         # DynareOBC's ObtainRootConditionalCovariance: drop directions with variance below the cut-off share
@@ -234,10 +247,10 @@ class HigherOrderNews:
         nb, T = self.news, self.T
         self.stats["lcp"] += 1
         if np.all(q >= -1e-8 * max(1.0, np.abs(q).max())):
-            return np.zeros(T)
-        y = solve_active_set(nb.Mo, q, T)
+            return np.zeros(self.nws)
+        y = solve_active_set(nb.Mo, q, self.nws)
         if y is None:
-            y, _st = solve_news(nb.Mo, q, T, horizons=sorted({max(1, T // 4), max(1, T // 2), T}))
+            y, _st = solve_news(nb.Mo, q, self.nws, horizons=sorted({max(1, T // 4), max(1, T // 2), T}), n_c=self.n_c)
         if y is None:
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
@@ -252,9 +265,9 @@ class HigherOrderNews:
         self.stats["lcp"] += k
         need = ~np.all(P >= -1e-8 * np.maximum(1.0, np.abs(P).max(axis=0)), axis=0)
         if not need.any():
-            return np.zeros(T)
+            return np.zeros(self.nws)
         Pn = P[:, need]
-        Y, ok = solve_active_set_batch(nb.Mo, Pn, T, scale=nb._mscale, cache=self._fac_cache)
+        Y, ok = solve_active_set_batch(nb.Mo, Pn, self.nws, scale=nb._mscale, cache=self._fac_cache)
         acc = Y[:, ok].sum(axis=1)
         nfail = int((~ok).sum())
         self.stats["batch_fail"] = self.stats.get("batch_fail", 0) + nfail
@@ -316,7 +329,7 @@ class HigherOrderNews:
         self.stats["cubature_points"] += npts
         self.stats["relevant_points"] += idx.size
         if idx.size == 0:
-            return np.zeros(self.T)
+            return np.zeros(self.nws)
         if self.regions == 1:                                      # DynareOBC's default: one region, its mean point
             # mean of q + R xi_j over the relevant j  =  q + R mean(xi_j): an (r)-vector instead of an N x k array
             return (idx.size / npts) * self._solve(q + self.R @ self.xi[:, idx].mean(axis=1))
@@ -329,7 +342,7 @@ class HigherOrderNews:
         else:
             groups = self._split_regions(pr, k)
         xr = self.xi[:, idx]
-        acc = np.zeros(self.T)
+        acc = np.zeros(self.nws)
         for g in groups:                                           # region mean point = q + R (mean of its xi)
             acc += (g.size / npts) * self._solve(q + self.R @ xr[:, g].mean(axis=1))
         return acc
@@ -401,7 +414,7 @@ class HigherOrderNews:
         prev_total = np.empty(n)
         prev_total[self.ov] = y1 + y2
         prev_total += o
-        with_b, without_b, wedges = np.empty((S, n)), np.empty((S, n)), np.zeros((S, self.T))
+        with_b, without_b, wedges = np.empty((S, n)), np.empty((S, n)), np.zeros((S, self.nws))
         for t in range(S):
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
