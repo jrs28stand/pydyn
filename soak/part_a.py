@@ -282,9 +282,10 @@ def task_A(i, st, anom):
             dl = [abs(lps[k + 1] - lps[k]) if lps[k] is not None and lps[k + 1] is not None else None for k in range(len(lps) - 1)]
             okd = [v for v in dl if v is not None]
             if len(okd) >= 5:
-                med = float(np.median(okd))
                 for k, v in enumerate(dl):
-                    if v is not None and v > max(5.0, 20 * med):
+                    nb_ = [dl[j] for j in (k - 1, k + 1) if 0 <= j < len(dl) and dl[j] is not None]
+                    # a jump is a step much larger than both neighbouring steps (a steep but smooth slope is not)
+                    if v is not None and nb_ and v > 5.0 and v > 8 * max(nb_):
                         same_regime = seq[k][1] == seq[k + 1][1]
                         count(st, f"A|{case}|line_jump|{'same_regime' if same_regime else 'regime_change'}")
                         if same_regime:

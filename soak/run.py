@@ -41,7 +41,7 @@ def run_part(part, budget, replay=None):
         anom = Anom(part, st)
         where = dict(task=i)
         try:
-            with record_warnings(st, anom, dict(task=i, part=part)):
+            with record_warnings(st, anom, dict(task=i)):
                 rec = task(i, st, anom)
         except lib.Alarm:
             rec = dict(i=i, timeout=True)
