@@ -170,3 +170,37 @@ Inversion-filter likelihood with the news solver (`pydyn/obc_filter.py`, `NewsFi
 
 Not done: the same for several-equation constraints (`bf`), the piecewise Kalman filter, a proper option in place of
 the attribute switch, mode finding and MCMC runs with the news solver, the selection option.
+
+## 2026-11-24 (fifth entry): order 2 and cubature, prototype as executable spec
+
+Design: project doc `claude/obc-higher-order-design.md`. Decisions (Jacob): the full DynareOBC machinery is wanted;
+cubature validation against DynareOBC itself is left aside; higher order and cubature are restricted, initially, to
+constraints that are one complementary pair (and later the tied-wedge class); production implementation starts in JDyn.
+
+`pydyn/obc_ho.py` (`HigherOrderNews`) is a prototype written to pin the algebra down before the Julia implementation:
+- state = (y1, y2, o): first- and second-order components of the pruned simulation that ignores the bound, and the
+  bound offset (first-order accumulated effect of the news shocks, propagated by the first-order transition);
+- expected path with future shocks at their distribution: `m1' = ghx m1s`, `W' = ghxs W ghxs' + ghus Sigma ghus'`,
+  `m2' = ghx m2s + (ghxx vec(W) + ghuu vec(Sigma) + ghs2)/2`, `o' = P o`, starting from `W = y1s y1s'`;
+- q = the (linearised) gap along that path; the LCP, M, solvers are those of order 1;
+- cubature: `R` with `R R'` = covariance of the gap path from shocks arriving in the next `periods_of_uncertainty`
+  periods (first order, DynareOBC's cosine taper), scrambled Sobol points mapped to normals, points where nothing
+  binds dropped, then either one region (solution at the mean of the remaining points times their share: DynareOBC's
+  default) or the plain average over all points.
+
+Checks on Dynare's NKM estimation example (24 variables; `tests/test_obc_ho.py`, 5 tests)
+- order 1 equals `NewsOBC` (4e-14);
+- the base simulation at order 2 equals pydyn's pruned simulation, which is validated against Dynare 7.2 (2e-14);
+  with shocks too small to reach the bound, with and without bound coincide exactly;
+- the expected path equals the Monte Carlo mean of 20,000 pruned simulations from the same state over 12 periods for
+  all variables (largest z-score 1.4);
+- cubature with the shock variance scaled to 1e-12 equals no cubature (9e-12); `R R'` equals the exact covariance.
+
+First numbers (2,000 periods, shocks of one standard deviation): news shocks are non-zero in 104 periods at order 1,
+112 at order 2, and 1,245 with cubature (agents react to the risk before the bound is reached). The one-region
+default and the average over all points differ by up to 1.8e-3 in the policy rate over 300 periods, which is as large
+as the effect of cubature itself, so the number of regions matters. Prototype speed: 1.3 to 5 ms per period (pure
+Python loops; not optimised, not the target).
+
+Not done: order 3; several regions and clustering; second-order conditional covariance; linearisation around the
+risky steady state; wiring into `obc_method` options; the tied-wedge class; any comparison with DynareOBC.
