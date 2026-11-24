@@ -76,9 +76,72 @@ min-before-abs relevance test; the mean-point identity q + R mean(xi); caching t
 Python-specific: outer instead of kron (Julia has no such cost), the augmented gemm trick (allocation/broadcast overhead of NumPy; in Julia use in-place mul! and a fused loop),
 sorting points by norm is useful in either language but the min/max reduction costs are lower in compiled code.
 
+## Part 2: regions="all" and regions=k (after merging wip/obc 4605e4d)
+Cases: `bench/obc_ho_bench.py rtime` (L9 = qmc_level 9, 1,023 points, 100 periods; L12 = 8,191 points, 30 periods; order 2, cubature).
+Per period, microseconds, min of 3, before = merged code (bench/obc_ho_before.py), same process, interleaved. Baseline paths:
+tests/data/obc_ho_regions_baseline.npz (`baseline --regions`, merged code before any change).
+
+| model | level | regions | before | after | speed-up |
+|---|---|---|---|---|---|
+| nk | 9 | all | 37,790 | 4,270 | 8.9x |
+| nk | 9 | 2 | 8,242 | 2,493 | 3.3x |
+| nk | 9 | 4 | 9,407 | 3,126 | 3.0x |
+| nk | 9 | 16 | 16,312 | 6,750 | 2.4x |
+| nk | 12 | all | 302,860 | 30,549 | 9.9x |
+| nk | 12 | 2 | 84,915 | 12,118 | 7.0x |
+| nk | 12 | 4 | 91,988 | 15,279 | 6.0x |
+| nk | 12 | 16 | 96,189 | 18,193 | 5.3x |
+| nkm | 9 | all | 8,433 | 1,958 | 4.3x |
+| nkm | 9 | 2 / 4 / 16 | 2,456 / 3,374 / 6,687 | 2,354 / 2,636 / 3,610 | 1.0x / 1.3x / 1.9x |
+| nkm | 12 | all | 15,538 | 3,111 | 5.0x |
+| nkm | 12 | 2 / 4 / 16 | 5,032 / 7,735 / 9,739 | 3,530 / 4,429 / 4,741 | 1.4x / 1.7x / 2.1x |
+Reference, regions=1 (same code, current): nk 392 us (level 9), nkm 204 us; order 2 without cubature 44 / 41 us.
+nk has ~70% of the 1,023 points relevant (a model where the bound is nearly always in play), nkm ~16% (L9) and ~4% (L12).
+Per solved point the batch solver costs about 6 us on nk (scalar: ~50 us).
+
+Maximum difference of the simulated paths (with_bound, wedges) from the stored baseline, all 16 cases: **3.6e-15** (nk and nkm,
+levels 9 and 12, regions all/2/4/16). test_regions_match_stored_baseline asserts 1e-12 (level 9 cases).
+
+### What changed (structural)
+1. **`solve_active_set_batch` (pydyn/obc.py, new; the scalar solver is untouched).** The scalar guess-and-verify iteration run in
+   lockstep over all columns: start set S0 = (q < -tol); solve on S; drop negative wedges, add violated periods; stop on a repeated
+   set or after maxit; the pivot test of `_solve_checked` (pivot <= 1e-10 * max|M|) and the acceptance test of `verify_lcp` per column.
+   *Equivalence by construction:* each column follows exactly the scalar sequence of sets, the same rule decides every move,
+   and the same tests accept or reject; the only changes are (a) several columns with the same guessed set share one factorisation, and
+   (b) the linear solve is applied as a stored operator -M_AA^{-1} when cond_1(M_AA) <= 1e4 (error <= ~1e-12 relative to the scalar
+   LU solve; more ill-conditioned sets use the LU solve, as the scalar code). Columns for which the iteration fails (batch_fail) go down the scalar
+   route (`_solve`: scalar active set again, then the MILP), so the MILP fallback and its selection are unchanged. When <= 8 columns are left
+   the scalar routine continues from their current set (the cycle memory restarts; a cycle is a failure either way).
+   With several LCP solutions the batch returns the one the scalar iteration returns, because it is the same iteration.
+   Fallback rate observed: 0 of 73,225 (nk L9), 168,072 (nk L12), 16,759 (nkm L9), 9,029 (nkm L12) solved points; 0 singular blocks; 0 sets
+   above the conditioning threshold.
+2. **Cache of solution operators by guessed set**, across periods (M is fixed per parameter set): 2,827 sets after 100 periods on nk L9 against
+   ~73,000 solves. Operators are stored compact (|A| x |A|, padded to a power of two) so applying them to all columns of a size class is
+   one batched matmul over small matrices. Gather/scatter through an extra zero row absorbs the padding.
+3. Sets are keyed by one uint64 (packed bits) for n_s <= 64: np.unique and dict lookups on integers.
+4. Verification reuses the n_s rows of q + M y already formed in the iteration; only the check-ahead rows are computed at the end.
+5. `regions=k`: principal components from the eigendecomposition of the 2N x 2N Gram matrix instead of the SVD of the tall
+   (m x 2N) matrix (SVD was 70% of the time); region sums of squares kept and updated only for the two regions a split changes;
+   region mean points formed as q + R mean(xi) rather than from the N x m matrix. Component signs are arbitrary in both versions and the split is
+   invariant to them (the Otsu criterion on a centred projection is symmetric in j <-> m - j), so the partition is the same unless a
+   point lies within rounding of a threshold; all 16 cases above reproduce the baseline to 3.6e-15.
+
+### Profile after (nk, L9, all): per period 4.3 ms = first two heavy iterations of the lockstep loop (the q<0 guess is wrong for ~90% of
+columns, so two passes of ~700 columns are needed): grouping/keys 0.7, cache lookups 0.7, batched operator application 1.3, verification 0.6,
+rest 0.9 (numpy call overhead on small arrays dominates). nkm: 2 ms (1.2 ms of it outside the solver).
+
+### Which are structural (Julia) and which are Python-specific
+Structural: lockstep scalar iteration over the points of a period with identical decision rules (equivalence argument above); grouping by guessed
+set and caching M_AA factorisations (or inverses) across periods keyed by the set; applying the cached operator, with a conditioning guard, instead of
+refactorising; reusing the n_s rows of q + M y for verification; the Gram-matrix PCA and incremental region SSE; region mean point as q + R mean(xi).
+In Julia the scalar solve is already 8-14 us, so the win of batching is smaller: the useful part is (cache of factorisations/inverses by set across
+periods and points) and, if points are many, a multi-RHS solve per set. Python-specific: packing sets into uint64 for np.unique, padding to power-of-two
+operator classes with a zero row to turn many small solves into a few batched matmuls, the scalar tail (<= 8 columns), integer cache keys.
+
 ## State / next step
-Done and pushed (wip/obc-ho-perf): all of the above; tests: tests/test_obc_ho.py (7), test_obc_dynareobc.py, test_obc.py: 45 pass.
-Equality test `test_matches_stored_baseline` (1e-13) uses tests/data/obc_ho_baseline.npz made by bench/obc_ho_bench.py baseline with commit f173780 code (bench/obc_ho_before.py).
-Possible next: exploit symmetry of vec(x x') (ns(ns+1)/2 columns, changes rounding only); cut the min/max reductions in the cubature step for near-binding models
-(e.g. lower-envelope row pruning in q + R xi, only valid per period); `k_order` is now 60% of construction. Not measured: larger models (sw), horizon scaling, regions="all".
-Run: `. env; python3 bench/obc_ho_bench.py time --reps 9`, `... compare tests/data/obc_ho_baseline.npz`.
+Done and pushed (wip/obc-ho-perf): everything above; tests: tests/test_obc_ho.py (9), test_obc_dynareobc.py, test_obc.py, test_obc_perf.py pass.
+Possible next: (a) the first lockstep pass is mostly wasted (90% of columns change set); a better start cannot be used without changing the
+accepted solution, but the whole q-dependence is low rank (q + R xi, rank r+1), so the first guess could be shared among neighbouring points
+only if equivalence is re-argued; (b) ~1 ms per period of numpy overhead in regions=k (eigh 128 x 128 for the Gram matrix) could drop with a
+low-rank update; (c) not measured: regions="all" on sw-size models, horizons other than 32 / 40, level 14.
+Run: `python3 bench/obc_ho_bench.py rtime --reps 3`, `... compare tests/data/obc_ho_regions_baseline.npz --regions`.

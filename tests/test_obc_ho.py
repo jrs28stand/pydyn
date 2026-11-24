@@ -157,17 +157,20 @@ def test_batch_active_set_equals_scalar():
     from pydyn.obc import solve_active_set, solve_active_set_batch
     rg = np.random.default_rng(3)
     n = 12
+    n_ok = [0]
     for trial in range(30):
         A = rg.normal(size=(n, n)) * 0.3
         M = np.vstack([np.eye(n) + np.tril(A), rg.normal(size=(6, n)) * 0.2])        # n_s = n complementarity rows + 6 extra
-        Q = rg.normal(size=(n + 6, 40)) + 0.6
+        Q = rg.normal(size=(n + 6, 40)) * (0.5 if trial % 2 else 1.0) + (0.6 if trial % 3 else 0.1)
         cache = {}
         Y, ok = solve_active_set_batch(M, Q, n, cache=cache)
         Y2, ok2 = solve_active_set_batch(M, Q, n, cache=cache)                         # warm cache gives the same
         np.testing.assert_array_equal(ok, ok2)
+        n_ok[0] += int(ok.sum())
         for j in range(Q.shape[1]):
             y = solve_active_set(M, Q[:, j], n)
             assert (y is not None) == bool(ok[j])
             if y is not None:
                 np.testing.assert_allclose(Y[:, j], y, rtol=0, atol=1e-11)
                 np.testing.assert_allclose(Y2[:, j], y, rtol=0, atol=1e-11)
+    assert n_ok[0] > 200                                       # the comparison is not only about failures
