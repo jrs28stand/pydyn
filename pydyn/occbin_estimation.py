@@ -31,6 +31,15 @@ class OccbinEstimation(Estimation):
     The filter is the piecewise Kalman filter unless ``likelihood_inversion_filter`` is set, as in
     Dynare (``options_.occbin.likelihood.status`` is true for every model with ``occbin_constraints``).
 
+    ``obc_method`` (``'occbin'``, default, or ``'news'``), ``obc_horizon`` (news horizon, default 40) and ``obc_selection``
+    (``'occbin'`` default, ``'shortest'``, ``'longest'``, ``'min_wedge'``: which solution the news solver returns at a state
+    that has several, one constraint only) are as in :meth:`pydyn.Occbin.simulate`; they are read from the
+    ``options_.occbin.obc_*`` lines of the .mod file unless given, can be reassigned (``est.obc_method = 'news'``), and
+    unknown values are an error.  ``'news'`` replaces OccBin's solver inside the inversion filter
+    (:mod:`pydyn.obc_filter`); the piecewise Kalman filter has no news version and refuses it.
+    ``obc_milp_time_limit`` (attribute) is the time the news solver may spend on an integer programme at a trial point that
+    its cheap checks did not decide (default 0: none; the trial point has failed, as in OccBin).
+
     Not supported (raise): ``loglinear``, the diffuse filter (``lik_init = 3``), univariate filters
     (``kalman_algo = 2, 4``), particle filtering options.
     """
