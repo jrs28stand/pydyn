@@ -471,3 +471,24 @@ def test_simple1_impossible_problem_raises(tmp_path, selection):
         assert err.value.status == "no_solution"
     r = ob.simulate(np.array([[-0.01]]), periods=15, obc_method="news", obc_selection=selection, check_ahead_periods=80)
     assert np.abs(r.piecewise).max() < 1.0                     # a shock that leaves the constraint slack is fine
+
+
+# ------------------------------------------------------------------ contract rule 7: orientation test
+@pytest.mark.parametrize("bind,relax,cls", [
+    ("rn < rbar", "rn >= rbar", "complementarity"),      # the usual pair
+    ("rn < rbar", None, "complementarity"),              # no relax: OccBin leaves when bind fails
+    ("rn < rbar", "rn < rbar", "inconsistent"),          # relax = bind: passes rules 2 and 3, fails rule 7
+    ("rn < rbar", "rn <= rbar", "inconsistent"),
+    ("rn < rbar", "rbar > rn", "inconsistent"),
+])
+def test_orientation_rule_7(tmp_path, bind, relax, cls):
+    src = (REF / "obc_zlb.mod").read_text().replace("bind rn < rbar; relax rn >= rbar;",
+                                                    f"bind {bind};" + (f" relax {relax};" if relax else ""))
+    (tmp_path / "m.mod").write_text(src)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ob = pydyn.Occbin(pydyn.Model(pydyn.run_preprocessor(tmp_path / "m.mod")))
+    co = constraint_objects(ob)[0]
+    assert co.cls == cls
+    if cls == "inconsistent":
+        assert "wrong way" in co.why

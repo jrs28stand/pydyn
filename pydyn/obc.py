@@ -210,6 +210,11 @@ def _constraint_objects(ob: Occbin, tol: float = 1e-6, approx_tol: float = 0.05)
             co.g_ss = co.s_g * co.alt[-1]
             if not co.g_ss > 0:
                 co.cls, co.why = "inconsistent", f"the gap is not strictly positive at the steady state ({co.g_ss:.3g})"
+            elif b * co.s_y > tol * abs(a) or ee * co.s_g < -tol * abs(cc):
+                # rule 7 (orientation): d_b = a alt + b ref and d_r = c ref + e alt need b s_y <= 0 and e s_g >= 0.  A relax
+                # condition that is the reverse of the bind condition passes the tests above but has no consistent solution
+                co.cls, co.why = "inconsistent", ("the relax condition points the wrong way: it is not the complement of the "
+                                                  f"bind condition (b s_y = {b * co.s_y:.3g}, e s_g = {ee * co.s_g:.3g})")
         out.append(co)
     return out
 

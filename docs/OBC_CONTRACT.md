@@ -62,6 +62,8 @@ Classification rules:
 5. Any failure of 2 to 4: `inconsistent`, with the reason.
 6. Tolerance of the fits in 2 and 3 *(added 2026-11-24)*: exact when the relative residual is below 1e-6. Up to 0.05 the constraint is still `complementarity` but carries `approx` = the residual. This is needed for lower-bound models written as `inom = inomlb*exp(mp)` with `bind inomnot <= inomlb` (Dynare's NKM test files, residual 0.6%): the linearised equations have a term in `mp` that the condition lacks. OccBin switches on the condition and the news methods on the linearised residual, so paths may differ by a term of that order (on Dynare's NKM file they agreed to 1e-14 in the runs made).
 
+7. Orientation test *(added 2026-11-24)*: with the fits of rules 2 and 3 written as `d_b = a*alt + b*ref` and `d_r = c*ref + e*alt`, require `b*s_y <= 0` and `e*s_g >= 0` (implemented in `pydyn/obc.py`, `_constraint_objects`, tolerance 1e-6 relative). A `relax` condition that is the reverse of `bind` passes rules 2 and 3 but has no consistent solution; it is classified `inconsistent`.
+
 `minnorm` and `news` run only on `complementarity` constraints and raise a clear error otherwise, pointing the user to `obc_method = occbin`. `multi_equation` is to be revisited: one binary per constraint and period with a wedge on each switched equation should work in the integer programme.
 
 Worked cases the tests must cover:

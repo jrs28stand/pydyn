@@ -415,6 +415,11 @@ numpy's `LinAlgError` (singular matrix), not changed. Tests: `test_active_set_re
 zlb2 70.2 -> 72.8, nkm 58.2 -> 60.3, sw 34.8 -> 35.2 (1 to 4 %).
 Not guarded: `obc_filter.py` lines solving on a set found by the guarded solvers (linearisation of an accepted solution), `obc_lk.py`, `RegimeOBC.single_spell_solutions`.
 
+## Orientation test (task 4, contract rule 7)
+`_constraint_objects` now requires `b s_y <= 0` and `e s_g >= 0` (tolerance 1e-6 relative to |a| and |c|) after the entry/exit fits; otherwise the constraint is `inconsistent` ("the relax condition points the
+wrong way"). Checked on obc_zlb with `relax rn < rbar`, `rn <= rbar`, `rbar > rn` (all now inconsistent; they were `complementarity` with s_y = -1) and with the usual pair and no relax (unchanged).
+Test: `test_orientation_rule_7` (5 cases) in tests/test_obc.py. All existing classification tests (Dynare example files) unchanged.
+
 ## State / next step
-- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit), task 2 (`minnorm` alias), task 3 (singular-solve guard, Simple1 regression).
-- Next: task 4 (orientation test in the constraint classifier, contract rule 7).
+- Done: tasks 0 to 4 (merge, OccBin speed-up verified bit for bit, `minnorm` alias, singular-solve guard, orientation test). OBC + OccBin tests: 221 passed, 2 skipped.
+- Next: nothing outstanding from this task list. Not done: JDyn side of any of this; `RegimeOBC.single_spell_solutions`, `obc_lk.py` and filter linearisation solves not guarded against singular blocks.
