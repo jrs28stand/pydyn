@@ -13,6 +13,7 @@ reference-regime rule, simulate, check the constraints, and update the guess unt
 """
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -20,6 +21,22 @@ import numpy as np
 from .expr import NAMESPACE, Translator, tokenize
 from .perturbation import first_order
 from .steady import steady_state
+
+
+OBC_METHODS = ("occbin", "news")
+OBC_SELECTIONS = ("occbin", "shortest", "longest", "min_wedge")
+
+
+def canonical_obc(obc_method, obc_selection="occbin"):
+    """``(method, selection)`` with the JDyn alias resolved: ``obc_method='minnorm'`` is ``'news'`` with
+    ``obc_selection='min_wedge'`` (the smallest sum of squared wedges).  ``minnorm`` with another explicit selection
+    (``'occbin'``, the default, counts as not given) is an error."""
+    if obc_method == "minnorm":
+        if obc_selection not in ("occbin", "min_wedge"):
+            raise ValueError(f"obc_method='minnorm' is 'news' with obc_selection='min_wedge'; it cannot be combined "
+                             f"with obc_selection={obc_selection!r}")
+        return "news", "min_wedge"
+    return obc_method, obc_selection
 
 
 class OccbinError(Exception):
@@ -121,6 +138,19 @@ class Occbin:
 
     # ---------------------------------------------------------------- constraints
     def _compile_constraints(self):
+        """Compile the bind / relax conditions and their errors.  Everything here depends on the text of the
+        ``occbin_constraints`` block only (the closures take the parameters and the steady state as arguments), so
+        the closures are built once per model and shared by all Occbin instances (an estimation builds one
+        instance per parameter vector)."""
+        m = self.model
+        key = tuple((c["bind"], c.get("relax") or None, c.get("error_bind") or None, c.get("error_relax") or None)
+                    for c in m.occbin_constraints)
+        cache = m.__dict__.setdefault("_occbin_cons_cache", {})
+        if key not in cache:
+            cache[key] = self._build_constraints()
+        self._cons = cache[key]
+
+    def _build_constraints(self):
         m = self.model
 
         def resolve(name, shift):
@@ -134,31 +164,55 @@ class Occbin:
 
         tr = Translator(resolve, steady=lambda v: f"ss[{m._ie[v]}]", shiftable=set(m._ie))
         ns = dict(NAMESPACE)
+        ops = {"<": operator.lt, ">": operator.gt, "<=": operator.le, ">=": operator.ge}
 
         def fn(src):
             return eval("lambda z, params, ss: " + tr(src), ns)  # noqa: S307 - model expression
 
-        def absdiff(expr):
-            """abs(lhs - rhs) of a comparison, Dynare's default constraint error."""
+        def pair(expr):
+            """(indicator, abs(lhs - rhs)) of a condition from one evaluation of its two sides; Dynare's default
+            constraint error is abs(lhs - rhs)."""
             parts = _split_comparison(expr)
             if parts is None:
                 f = fn(expr)
-                return lambda z, params, ss: np.asarray(f(z, params, ss), float)
-            return fn(f"abs(({parts[0]}) - ({parts[2]}))")
 
-        self._cons = []
+                def ev(z, params, ss):
+                    v = np.asarray(f(z, params, ss), float)
+                    return v != 0, v
+                return ev
+            lhs, op, rhs = fn(parts[0]), ops[parts[1]], fn(parts[2])
+
+            def ev(z, params, ss):
+                a, b = lhs(z, params, ss), rhs(z, params, ss)
+                return np.asarray(op(a, b), float) != 0, np.abs(a - b)
+            return ev
+
+        def value(src):
+            f = fn(src)
+            return lambda z, params, ss: np.asarray(f(z, params, ss), float)
+
+        cons = []
         for c in m.occbin_constraints:
             bind, relax = c["bind"], c.get("relax") or None
             eb_src, er_src = c.get("error_bind") or None, c.get("error_relax") or None
             # the defaults of ComputingTasks.cc (OccbinConstraintsStatement::writeOutput)
-            ebind = fn(eb_src) if eb_src else absdiff(bind)
-            if er_src:
-                erelax = fn(er_src)
-            elif relax:
-                erelax = absdiff(relax)
-            else:
-                erelax = absdiff(bind)       # equals ebind unless error_bind was given
-            self._cons.append((fn(bind), ebind, fn(relax) if relax else None, erelax))
+            pb = pair(bind)
+            pr = pair(relax) if relax else None
+            fb = value(eb_src) if eb_src else None
+            fr = value(er_src) if er_src else None
+
+            def ev(z, params, ss, pb=pb, pr=pr, fb=fb, fr=fr):
+                ind_b, e_b = pb(z, params, ss)
+                if fb is not None:
+                    e_b = fb(z, params, ss)
+                ind_r, e_r = (None, None) if pr is None else pr(z, params, ss)
+                if fr is not None:
+                    e_r = fr(z, params, ss)
+                elif pr is None:
+                    e_r = pb(z, params, ss)[1] if fb is not None else e_b      # abs(bind sides), not the error_bind
+                return ind_b, e_b, ind_r, e_r
+            cons.append(ev)
+        return tuple(cons)
 
     def check(self, z_levels):
         """Return boolean arrays (binding, relax) and error arrays, each of shape (T, k).
@@ -166,15 +220,16 @@ class Occbin:
         The errors are Dynare's ``err.binding_constraint_j`` / ``err.relax_constraint_j``: the
         ``error_bind`` / ``error_relax`` expressions of the ``occbin_constraints`` block if given,
         otherwise the absolute difference between the two sides of the bind / relax condition."""
-        T = z_levels.shape[0]
-        binding, relax = np.zeros((T, self.k), bool), np.zeros((T, self.k), bool)
-        eb, er = np.zeros((T, self.k)), np.zeros((T, self.k))
-        args = (z_levels, self.params, self.ys)
-        for j, (bind, ebind, rel, erel) in enumerate(self._cons):
-            binding[:, j] = np.broadcast_to(np.asarray(bind(*args), float) != 0, (T,))
-            eb[:, j] = np.broadcast_to(np.asarray(ebind(*args), float), (T,))
-            relax[:, j] = ~binding[:, j] if rel is None else np.broadcast_to(np.asarray(rel(*args), float) != 0, (T,))
-            er[:, j] = np.broadcast_to(np.asarray(erel(*args), float), (T,))
+        T, k = z_levels.shape[0], self.k
+        binding, relax = np.empty((T, k), bool), np.empty((T, k), bool)
+        eb, er = np.empty((T, k)), np.empty((T, k))
+        params, ys = self.params, self.ys
+        for j, ev in enumerate(self._cons):
+            ib, e_b, ir, e_r = ev(z_levels, params, ys)
+            binding[:, j] = ib
+            eb[:, j] = e_b
+            relax[:, j] = ~binding[:, j] if ir is None else ir
+            er[:, j] = e_r
         return binding, relax, eb, er
 
     # ---------------------------------------------------------------- path for a given guess
@@ -185,40 +240,72 @@ class Occbin:
         return int(ch[-1]) + 2 if len(ch) else 1
 
     def tmax(self, indicator) -> int:
-        """Dynare's ``Tmax = max(regime_start(end)) - 1``: last period of the last binding regime."""
-        return max(self.last_regime_start(indicator[:, j]) for j in range(self.k)) - 1
+        """Dynare's ``Tmax = max(regime_start(end)) - 1``: last period of the last binding regime, i.e. the last
+        row at which any column changes, plus one (0 when nothing changes)."""
+        rows = np.flatnonzero((indicator[1:] != indicator[:-1]).any(axis=1))
+        return int(rows[-1]) + 1 if len(rows) else 0
 
     def rules(self, indicator: np.ndarray, Tmax: int | None = None):
-        """Time-varying rules y_t = T_t y_{t-1} + R_t u_t + C_t for t = 1..Tmax (list of tuples)."""
+        """Time-varying rules y_t = T_t y_{t-1} + R_t u_t + C_t for t = 1..Tmax (list of tuples).
+
+        The rule of period i depends on the regimes of periods i..Tmax only, so rules are memoised in a trie keyed
+        from the end of the guess (node: parent node and regime code of the period).  Every rule is computed once
+        per Occbin instance, by the recursion step below, and the memoised values are the ones a fresh recursion
+        produces bit for bit.  The arrays are shared between calls: do not modify them."""
         if Tmax is None:
             Tmax = self.tmax(indicator)
-        n, out = self.n, [None] * Tmax
-        T_next, C_next = self.P, np.zeros(n)
+        if Tmax == 0:
+            return []
+        k = self.k
+        if "_rule_trie" not in self.__dict__:
+            self._rule_trie = {}                      # (parent node, regime code) -> node
+            self._rule_node = [(self.P, None, np.zeros(self.n))]   # node -> rule; node 0 is the reference rule
+            self._rule_weights = 1 << np.arange(k)
+        trie, nodes = self._rule_trie, self._rule_node
+        codes = (indicator[:Tmax] @ self._rule_weights).tolist()
+        # Dynare takes the regime of the last binding period from the guess for two constraints (10, 11, else 01)
+        # and as "binding" for one constraint
+        codes[-1] = 1 if k == 1 else (codes[-1] or 2)
+        out = [None] * Tmax
+        node = 0
         for i in range(Tmax - 1, -1, -1):
-            reg = tuple(bool(b) for b in indicator[i])
-            if i == Tmax - 1:
-                # Dynare takes the regime of the last binding period from the guess for two
-                # constraints (10, 11, else 01) and as "binding" for one constraint
-                reg = (True,) if self.k == 1 else (reg if any(reg) else (False, True))
-            C, B, A, J, D = self.regime_matrices(reg)
-            sol = -np.linalg.solve(B + A @ T_next, np.column_stack([C, J, A @ C_next + D]))
-            T_next, R, C_next = sol[:, :n], sol[:, n:n + self.n_exo], sol[:, -1]
-            out[i] = (T_next, R, C_next)
+            child = trie.get((node, codes[i]))
+            if child is None:
+                T_next, _, C_next = nodes[node]
+                reg = tuple(bool(codes[i] >> j & 1) for j in range(k))
+                C, B, A, J, D = self.regime_matrices(reg)
+                n = self.n
+                sol = -np.linalg.solve(B + A @ T_next, np.column_stack([C, J, A @ C_next + D]))
+                nodes.append((np.ascontiguousarray(sol[:, :n]), np.ascontiguousarray(sol[:, n:n + self.n_exo]), sol[:, -1].copy()))
+                child = trie[(node, codes[i])] = len(nodes) - 1
+            node = child
+            out[i] = nodes[node]
         return out
 
     def path(self, indicator: np.ndarray, init: np.ndarray, shock: np.ndarray, Tmax: int | None = None):
         """Deviations from steady state for len(indicator) periods given a regime guess."""
         rules = self.rules(indicator, Tmax)
-        N = indicator.shape[0]
+        N, nr = indicator.shape[0], len(rules)
         z = np.empty((N, self.n))
-        y = init
-        for t in range(N):
-            if t < len(rules):
-                T, R, C = rules[t]
-                y = T @ y + C + (R @ shock if t == 0 else 0.0)
-            else:
-                y = self.P @ y + (self.Q @ shock if t == 0 else 0.0)
-            z[t] = y
+        if N == 0:
+            return z, rules
+        P, dot = self.P, np.dot
+        if nr:
+            T, R, C = rules[0]
+            row = dot(T, init)
+            row += C
+            row += dot(R, shock)
+        else:
+            row = dot(P, init)
+            row += dot(self.Q, shock)
+        z[0] = row
+        for t in range(1, min(nr, N)):
+            T, _R, C = rules[t]
+            row = z[t]
+            dot(T, z[t - 1], out=row)
+            row += C
+        for t in range(max(nr, 1), N):               # beyond the last rule: the reference rule, allocation free
+            dot(P, z[t - 1], out=z[t])
         return z, rules
 
     @staticmethod
@@ -250,7 +337,7 @@ class Occbin:
                  periodic_solution_strict=True, init_regime=None, init_binding_indicator=None,
                  max_check_ahead_periods=np.inf, reset_check_ahead_periods_in_new_period=False,
                  reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1,
-                 obc_method="occbin", obc_horizon=40) -> OccbinResult:
+                 obc_method="occbin", obc_horizon=40, obc_selection="occbin") -> OccbinResult:
         """Piecewise-linear simulation under a sequence of unanticipated shocks (Dynare's
         ``occbin.solver`` with the ``simul`` options, defaults as in ``set_default_options.m``).
 
@@ -266,16 +353,23 @@ class Occbin:
 
         Failures raise OccbinError whose ``error_flag`` is Dynare's (310-313); see OccbinError.
 
-        ``obc_method`` selects the solution method: ``'occbin'`` (default, everything above) or ``'news'``
+        ``obc_method`` selects the solution method: ``'occbin'`` (default, everything above) or ``'news'`` (``'minnorm'``, JDyn's name, is ``'news'`` with ``obc_selection='min_wedge'``)
         (news shocks: a linear complementarity problem, ``pydyn.obc.NewsOBC``, when every constraint is one
         complementary pair, otherwise the general regime formulation ``pydyn.obc.RegimeOBC``; ``obc_horizon``
         is the number of periods in which wedges may be non-zero and ``check_ahead_periods`` the further
-        periods checked, capped at 400).  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
+        periods checked, capped at 400).  ``obc_selection`` (with ``'news'`` only): which solution to return when a
+        state has several (a one-constraint model): ``'occbin'`` (default: the one the guess-and-verify / active-set
+        iteration reaches), ``'shortest'``, ``'longest'`` (fewest, most binding periods among the single-spell
+        solutions) or ``'min_wedge'`` (smallest sum of squared wedges); see ``NewsOBC.simulate``.  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
         ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
         """
+        obc_method, obc_selection = canonical_obc(obc_method, obc_selection)
+        if obc_selection not in OBC_SELECTIONS:
+            raise ValueError(f"unknown obc_selection {obc_selection!r}: use one of {', '.join(map(repr, OBC_SELECTIONS))}")
+        if obc_method == "occbin" and obc_selection != "occbin":
+            raise ValueError(f"obc_selection={obc_selection!r} needs obc_method='news': OccBin's own solver returns "
+                             "the solution that its guess-and-verify iteration reaches")
         if obc_method != "occbin":
-            if obc_method == "minnorm":
-                raise NotImplementedError("obc_method='minnorm' is not implemented in pydyn yet")
             if obc_method != "news":
                 raise ValueError(f"unknown obc_method {obc_method!r}: use 'occbin' or 'news'")
             if (init_regime is not None or init_binding_indicator is not None or periodic_solution
@@ -289,7 +383,7 @@ class Occbin:
                 # one complementary pair per constraint: Holden's LCP; otherwise the general regime formulation
                 lcp = all(c.cls == "complementarity" for c in constraint_objects(self))
                 cache[key] = (NewsOBC if lcp else RegimeOBC)(self, horizon=key[0], check_ahead=key[1])
-            return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos)
+            return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos, selection=obc_selection)
         k, n, n_exo, m = self.k, self.n, self.n_exo, self.model
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
@@ -500,7 +594,7 @@ class Occbin:
             if key in o:
                 v = o[key]
                 out[kw] = (str(v).lower() == "true") if typ is bool and isinstance(v, str) else typ(v)
-        # options_.occbin.obc_method = '...'; and options_.occbin.obc_horizon = n; (native lines of the .mod file:
+        # options_.occbin.obc_method = '...'; obc_horizon = n; obc_selection = '...'; (native lines of the .mod file:
         # the preprocessor rejects unknown options of occbin_setup / occbin_solver)
         mo = getattr(self.model, "matlab_options", None) or {}
         occ = mo.get("occbin", {}) if hasattr(mo, "get") else {}
@@ -509,6 +603,8 @@ class Occbin:
                 out["obc_method"] = str(occ["obc_method"])
             if occ.get("obc_horizon") is not None:
                 out["obc_horizon"] = int(np.ravel(occ["obc_horizon"])[0])
+            if occ.get("obc_selection") is not None:
+                out["obc_selection"] = str(occ["obc_selection"])
         return out
 
     def run(self, **overrides) -> OccbinResult:

@@ -17,7 +17,7 @@ import numpy as np
 from . import kalman
 from . import occbin_filter as _of
 from .estimation import Estimation, EstimationError, _Rejected
-from .occbin import Occbin, OccbinError
+from .occbin import OBC_SELECTIONS, Occbin, OccbinError, canonical_obc
 from .perturbation import BlanchardKahnError
 from .steady import SteadyStateError
 
@@ -31,15 +31,70 @@ class OccbinEstimation(Estimation):
     The filter is the piecewise Kalman filter unless ``likelihood_inversion_filter`` is set, as in
     Dynare (``options_.occbin.likelihood.status`` is true for every model with ``occbin_constraints``).
 
+    ``obc_method`` (``'occbin'``, default, or ``'news'``), ``obc_horizon`` (news horizon, default 40) and ``obc_selection``
+    (``'occbin'`` default, ``'shortest'``, ``'longest'``, ``'min_wedge'``: which solution the news solver returns at a state
+    that has several, one constraint only) are as in :meth:`pydyn.Occbin.simulate`; they are read from the
+    ``options_.occbin.obc_*`` lines of the .mod file unless given, can be reassigned (``est.obc_method = 'news'``), and
+    unknown values are an error.  ``'news'`` replaces OccBin's solver inside the inversion filter
+    (:mod:`pydyn.obc_filter`); the piecewise Kalman filter has no news version and refuses it.
+    ``obc_milp_time_limit`` (attribute) is the time the news solver may spend on an integer programme at a trial point that
+    its cheap checks did not decide (default 0: none; the trial point has failed, as in OccBin).
+
     Not supported (raise): ``loglinear``, the diffuse filter (``lik_init = 3``), univariate filters
     (``kalman_algo = 2, 4``), particle filtering options.
     """
 
     handles_occbin = True
 
-    def __init__(self, model, data=None, occbin=None, **options):
+    # ``obc_method`` / ``obc_horizon`` / ``obc_selection`` are options of this class, as of ``Occbin.simulate`` and of
+    # the native mod-file lines ``options_.occbin.obc_method = 'news';`` etc.  They can be given to the constructor,
+    # read from those lines, and changed later by assignment (``est.obc_method = 'news'``); unknown values are an error.
+    @property
+    def obc_method(self):
+        return self._obc_method
+
+    @obc_method.setter
+    def obc_method(self, value):
+        value = _check_obc_method(value)
+        if value == "minnorm":                       # JDyn's name for news with obc_selection='min_wedge'
+            self._obc_method, self._obc_selection = canonical_obc(value, getattr(self, "_obc_selection", "occbin"))
+        else:
+            self._obc_method = value
+        if self._obc_method == "news" and getattr(self, "inversion_filter", True) is False:
+            raise EstimationError(_PKF_NEWS_MSG)
+
+    @property
+    def obc_horizon(self):
+        return self._obc_horizon
+
+    @obc_horizon.setter
+    def obc_horizon(self, value):
+        self._obc_horizon = _check_obc_horizon(value)
+
+    @property
+    def obc_selection(self):
+        return self._obc_selection
+
+    @obc_selection.setter
+    def obc_selection(self, value):
+        self._obc_selection = _check_obc_selection(value)
+
+    #: seconds the news solver's integer programme may use at one trial point of the inversion filter (None: its default)
+    obc_milp_time_limit = None
+
+    def __init__(self, model, data=None, occbin=None, obc_method=None, obc_horizon=None, obc_selection=None, **options):
         if not getattr(model, "occbin_constraints", None):
             raise ValueError("the model has no occbin_constraints block: use pydyn.Estimation")
+        native = _native_obc_options(model)          # options_.occbin.obc_* lines of the .mod file
+        self._obc_method, self._obc_horizon, self._obc_selection = "occbin", 40, "occbin"
+        method = native.get("obc_method", "occbin") if obc_method is None else obc_method
+        selection = native.get("obc_selection", "occbin") if obc_selection is None else obc_selection
+        _check_obc_method(method)
+        _check_obc_selection(selection)
+        method, selection = canonical_obc(method, selection)       # minnorm = news + min_wedge
+        self.obc_method = method
+        self.obc_horizon = native.get("obc_horizon", 40) if obc_horizon is None else obc_horizon
+        self.obc_selection = selection
         # Estimation's data, prior and parameter handling is reused; the likelihood and smoother are
         # replaced below (handles_occbin tells Estimation not to refuse the model).
         super().__init__(model, data, **options)
@@ -73,6 +128,8 @@ class OccbinEstimation(Estimation):
             self.ivf_mapping = np.asarray(mapping, int)
         self.last_filter = "inversion filter" if self.inversion_filter else "piecewise Kalman filter"
         self.last_result = None
+        if self._obc_method == "news" and not self.inversion_filter:
+            raise EstimationError(_PKF_NEWS_MSG)
 
     @staticmethod
     def _ivf_requested(occbin):
@@ -137,12 +194,7 @@ class OccbinEstimation(Estimation):
             raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)", 43)
         if self.inversion_filter:
             ob = self.occbin_at(theta)
-            solver = None
-            if getattr(self, "obc_method", "occbin") == "news":      # set est.obc_method = 'news' (prototype switch)
-                from .obc_filter import NewsFilterSolver
-                solver = self.last_news_solver = NewsFilterSolver(ob, horizon=int(getattr(self, "obc_horizon", 40)))
-            elif getattr(self, "obc_method", "occbin") != "occbin":
-                raise ValueError(f"unknown obc_method {self.obc_method!r}")
+            solver = self._news_solver(ob)
             ivf = _of.inversion_filter(ob, self.data, self._obs_decl, self.ivf_mapping, self.occbin_options,
                                        solver=solver)
             ivf.occbin = ob
@@ -156,6 +208,8 @@ class OccbinEstimation(Estimation):
                 raise _Rejected(f"inversion filter likelihood (info {exc.args[0]})", exc.args[0], 1000.0) from None
             ivf.LIK, ivf.lik = like, lik
             return ivf
+        if self._obc_method != "occbin":
+            raise EstimationError(_PKF_NEWS_MSG)
         ctx, Q, Hm = self._context(theta)
         a, P = self._initial_state(ctx)
         Y = self._observations(ctx.ob)
@@ -169,6 +223,17 @@ class OccbinEstimation(Estimation):
             raise _Rejected("the likelihood is NaN or Inf (info 320)", 320, 0.1)
         return res
 
+    def _news_solver(self, ob):
+        """The filter's solver at ``ob``: None (OccBin's own) or the news-shock solver."""
+        if self._obc_method == "occbin":
+            if self._obc_selection != "occbin":
+                raise EstimationError("obc_selection other than 'occbin' needs obc_method='news'")
+            return None
+        from .obc_filter import NewsFilterSolver
+        self.last_news_solver = NewsFilterSolver(ob, horizon=self._obc_horizon, selection=self._obc_selection,
+                                                 milp_time_limit=self.obc_milp_time_limit)
+        return self.last_news_solver
+
     def _minus_loglik(self, theta, return_lik=False):
         try:
             with np.errstate(all="ignore"):
@@ -179,6 +244,44 @@ class OccbinEstimation(Estimation):
         if return_lik:
             return res.LIK, np.asarray(res.lik)[int(self.options["presample"]):]
         return res.LIK
+
+
+_PKF_NEWS_MSG = ("obc_method='news' is implemented for the inversion filter only (occbin_setup(likelihood_inversion_filter)); "
+                 "the piecewise Kalman filter needs OccBin's regime matrices. Use obc_method='occbin' or the inversion filter.")
+
+
+def _check_obc_method(v):
+    if not isinstance(v, str) or v not in ("occbin", "news", "minnorm"):
+        raise ValueError(f"unknown obc_method {v!r}: use 'occbin', 'news' or 'minnorm'")
+    return v
+
+
+def _check_obc_selection(v):
+    if not isinstance(v, str) or v not in OBC_SELECTIONS:
+        raise ValueError(f"unknown obc_selection {v!r}: use one of {', '.join(map(repr, OBC_SELECTIONS))}")
+    return v
+
+
+def _check_obc_horizon(v):
+    try:
+        h = int(np.ravel(v)[0])
+    except (TypeError, ValueError, IndexError):
+        raise ValueError(f"obc_horizon must be a positive integer, not {v!r}") from None
+    if h < 1 or h != np.ravel(v)[0]:
+        raise ValueError(f"obc_horizon must be a positive integer, not {v!r}")
+    return h
+
+
+def _native_obc_options(model) -> dict:
+    """``options_.occbin.obc_method / obc_horizon / obc_selection`` lines of the .mod file (as ``Occbin.mod_options``)."""
+    mo = getattr(model, "matlab_options", None) or {}
+    occ = mo.get("occbin", {}) if hasattr(mo, "get") else {}
+    out = {}
+    if hasattr(occ, "get"):
+        for k in ("obc_method", "obc_horizon", "obc_selection"):
+            if occ.get(k) is not None:
+                out[k] = occ[k] if k == "obc_horizon" else str(occ[k])
+    return out
 
 
 def _ispd(A):
@@ -204,8 +307,11 @@ def _occbin_smoother_method(self, theta, inversion_filter=None):
         mapping = getattr(self, "ivf_mapping", None)
         if mapping is None:
             mapping = np.flatnonzero(np.diag(np.array(self.model.Sigma_e, float)) != 0)
-        res = _of.inversion_filter(ob, self.data, self._obs_decl, mapping, self.occbin_options)
+        res = _of.inversion_filter(ob, self.data, self._obs_decl, mapping, self.occbin_options,
+                                   solver=self._news_solver(ob))
         return _of.inversion_filter_smoother(res, ob.ys, mapping, ob.n_exo)
+    if self._obc_method != "occbin":
+        raise EstimationError(_PKF_NEWS_MSG)
     Y = self._observations(ob)
     return _of.occbin_smoother(ob, Y, Q, Hm, self._obs_decl, self.occbin_options, self._data_index,
                                lik_init=int(o["lik_init"]), qz_criterium=o["qz_criterium"],

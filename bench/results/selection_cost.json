@@ -1,0 +1,119 @@
+{
+ "zlb (NewsOBC, 5 variables)": {
+  "n_binding_states": 205,
+  "occbin": {
+   "min_ms_median_over_states": 0.05716199939342914,
+   "mean_ms": 0.058584648796546034,
+   "max_ms": 0.07905000074970303
+  },
+  "shortest": {
+   "min_ms_median_over_states": 2.996064000399201,
+   "mean_ms": 3.0008498829041987,
+   "max_ms": 3.373210000063409
+  },
+  "longest": {
+   "min_ms_median_over_states": 2.9864830003134557,
+   "mean_ms": 3.0017055511762454,
+   "max_ms": 3.3152779997180915
+  },
+  "min_wedge": {
+   "min_ms_median_over_states": 2.996614000039699,
+   "mean_ms": 3.0080285024335507,
+   "max_ms": 3.323068000099738
+  },
+  "extra_ms_per_binding_period_median": {
+   "shortest": 2.9399449995253235,
+   "longest": 2.9318110000531306,
+   "min_wedge": 2.9399419991023024
+  },
+  "single_spell_solutions_found": {
+   "shortest": {
+    "1": 205
+   },
+   "longest": {
+    "1": 205
+   },
+   "min_wedge": {
+    "1": 205
+   }
+  }
+ },
+ "NKM small (NewsOBC, 24 variables)": {
+  "n_binding_states": 31,
+  "occbin": {
+   "min_ms_median_over_states": 0.05580499964707997,
+   "mean_ms": 0.056920612898407386,
+   "max_ms": 0.08077699931163806
+  },
+  "shortest": {
+   "min_ms_median_over_states": 3.0945410007916507,
+   "mean_ms": 3.1126833225038526,
+   "max_ms": 3.2478749999427237
+  },
+  "longest": {
+   "min_ms_median_over_states": 3.105537000010372,
+   "mean_ms": 3.1130569999907993,
+   "max_ms": 3.2280880004691426
+  },
+  "min_wedge": {
+   "min_ms_median_over_states": 3.109230000518437,
+   "mean_ms": 3.1212598064925143,
+   "max_ms": 3.217941999537288
+  },
+  "extra_ms_per_binding_period_median": {
+   "shortest": 3.038924000975385,
+   "longest": 3.0491310008073924,
+   "min_wedge": 3.0644379994555493
+  },
+  "single_spell_solutions_found": {
+   "shortest": {
+    "2": 31
+   },
+   "longest": {
+    "2": 31
+   },
+   "min_wedge": {
+    "2": 31
+   }
+  }
+ },
+ "Smets-Wouters (RegimeOBC, 32 variables)": {
+  "n_binding_states": 10,
+  "occbin": {
+   "min_ms_median_over_states": 0.07742150000922265,
+   "mean_ms": 0.08701790002305643,
+   "max_ms": 0.12785800026904326
+  },
+  "shortest": {
+   "min_ms_median_over_states": 12.471163999634882,
+   "mean_ms": 12.496311599807086,
+   "max_ms": 12.924267999551375
+  },
+  "longest": {
+   "min_ms_median_over_states": 12.670871999944211,
+   "mean_ms": 12.850368200088269,
+   "max_ms": 13.920557999881567
+  },
+  "min_wedge": {
+   "min_ms_median_over_states": 12.673707000431023,
+   "mean_ms": 12.766888000169274,
+   "max_ms": 13.535007000427868
+  },
+  "extra_ms_per_binding_period_median": {
+   "shortest": 12.382625499867572,
+   "longest": 12.5808549996691,
+   "min_wedge": 12.5725975003661
+  },
+  "single_spell_solutions_found": {
+   "shortest": {
+    "2": 10
+   },
+   "longest": {
+    "2": 10
+   },
+   "min_wedge": {
+    "2": 10
+   }
+  }
+ }
+}
