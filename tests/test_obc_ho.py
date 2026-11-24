@@ -106,3 +106,33 @@ def test_cubature_makes_agents_react_before_the_bound(nkm):
     a = HigherOrderNews(m, order=2).simulate(S)
     c = HigherOrderNews(m, order=2, cubature=True, qmc_level=7).simulate(S)
     assert (c["wedges"].max(axis=1) > 1e-10).sum() > 3 * (a["wedges"].max(axis=1) > 1e-10).sum()
+
+
+# ---------------------------------------------------------------------------------------- performance work
+def test_matches_stored_baseline():
+    """Paths equal those of the unperturbed prototype (commit f173780) stored in tests/data/obc_ho_baseline.npz
+    (made by ``bench/obc_ho_bench.py baseline`` with the unmodified code): nk and nkm, orders 1 and 2, cubature at
+    qmc_level 9 and the default."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))
+    import obc_ho_bench as b
+    base = np.load(Path(__file__).resolve().parent / "data" / "obc_ho_baseline.npz")
+    new = b.paths("after")
+    assert set(new) == set(base.files)
+    for k in base.files:
+        np.testing.assert_allclose(new[k], base[k], rtol=0, atol=1e-13, err_msg=k)
+
+
+def test_precomputed_gap_equals_expected_path(nkm):
+    m, S = nkm
+    for order in (1, 2):
+        h = HigherOrderNews(m, order=order)
+        rg = np.random.default_rng(1)
+        n = m.n_endo
+        for _ in range(5):
+            y1, y2, o, prev = (0.01 * rg.normal(size=n) for _ in range(4))
+            if order == 1:
+                y2 = np.zeros(n)
+            u = 0.01 * rg.normal(size=m.n_exo)
+            q0 = h.gap_path(h.expected_path(y1, y2, o), prev, u)
+            np.testing.assert_allclose(h.gap_from_state(y1, y2, o, prev, u), q0, rtol=0, atol=1e-13)

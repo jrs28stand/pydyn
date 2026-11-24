@@ -36,6 +36,8 @@ from .occbin import Occbin
 
 __all__ = ["HigherOrderNews"]
 
+_SOBOL_CACHE: dict = {}                                          # (dim, level) -> read-only (dim, 2^(level+1)-1) normals
+
 
 class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
@@ -66,6 +68,7 @@ class HigherOrderNews:
         a = co.s_g * co.alt
         n, nx = self.n, ob.n_exo
         self.aC, self.aB, self.aA, self.aJ, self.a0 = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx], a[-1]
+        self._build_gap_maps()
         self.cubature = bool(cubature)
         self.pruning_cutoff, self.max_cubature_dimension = pruning_cutoff, int(max_cubature_dimension)
         self.pou, self.qmc_level, self.regions, self.taper, self.seed = (int(periods_of_uncertainty), int(qmc_level),
@@ -76,6 +79,88 @@ class HigherOrderNews:
             self.R = self.conditional_root()
             self.xi = self._points(self.R.shape[1])
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
+
+    # ------------------------------------------------------------------------------------ precomputed maps
+    def _build_gap_maps(self):
+        """The gap path q is affine in z = (y1, y2, vec(x1 x1'), o_pre) (x1 = y1[ist]): the expected path is linear
+        in them (the covariance recursion W_k = F^k W_0 F'^k + S_k with F = ghxs is linear in W_0 and its shock part
+        S_k does not depend on the state), and so is the gap. Computed once per parameter set:
+
+            q = q0 + Gz @ z,  then  q[0] += aC.prev_total + aJ.u.
+
+        Rows of ``expected_path``/``gap_path`` are contracted with the gap coefficients on the fly, so no
+        (N+1) n x n_s^2 path map is stored."""
+        N, n, ist, ov = self.N, self.n, self.ist, self.ov
+        ns, two = len(ist), self.order == 2
+        F, ghx = self.ghxs, self.ghx
+        aB, aA, aC = self.aB[ov], self.aA[ov], self.aC[ov]            # DR order, for the y-parts
+        oB, oA, oC = self.aB, self.aA, self.aC                        # declaration order, for the o-part
+        K = N + 1
+        rB = {}; rA = {}; rC = {}
+        names = ["y1"] + (["y2", "W"] if two else []) + ["o"]
+        for nm in names:
+            rB[nm], rA[nm], rC[nm] = ({} for _ in range(3))
+        cB = {nm: [] for nm in names}; cA = {nm: [] for nm in names}; cC = {nm: [] for nm in names}
+        const = [[], [], []]
+        A1 = np.eye(n)
+        if two:
+            A2, AW, a_k = np.eye(n), np.zeros((n, ns * ns)), np.zeros(n)
+            Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = i-th row of ghxx @ vec(W_j)
+            S = np.zeros((ns, ns))
+        PO = np.eye(n)
+        for k in range(K):
+            if k > 0:
+                if two:
+                    sj = self.ghxx @ S.ravel()                         # state-independent shock part of W_{k-1}
+                    dW = 0.5 * Cj.reshape(n, ns * ns)
+                    dc = 0.5 * sj + self.c2
+                    A2n = ghx @ A2[ist]
+                    AW = ghx @ AW[ist] + dW
+                    a_k = ghx @ a_k[ist] + dc
+                    A2 = A2n
+                    S = F @ S @ F.T + self.SigS
+                    Cj = np.matmul(np.matmul(F.T, Cj), F)
+                A1 = ghx @ A1[ist]
+                PO = self.ob.P @ PO
+            blocks = {"y1": (aB @ A1, aA @ A1, aC @ A1), "o": (oB @ PO, oA @ PO, oC @ PO)}
+            if two:
+                blocks["y2"] = (aB @ A2, aA @ A2, aC @ A2)
+                blocks["W"] = (aB @ AW, aA @ AW, aC @ AW)
+                const[0].append(aB @ a_k); const[1].append(aA @ a_k); const[2].append(aC @ a_k)
+            for nm, (b, a, c) in blocks.items():
+                cB[nm].append(b); cA[nm].append(a); cC[nm].append(c)
+        cols = []
+        for nm in names:
+            B, A, C = (np.array(cB[nm]), np.array(cA[nm]), np.array(cC[nm]))
+            G = B[:N] + A[1:K]
+            G[1:] += C[:N - 1]
+            cols.append(G)
+        q0 = np.full(N, float(self.a0))
+        if two:
+            B, A, C = (np.array(c) for c in const)
+            g = B[:N] + A[1:K]
+            g[1:] += C[:N - 1]
+            q0 += g
+        self._q0 = q0
+        self._Gz = np.ascontiguousarray(np.hstack(cols))
+        self._nz = self._Gz.shape[1]
+        self._z = np.empty(self._nz)
+
+    def gap_from_state(self, y1, y2, o_pre, prev_total, shock):
+        """q from the precomputed maps; equals ``gap_path(expected_path(...), ...)`` up to rounding."""
+        n, ist = self.n, self.ist
+        z = self._z
+        z[:n] = y1
+        if self.order == 2:
+            z[n:2 * n] = y2
+            x1 = y1[ist]
+            ns = x1.size
+            z[2 * n:2 * n + ns * ns] = np.multiply.outer(x1, x1).ravel()
+        z[-n:] = o_pre
+        q = self._Gz @ z
+        q += self._q0
+        q[0] += self.aC @ prev_total + self.aJ @ shock
+        return q
 
     # --------------------------------------------------------------------------------------- expected path
     def expected_path(self, y1, y2, o_pre):
@@ -199,12 +284,12 @@ class HigherOrderNews:
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
             if self.order == 2:
-                y2 = self.ghx @ x2 + 0.5 * (self.ghxx @ np.kron(x1, x1) + self.ghuu @ np.kron(u, u)
-                                            + 2 * self.ghxu @ np.kron(x1, u) + self.ghs2)
+                y2 = self.ghx @ x2 + 0.5 * (self.ghxx @ np.multiply.outer(x1, x1).ravel()
+                                            + self.ghuu @ np.multiply.outer(u, u).ravel()
+                                            + 2 * self.ghxu @ np.multiply.outer(x1, u).ravel() + self.ghs2)
             y1 = self.ghx @ x1 + self.ghu @ u
             o_pre = ob.P @ o
-            path = self.expected_path(y1, y2, o_pre)
-            q = self.gap_path(path, prev_total, u)
+            q = self.gap_from_state(y1, y2, o_pre, prev_total, u)
             try:
                 y = self.news_shocks(q)
             except OBCError as err:
