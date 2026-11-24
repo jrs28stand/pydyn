@@ -3,9 +3,15 @@
 This branch holds no code. It records the results of running Dynare 7.2's own test suite under Octave once, so that pydyn and JDyn can compare against them without running Octave again.
 
 **Contents**
-- **The results themselves.** These are in `accept_ref.tar.gz`, attached to the GitHub release `accept-ref-octave-2026-11-24` (825 MB). It is a release asset rather than a file in git, so ordinary clones of the repository stay small.
-  - sha256: `d9e9842f0670c22133f267060072c03c819b2dbef113d26d29d55c6119bf4868`
+- **The results, as `accept_ref_light.tar.gz.part00`–`part03`** (150 MB in total).
+  - Reassemble and unpack with `cat accept_ref_light.tar.gz.part* > accept_ref_light.tar.gz && tar xzf accept_ref_light.tar.gz`.
+  - sha256 of the joined file: `e999594e3c811c0be608dc407d2ace5e3ca17bbead8c4c6162fb49330e8757a8`.
   - It unpacks to `accept_ref/`.
+  - It holds every test's `.json` and `.log`, and every result file of 5 MB or less.
+- **Not included: 26 result files over 5 MB** (677 MB, mostly long simulations and the heterogeneous-agent models), listed in `heavy_not_included.txt`.
+  - GitHub's per-file limit and repository size make them impractical here, and creating a GitHub release was not permitted from this session.
+  - To regenerate them, run `tools/accept_octave.py --only <test>` (about 2 h of Octave for all 26), or ask for them by another route.
+  - Their `index.csv` rows still give status, elapsed time and sha256, so a regenerated file can be checked.
 - **`index.csv`.** One row per test file, with these columns:
   - `test`: the path relative to Dynare's `tests/`, or `examples/...`;
   - `status`;
