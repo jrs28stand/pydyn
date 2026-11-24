@@ -63,6 +63,9 @@ class HigherOrderNews:
             self.ghxx, self.ghxu, self.ghuu = dr["ghxx"], dr["ghxu"], dr["ghuu"]
             self.ghs2 = dr["ghs2"].ravel()
             self.c2 = 0.5 * (self.ghuu @ self.Sigma.ravel() + self.ghs2)        # E of the shock-quadratic terms
+            ns_ = len(self.ist)                                         # x x' is symmetric: only its ns(ns+1)/2 distinct entries
+            self._iu, self._ju = np.triu_indices(ns_)
+            self.ghxx_s = self._fold(self.ghxx.reshape(self.n, ns_, ns_))
         self.SigS = self.ghus @ self.Sigma @ self.ghus.T
         n, nx, nc = self.n, ob.n_exo, nb.n_c
         self.n_c, self.nws = nc, nc * nb.T                          # number of constraints; length of the wedge vector
@@ -81,6 +84,13 @@ class HigherOrderNews:
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
 
     # ------------------------------------------------------------------------------------ precomputed maps
+    def _fold(self, A):
+        """Coefficients on the distinct entries x_a x_b (a <= b) of a bilinear form sum_ab A[..., a, b] x_a x_b."""
+        iu, ju = self._iu, self._ju
+        F = A[..., iu, ju] + A[..., ju, iu]
+        F[..., iu == ju] *= 0.5
+        return F
+
     def _build_gap_maps(self):
         """The gap path q is affine in z = (y1 + y2, vec(x1 x1'), o_pre) (x1 = y1[ist]): the expected path is linear
         in them (the covariance recursion W_k = F^k W_0 F'^k + S_k with F = ghxs is linear in W_0 and its shock part
@@ -147,6 +157,8 @@ class HigherOrderNews:
         q0 = q0[order]
         cols.append(comb(rO))
         self._q0 = q0
+        if two:                                                       # fold the vec(x1 x1') block onto its distinct entries
+            cols[1] = self._fold(cols[1].reshape(cols[1].shape[0], ns, ns))
         self._Gz = np.ascontiguousarray(np.hstack(cols))
         self._nz = self._Gz.shape[1]
         self._z = np.empty(self._nz)
@@ -159,7 +171,7 @@ class HigherOrderNews:
             np.add(y1, y2, out=z[:n])
             x1 = y1[ist]
             ns = x1.size
-            z[n:n + ns * ns] = np.multiply.outer(x1, x1).ravel()
+            z[n:n + self._iu.size] = x1[self._iu] * x1[self._ju]
         else:
             z[:n] = y1
         z[-n:] = o_pre
@@ -426,7 +438,7 @@ class HigherOrderNews:
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
             if self.order == 2:
-                y2 = self.ghx @ x2 + 0.5 * (self.ghxx @ np.multiply.outer(x1, x1).ravel()
+                y2 = self.ghx @ x2 + 0.5 * (self.ghxx_s @ (x1[self._iu] * x1[self._ju])
                                             + self.ghuu @ np.multiply.outer(u, u).ravel()
                                             + 2 * self.ghxu @ np.multiply.outer(x1, u).ravel() + self.ghs2)
             y1 = self.ghx @ x1 + self.ghu @ u

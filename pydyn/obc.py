@@ -304,16 +304,17 @@ def _batch_factor(Ms, idx, scale, cache, n_s, cond_max=1e4):
     n = cache.get(cn, 0)
     ops = cache.get(ck)
     if ops is None or n >= ops.shape[0]:
-        new = np.zeros((max(16, 2 * n), sz_pad, sz_pad))
+        new = np.zeros((max(16, n + n // 2), sz_pad, sz_pad))
         if ops is not None:
             new[:n] = ops[:n]
+        cache["_bytes"] = cache.get("_bytes", 0) + new.nbytes - (ops.nbytes if ops is not None else 0)
         cache[ck] = ops = new
     ops[n][:sz, :sz] = X
     cache[cn] = n + 1
     return (1, sz_pad, n)
 
 
-def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None, tail=8, info=None):
+def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None, tail=8, info=None, max_cache_bytes=256e6):
     """``solve_active_set`` on every column of ``Q`` (N x k) at once: the same guess-and-verify iteration run in lockstep.
 
     Equivalence with the scalar routine holds by construction: per column the sequence of binding-set guesses
@@ -380,7 +381,7 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
                     break
         else:
             first_keys = keys.tolist()                            # column j (act = arange(k) here) -> its first guess
-        if len(cache) > 20000:
+        if len(cache) > 20000 or cache.get("_bytes", 0) > max_cache_bytes:     # bound the number of sets and the memory
             cache.clear()
         uk, first, inv = np.unique(keys, return_index=True, return_inverse=True)
         if info is not None:

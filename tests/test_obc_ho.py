@@ -241,3 +241,17 @@ def test_two_constraints_cubature_and_batch_equal_scalar(zlb2):
         np.testing.assert_allclose(h.news_shocks(q), ref, rtol=0, atol=1e-11)
         checked += 1
     assert checked >= 3 and failed >= 1                      # some perturbed paths have no solution: both routes raise
+
+
+def test_batch_cache_is_bounded_and_harmless():
+    from pydyn.obc import solve_active_set_batch
+    rg = np.random.default_rng(7)
+    n = 10
+    M = np.vstack([np.eye(n) + np.tril(rg.normal(size=(n, n)) * 0.3), rg.normal(size=(4, n)) * 0.2])
+    Q = rg.normal(size=(n + 4, 300)) * 0.5 + 0.2
+    Y0, ok0 = solve_active_set_batch(M, Q, n, cache={})
+    cache = {}
+    Y1, ok1 = solve_active_set_batch(M, Q, n, cache=cache, max_cache_bytes=2000)           # forces clearing at every pass
+    np.testing.assert_array_equal(ok0, ok1)
+    np.testing.assert_allclose(Y0[:, ok0], Y1[:, ok0], rtol=0, atol=1e-12)
+    assert cache.get("_bytes", 0) < 200_000
