@@ -51,6 +51,7 @@ from .results_bwd import BackwardMixin
 from .results_ep import ExtendedPathMixin
 from .results_var import VarModelMixin
 from .results_cf import ConditionalForecastMixin
+from .results_nx import NextMixin
 from .gfx import Gfx as _Gfx
 from .figures import FiguresMixin
 
@@ -583,6 +584,28 @@ class _Core(CommandsMixin):
 
     def set_oo(self, path, value):
         self.I.globals["oo_"] = struct_set(self.oo_, path, value)
+        if path == "steady_state":
+            # a command that computes oo_.steady_state leaves levels.  options_.logged_steady_state keeps its value, as in
+            # Dynare (steady.m does not reset it), but pydyn does not read the levels as logs
+            self._ss_logged = False
+
+    def ss_is_logged(self):
+        """Whether oo_.steady_state holds logs: after stoch_simul(loglinear) (options_.logged_steady_state = 1), until a
+        command writes oo_.steady_state again."""
+        return bool(getattr(self, "_ss_logged", False))
+
+    def log_variable_mask(self):
+        from .perturbation import log_mask
+        return log_mask(self.model)
+
+    def oo_steady_levels(self, key="steady_state"):
+        """oo_.steady_state (or another vector of oo_) in levels: the undo of the logging that stoch_simul.m does."""
+        ys = np.asarray(farr(self.oo_[key]), float).ravel(order="F")
+        if key == "steady_state" and self.ss_is_logged() and ys.size == self.model.n_endo:
+            ys = ys.copy()
+            k = self.log_variable_mask()
+            ys[k] = np.exp(ys[k])
+        return ys
 
     def set_options(self, path, value):
         self.I.globals["options_"] = struct_set(self.options_, path, value)
@@ -641,15 +664,16 @@ class _Core(CommandsMixin):
     def _pull_steady(self):
         """oo_.steady_state / oo_.exo_steady_state into the model's initval (guess) and its record of oo_."""
         m, oo = self.model, self.oo_
-        ys = np.asarray(farr(oo["steady_state"]), float).ravel(order="F")
+        ys_raw = np.asarray(farr(oo["steady_state"]), float).ravel(order="F")
         xs = np.asarray(farr(oo["exo_steady_state"]), float).ravel(order="F") if m.n_exo else np.zeros(0)
-        if ys.size != m.n_endo or xs.size != m.n_exo:
+        if ys_raw.size != m.n_endo or xs.size != m.n_exo:
             raise ResultsError("oo_.steady_state / oo_.exo_steady_state have the wrong size")
+        ys = self.oo_steady_levels()                 # the model works with levels; _last_ss keeps what oo_ holds
         last = self._last_ss
-        if last is not None and (not np.array_equal(last[0], ys, equal_nan=True) or not np.array_equal(last[1], xs, equal_nan=True)):
+        if last is not None and (not np.array_equal(last[0], ys_raw, equal_nan=True) or not np.array_equal(last[1], xs, equal_nan=True)):
             # MATLAB code assigned oo_.steady_state / oo_.exo_steady_state: later steady-state computations start
             # from it and the perfect-foresight replay sees the new values (as the loader's oo_write does)
-            names = list(m.endo_names) if not np.array_equal(last[0], ys, equal_nan=True) else list(m.exo_names)
+            names = list(m.endo_names) if not np.array_equal(last[0], ys_raw, equal_nan=True) else list(m.exo_names)
             vals = ys if names == list(m.endo_names) else xs
             ev = {k: float(v) for k, v in zip(names, vals)}
             m._oo.update(ev)
@@ -661,7 +685,7 @@ class _Core(CommandsMixin):
         for v, x in zip(m.exo_names, xs):
             m._oo[v] = float(x)
             m.initval[v] = float(x)
-        self._last_ss = (ys.copy(), xs.copy())
+        self._last_ss = (ys_raw.copy(), xs.copy())
 
     def _pull_options(self):
         """options_ is the source of truth for re-runs: what any statement or MATLAB line wrote becomes the
@@ -968,6 +992,7 @@ class _FunctionsMixin:
             "save": self.fn_save,
             **self._functions_backward(),
             **self._functions_var(),
+            **self._functions_nx(),
         }
 
     def fn_command(self, kind):
@@ -1124,7 +1149,19 @@ class _FunctionsMixin:
         except (OSError, json.JSONDecodeError):
             rec = {}
         if path.exists():
-            ok = path.is_file() and not path.is_symlink() and rec.get(fname) == hashlib.sha256(path.read_bytes()).hexdigest()
+            ok = False
+            if path.is_file() and not path.is_symlink():
+                dig = hashlib.sha256(path.read_bytes()).hexdigest()
+                ok = rec.get(fname) == dig
+                if not ok:
+                    # a file written by a sibling model run in the same folder (same record rule as delete)
+                    for sib in sorted(base.glob(f"*/{self._WRITTEN}")):
+                        try:
+                            if json.loads(sib.read_text()).get(fname) == dig:
+                                ok = True
+                                break
+                        except (OSError, json.JSONDecodeError):
+                            continue
             if not ok:
                 raise Unsupported(f"save: {fname} exists and was not written by pydyn.dynare(); it is not overwritten", "file")
         savemat(str(path), data, do_compression=False, oned_as="column", long_field_names=True)
@@ -1173,7 +1210,8 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin, FiguresMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin, FiguresMixin,
+              NextMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

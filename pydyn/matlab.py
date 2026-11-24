@@ -296,7 +296,7 @@ def _class(v):
         return "char"
     if isinstance(v, Cell):
         return "cell"
-    if isinstance(v, _Obj):
+    if isinstance(v, _Obj) or getattr(v, "obj_kind", None) == "dseries":
         return v.obj_kind
     if isinstance(v, Struct) or hasattr(v, "get_field"):
         return "struct"
@@ -858,8 +858,6 @@ def _index_arr(a, args, keep=False):
 def index_brace(v, args):
     if isinstance(v, Tainted):
         arr(v)
-    if isinstance(v, DSeriesV):
-        return v.index_brace(args)
     if not isinstance(v, Cell):
         raise MatlabError(f"'{{}}' indexing applied to a {_class(v)}")
     sub = index(v, args)
@@ -1251,68 +1249,7 @@ class DatesV(_Obj):
         return self
 
 
-class DSeriesV(_Obj):
-    """A read-only part of Dynare's ``dseries``: data (nobs x vobs), the first date and the variable names.  Supports
-    ``ds.name``, ``ds.data``, ``ds.dates``, ``ds(dates)``, ``ds{'a','b'}`` and a few members; no arithmetic."""
-    obj_kind = "dseries"
-    __slots__ = ("data", "init", "names")
-
-    def __init__(self, data, init, names):
-        self.data, self.init, self.names = data, init, list(names)
-
-    @property
-    def nobs(self):
-        return self.data.shape[0]
-
-    def all_dates(self):
-        return DatesV(self.init.freq, self.init.time[0] + np.arange(self.nobs))
-
-    def get_field(self, name):
-        if name == "data":
-            return self.data
-        if name == "dates":
-            return self.all_dates()
-        if name == "init":
-            return self.init
-        if name == "last":
-            return DatesV(self.init.freq, self.init.time[:1] + self.nobs - 1)
-        if name == "freq":
-            return _F(self.init.freq)
-        if name == "nobs":
-            return _F(self.nobs)
-        if name == "vobs":
-            return _F(len(self.names))
-        if name == "name":
-            return Cell(list(self.names), (len(self.names), 1))
-        if name in self.names:
-            j = self.names.index(name)
-            return DSeriesV(self.data[:, [j]], self.init, [name])
-        raise MatlabError(f"dseries: unknown member or variable '{name}'")
-
-    def index(self, args):
-        if len(args) == 1 and type(args[0]) is DatesV:
-            d = args[0]
-            if d.freq != self.init.freq:
-                raise MatlabError("dseries: dates and the dseries must have the same frequency")
-            pos = d.time - int(self.init.time[0])
-            if pos.size and (pos.min() < 0 or pos.max() >= self.nobs):
-                raise MatlabError("dseries: some of the dates are out of the sample")
-            return DSeriesV(self.data[pos], DatesV(d.freq, d.time[:1]), self.names)
-        raise Unsupported("dseries subscripts other than a dates object", "function")
-
-    def index_brace(self, args):
-        if not args or not all(isinstance(a, str) for a in args):
-            raise Unsupported("dseries{...} with arguments that are not variable names", "function")
-        for a in args:
-            if a not in self.names:
-                raise MatlabError(f"dseries: unknown variable '{a}'")
-        return DSeriesV(self.data[:, [self.names.index(a) for a in args]], self.init, list(args))
-
-    def snapshot(self):
-        return self
-
-
-_OBJ = (DatesV, DSeriesV)
+_OBJ = (DatesV,)
 _FREQ_CHARS = {"y": 1, "a": 1, "h": 2, "s": 2, "q": 4, "m": 12, "w": 52, "d": 365}
 
 
@@ -1368,8 +1305,8 @@ def _dates_cmp_args(a, b, op):
 
 def _dates_binop(op, a, b):
     """``a op b`` where an operand is a dates object (matlab/dseries/src/@dates)."""
-    if type(a) is DSeriesV or type(b) is DSeriesV:
-        raise Unsupported(f"operator {op} on a dseries object", "function")
+    if hasattr(a, "obj_kind") and a.obj_kind == "dseries" or hasattr(b, "obj_kind") and b.obj_kind == "dseries":
+        raise Unsupported(f"operator {op} between a dates object and a dseries object", "function")
     if op in ("==", "~=", "!=", "<", ">", "<=", ">="):
         name = {"==": "eq", "~=": "ne", "!=": "ne", "<": "lt", ">": "gt", "<=": "le", ">=": "ge"}[op]
         if name == "eq" and type(a) is DatesV and type(b) is DatesV and a.ndat > 1 and b.ndat > 1 and a.ndat != b.ndat:
@@ -5475,7 +5412,7 @@ def _obj_builtins():
         old = BUILTINS.get(name)
 
         def f(I, a, nout):
-            if a and any(type(x) in _OBJ for x in a):
+            if a and any(type(x) in _OBJ or getattr(x, "obj_kind", None) == "dseries" for x in a):
                 return fn(I, a, nout)
             if old is None:
                 raise Unsupported(f"unknown function or variable '{name}'", "function")
@@ -5490,12 +5427,14 @@ def _obj_builtins():
     def length(I, a, nout):
         if len(a) == 1 and type(a[0]) is DatesV:
             return _F(a[0].ndat)
-        raise Unsupported("length of a dseries object", "function")
+        if len(a) == 1 and getattr(a[0], "obj_kind", None) == "dseries":
+            return _F(a[0].nobs)
+        raise Unsupported("length of this object", "function")
 
     def isempty(I, a, nout):
         if len(a) == 1 and type(a[0]) is DatesV:
             return np.bool_(a[0].ndat == 0)
-        if len(a) == 1 and type(a[0]) is DSeriesV:
+        if len(a) == 1 and getattr(a[0], "obj_kind", None) == "dseries":
             return np.bool_(a[0].nobs == 0)
         raise Unsupported("isempty of this object", "function")
 
@@ -5530,55 +5469,27 @@ def _obj_builtins():
             return DatesV(out.freq, [])
         return DatesV(out.freq, [out.time.max()])
 
+    def _ds_math(nm, f):
+        def g(I, a, nout):
+            if len(a) == 1 and getattr(a[0], "obj_kind", None) == "dseries":
+                from .dseries import DSeries
+                with np.errstate(all="ignore"):
+                    return DSeries(f(a[0].data), a[0].names, a[0].init)
+            raise Unsupported(f"{nm} of this object", "function")
+        wrap(nm, g)
+    for nm, f in (("abs", np.abs), ("exp", np.exp), ("log", np.log), ("sqrt", np.sqrt)):
+        _ds_math(nm, f)
+
     for nm, fn in (("length", length), ("isempty", isempty), ("isequal", isequal), ("char", char),
                    ("strings", strings), ("min", mn), ("max", mx)):
         wrap(nm, fn)
     BUILTINS["dates"] = lambda I, a, nout: _make_dates(a)
     BUILTINS["isdates"] = lambda I, a, nout: np.bool_(len(a) == 1 and type(a[0]) is DatesV)
-    BUILTINS["isdseries"] = lambda I, a, nout: np.bool_(len(a) == 1 and type(a[0]) is DSeriesV)
+    BUILTINS["isdseries"] = lambda I, a, nout: np.bool_(len(a) == 1 and getattr(a[0], "obj_kind", None) == "dseries")
 
     def dseries(I, a, nout):
-        if not 1 <= len(a) <= 3 or isinstance(a[0], (str, Cell, Struct)) or type(a[0]) in _OBJ:
-            raise Unsupported("this form of the dseries constructor (only dseries(data[, first date[, names]]) is supported)", "function")
-        data = np.array(farr(a[0]), float)
-        if data.ndim != 2:
-            raise Unsupported("dseries from an N-d array", "function")
-        if data.shape[0] == 1 and data.shape[1] > 1 and False:
-            data = data.T
-        if len(a) >= 2:
-            b = a[1]
-            if isinstance(b, np.ndarray) and b.size == 0:
-                init = DatesV(1, [1])
-            elif type(b) is DatesV and b.ndat == 1:
-                init = b
-            elif isinstance(b, str):                    # a date string
-                init = _make_dates([b])
-            elif isinstance(b, (float, np.floating, int)) and float(b) == int(b):          # a year
-                init = DatesV(1, [int(b)])
-            elif type(b) is DatesV and b.ndat > 1 and data.shape[0] in (1, b.ndat) and \
-                    np.array_equal(b.time, b.time[0] + np.arange(b.ndat)):
-                init = DatesV(b.freq, b.time[:1])
-                if data.shape[0] == 1:
-                    data = np.repeat(data, b.ndat, axis=0)
-            elif type(b) is DatesV:
-                raise Unsupported("dseries with a range of dates that is not consecutive, or whose length does not match", "function")
-            else:
-                raise MatlabError("dseries: Wrong calling sequence!")
-        else:
-            init = DatesV(1, [1])
-        if len(a) == 3:
-            nm = a[2]
-            if isinstance(nm, str):
-                names = [nm]
-            elif isinstance(nm, Cell) and all(isinstance(x, str) for x in nm.items):
-                names = list(nm.items)
-            else:
-                raise Unsupported("dseries names that are not a char array or a cell array of char arrays", "function")
-        else:
-            names = [f"Variable_{j + 1}" for j in range(data.shape[1])]
-        if len(names) != data.shape[1]:
-            raise MatlabError("dseries: the number of variable names must match the number of columns")
-        return DSeriesV(data, init, names)
+        from . import dseries as _d
+        return _d.make(a)
     BUILTINS["dseries"] = dseries
 
 

@@ -111,9 +111,7 @@ class VarModelMixin:
         return F
 
     #: package functions of Dynare that pydyn refuses, with the reason
-    _REFUSED = (("pac.estimate.", "estimation of PAC equations (pac.estimate.nls / iterative_ols) is not supported: it needs "
-                                  "assignment to dseries fields and the numerical optimization of the equation"),
-                ("pac.expectations.", "pac.expectations.*: pydyn does not write the evaluation functions of the PAC expectation"),
+    _REFUSED = (("pac.expectations.", "pac.expectations.*: pydyn does not write the evaluation functions of the PAC expectation"),
                 ("pac.", "this function of the pac package is not supported"),
                 ("var_expectation.", "this function of the var_expectation package is not supported"),
                 ("equation.", "the equation package (equation.evaluate, equation.cherrypick, ...) is not supported"))

@@ -110,14 +110,24 @@ def dates_of(v):
         return [as_date(v)]
     if isinstance(v, (list, tuple)) and all(isinstance(d, Date) for d in v):
         return list(v)
+    if getattr(v, "obj_kind", None) == "dates":            # matlab.DatesV
+        return v._dates()
     return None
+
+
+def _dv(freq, times):
+    """A dates object (matlab.DatesV), the value of ``ds.dates``, ``ds.init`` and ``ds.last``."""
+    from .matlab import DatesV
+    return DatesV(freq, times)
 
 
 class DSeries:
     """``data`` is ``nobs x vobs`` (float), ``names`` a list of str, ``init`` the first Date."""
     __slots__ = ("data", "names", "init")
+    obj_kind = "dseries"
 
     def __init__(self, data, names, init):
+        init = as_date(init)
         d = np.asarray(data, float)
         if d.ndim == 1:
             d = d.reshape(-1, 1)
@@ -151,19 +161,19 @@ class DSeries:
         if name == "name":
             return Cell(list(self.names), (len(self.names), 1))
         if name == "dates":
-            return DateArray(self.dates_list())
+            return _dv(self.init.freq, [self.init.time + k for k in range(self.nobs)])
         if name == "init":
-            return self.init
+            return _dv(self.init.freq, [self.init.time])
         if name == "last":
-            return self.init + (self.nobs - 1)
+            return _dv(self.init.freq, [self.init.time + self.nobs - 1])
         if name == "nobs":
             return _F(self.nobs)
         if name == "vobs":
             return _F(self.vobs)
         if name == "freq":
             return _F(self.init.freq)
-        if name == "save":
-            return _Method(self, "save")
+        if name == "save" or name in _NATIVE:
+            return _Method(self, name)
         if name in self.names:
             j = self.names.index(name)
             return DSeries(self.data[:, [j]], [name], self.init)
@@ -261,39 +271,67 @@ class DSeries:
         return DSeries(out, self.names, self.init)
 
     def ml_assign(self, interp, sc, chain, value):
-        """``ds{'a', 'b'} = series``, ``ds{'a'}(dates) = series_or_numbers``, ``ds(dates) = ...`` (a new object: values are
-        copied on assignment).  The periods must lie in the sample of ``ds``; a variable named for the first time is added
-        (``ds{'a'} = series``)."""
-        from .matlab import Index
+        """The assignments of Dynare's ``dseries/subsasgn.m``: ``ds{'a', 'b'} = series``, ``ds.a = series``,
+        ``ds.init = date``, ``ds.dates = dates``, ``ds{'a'}(dates) = series_or_numbers``, ``ds.a(dates) = ...`` and
+        ``ds(dates) = ...``.  A new object results (values are copied on assignment).  Variables are merged as Dynare's
+        ``merge(A, B, true)`` does: the union of the samples, the names sorted (``unique``), the right-hand side
+        winning for a variable present in both.  The periods of an assignment over a subsample must lie in the sample of
+        ``ds`` (the series would be extended otherwise: refused)."""
+        from .matlab import Index, Field
         steps = []
         for node in chain:
-            if type(node) is not Index:
-                _unsupported("a field assignment (ds.name = ...)")
-            steps.append((node.brace, interp.index_args(self, node.args, sc)))
-        if len(steps) == 1 and steps[0][0] and all(isinstance(a, str) for a in steps[0][1]):
+            if type(node) is Field:
+                nm = node.name if node.name is not None else interp.ev(node.dyn, sc)
+                if not isinstance(nm, str):
+                    _fail("dseries::subsasgn: Wrong syntax!")
+                steps.append(("field", nm))
+            elif type(node) is Index:
+                steps.append(("brace" if node.brace else "paren", interp.index_args(self, node.args, sc)))
+            else:
+                _unsupported("this form of assignment into a series")
+        kind0 = steps[0][0]
+        if len(steps) == 1 and kind0 == "brace":
             names = list(steps[0][1])
-            rows = None
-        elif len(steps) == 2 and steps[0][0] and all(isinstance(a, str) for a in steps[0][1]) and not steps[1][0]:
-            names, rows = list(steps[0][1]), steps[1][1]
-        elif len(steps) == 1 and not steps[0][0]:
-            names, rows = list(self.names), steps[0][1]
+            if len(set(names)) != len(names) or not all(isinstance(a, str) for a in names):
+                _fail("dseries::subsasgn: Wrong syntax!")
+            if any(any(ch in n for ch in "@[]") for n in names):
+                _unsupported("implicit loops and regular expressions in the names of ds{...} = ...")
+            if isinstance(value, np.ndarray) and value.size == 0:
+                _unsupported("deleting variables with ds{...} = []")
+            if not isinstance(value, DSeries):
+                _fail("dseries::subsasgn: Can only assign dseries object.")
+            if value.vobs != len(names):
+                _fail("dseries::subsasgn: Wrong syntax!")
+            return _merge(self, DSeries(value.data, names, value.init))
+        if len(steps) == 1 and kind0 == "field":
+            nm = steps[0][1]
+            if nm == "init" and getattr(value, "obj_kind", None) == "dates" and value.ndat == 1:
+                return DSeries(self.data.copy(), self.names, as_date(value))
+            if nm == "dates" and getattr(value, "obj_kind", None) == "dates":
+                t = value.time
+                if t.size != self.nobs or not np.array_equal(t, t[0] + np.arange(t.size)):
+                    _unsupported("ds.dates = a dates object that is not consecutive or does not match the number of periods")
+                return DSeries(self.data.copy(), self.names, Date(value.freq, int(t[0])))
+            if nm in ("data", "name", "tex", "ops"):
+                _fail(f"dseries::subsasgn: You cannot overwrite {nm} member!")
+            if nm in ("init", "dates", "last", "nobs", "vobs", "freq", "tags") or nm in _METHODS:
+                _unsupported(f"an assignment to the member '{nm}'")
+            if not isinstance(value, DSeries):
+                _fail("dseries::subsasgn: Can only assign dseries object.")
+            if value.vobs != 1:
+                _unsupported("ds.name = a series with several variables")
+            return _merge(self, DSeries(value.data, [nm], value.init))
+        # selection of periods
+        if len(steps) == 1 and kind0 == "paren":
+            names, rows, merge_after = list(self.names), steps[0][1], False
+        elif len(steps) == 2 and steps[1][0] == "paren" and kind0 in ("brace", "field"):
+            names = list(steps[0][1]) if kind0 == "brace" else [steps[0][1]]
+            if not all(isinstance(a, str) for a in names):
+                _fail("dseries::subsasgn: Wrong syntax!")
+            rows, merge_after = steps[1][1], True
         else:
             _unsupported("this form of assignment into a series")
         out = self.copy()
-        if rows is None:
-            if not isinstance(value, DSeries):
-                _unsupported("assignment of a value that is not a series to ds{names}")
-            if value.vobs != len(names):
-                _fail("dseries::subsasgn: the number of variables does not match")
-            first, A, B = _align(out, value) if out.vobs else (value.init, np.zeros((value.nobs, 0)), value.data)
-            data, nm = A, list(out.names)
-            for k, name in enumerate(names):
-                if name in nm:
-                    data[:, nm.index(name)] = B[:, k]
-                else:
-                    data = np.hstack([data, B[:, [k]]])
-                    nm.append(name)
-            return DSeries(data, nm, first)
         if len(rows) != 1:
             _fail("dseries::subsasgn: Invalid syntax")
         ds = dates_of(rows[0])
@@ -308,16 +346,30 @@ class DSeries:
         cols = []
         for nm in names:
             if nm not in out.names:
-                _unsupported("an assignment to a new variable over a subsample")
+                _fail(f"dseries::extract: Variable {nm} is unknown in dseries object!")
             cols.append(out.names.index(nm))
         if isinstance(value, DSeries):
-            if value.vobs != len(cols) or value.nobs != len(r):
-                _fail("dseries::subsasgn: dimension mismatch")
-            v = value.data
+            if value.vobs != len(cols):
+                _fail("dseries::subsasgn: Dimension error! The number of variables on the left and right hand side must match.")
+            first = value.init
+            pos = [d - first for d in ds]
+            if not pos or min(pos) < 0 or max(pos) >= value.nobs:
+                _fail("dseries::subsasgn: Periods of the dseries objects on the left and right hand sides must intersect!")
+            v = value.data[pos, :]
         else:
             v = np.asarray(value, float)
+            if v.ndim != 2 and v.size != 1:
+                _fail("dseries::subsasgn: The object on the right hand side must be a dseries object or a numeric array!")
             v = v.reshape(1, 1) if v.size == 1 else v
+            if v.shape[0] == 1 and len(r) > 1 or (v.shape[1] == 1 and len(cols) > 1):
+                v = np.broadcast_to(v, (len(r), len(cols)))
+            if v.shape != (len(r), len(cols)):
+                _fail("dseries::subsasgn: Dimension error! The number of periods on the left and right hand side must match."
+                      if v.shape[1] == len(cols) else
+                      "dseries::subsasgn: Dimension error! The number of variables on the left and right hand side must match.")
         out.data[np.ix_(r, cols)] = v
+        if merge_after:
+            return _merge(self, DSeries(out.data[:, cols], names, out.init))
         return out
 
     # --- misc
@@ -373,6 +425,23 @@ def _combine(a: DSeries, b: DSeries, f):
     return DSeries(out, names, first)
 
 
+def _merge(o: DSeries, p: DSeries):
+    """Dynare's ``merge(o, p, true)`` (legacy form): the union of the samples, the names sorted and unique (``unique(...,
+    'last')``), the variables of ``p`` winning, NaN outside the sample of the series that supplies the variable."""
+    if o.vobs == 0 or o.nobs == 0:
+        return p.copy()
+    if p.vobs == 0 or p.nobs == 0:
+        return o.copy()
+    first, A, B = _align(o, p)
+    cols = {}
+    for j, nm in enumerate(o.names):
+        cols[nm] = A[:, j]
+    for j, nm in enumerate(p.names):
+        cols[nm] = B[:, j]
+    names = sorted(cols)
+    return DSeries(np.column_stack([cols[n] for n in names]), names, first)
+
+
 def hcat(items):
     """``[a, b, ...]`` for series: the names must differ; the samples are aligned (NaN where a series is missing)."""
     items = [x for x in items if not (isinstance(x, np.ndarray) and x.size == 0)]
@@ -396,6 +465,34 @@ def hcat(items):
 HOST = None
 
 
+def _shift(ds, p, sign):
+    """``ds.lag(p)`` / ``ds.lead(p)`` (dseries/lag_.m, lead_.m): the same sample, NaN for the periods that are not known."""
+    if isinstance(p, np.ndarray):
+        p = float(p.reshape(-1)[0]) if p.size == 1 else None
+    if p is None or p != int(p):
+        _fail("dseries::lag: The second input argument must be an integer scalar!")
+    k = sign * int(p)
+    out = np.full_like(ds.data, np.nan)
+    n = ds.nobs
+    if k >= 0:
+        if k < n:
+            out[k:] = ds.data[:n - k]
+    elif -k < n:
+        out[:n + k] = ds.data[-k:]
+    return DSeries(out, ds.names, ds.init)
+
+
+def _lag(ds, p=1.0):
+    return _shift(ds, p, 1)
+
+
+def _lead(ds, p=1.0):
+    return _shift(ds, p, -1)
+
+
+_NATIVE = {"lag": _lag, "lead": _lead}
+
+
 class _Method:
     """``ts.save`` before its arguments: ``ts.save('name', 'mat')``."""
 
@@ -403,6 +500,10 @@ class _Method:
         self.ds, self.name = ds, name
 
     def ml_index(self, args, brace=False):
+        if self.name in _NATIVE:
+            if brace:
+                _unsupported(f"the method '{self.name}' in this form")
+            return _NATIVE[self.name](self.ds, *args)
         if brace or HOST is None:
             _unsupported(f"the method '{self.name}' in this form")
         return HOST.dseries_method(self.ds, self.name, args)
@@ -422,6 +523,9 @@ def make(args):
         return HOST.dseries_read(a0)
     if isinstance(a0, DSeries):
         return a0.copy()
+    from .matlab import Struct as _St
+    if isinstance(a0, (Cell, _St)) or getattr(a0, "obj_kind", None) == "dates":
+        _unsupported("this form of the dseries constructor (only dseries(data[, first date[, names]]) and dseries('file.mat') are)")
     data = arr(a0).astype(float)
     if data.ndim != 2:
         _fail("dseries: the data must be a matrix")
@@ -429,7 +533,16 @@ def make(args):
         pass
     init = Date(1, 1)
     if len(args) > 1 and not (isinstance(args[1], np.ndarray) and args[1].size == 0):
-        init = as_date(args[1])
+        b = args[1]
+        if getattr(b, "obj_kind", None) == "dates" and b.ndat > 1:        # a range of dates: consecutive, as long as the data
+            t = b.time
+            if not np.array_equal(t, t[0] + np.arange(t.size)) or data.shape[0] not in (1, t.size):
+                _unsupported("a range of dates that is not consecutive, or whose length does not match the data")
+            if data.shape[0] == 1:
+                data = np.repeat(data, t.size, axis=0)
+            init = Date(b.freq, int(t[0]))
+        else:
+            init = as_date(b)
     if len(args) > 2 and not (isinstance(args[2], np.ndarray) and args[2].size == 0):
         nm = args[2]
         if isinstance(nm, Cell):

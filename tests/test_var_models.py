@@ -151,8 +151,8 @@ def _numbers_close(a, b, rtol=1e-12):
 
 # ------------------------------------------------------------------------------------------------------ refusals
 @pytest.mark.parametrize("call, text", [
-    ("pac.estimate.nls('eq:pac', struct('a', 1), 'csminwel');", "estimation of PAC equations"),
-    ("pac.estimate.iterative_ols('eq:pac', {'beta'}, 'x');", "estimation of PAC equations"),
+    ("pac.estimate.nls('eq:pac', struct('a', 1), 'csminwel');", "Not enough input arguments"),       # estimation itself: test_pac_estimate.py
+    ("pac.estimate.iterative_ols('eq:pac', {'beta'}, 'x');", "Not enough input arguments"),
     ("equation.evaluate('eq:pac');", "equation package"),
     ("pac.expectations.evaluate(1);", "evaluation functions"),
 ])

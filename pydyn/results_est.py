@@ -29,6 +29,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         """oo_.SmoothedVariables, ... as matlab/kalman/store_smoother_results.m writes them (columns, T x 1)."""
         R = _R()
         m = self.model
+        self._smooth_res = res                      # what forecasts.run(..., 'smoother') starts from
         for f in ("Smoother", "SmoothedVariables", "UpdatedVariables", "FilteredVariables",
                   "FilteredVariablesKStepAhead", "FilteredVariablesShockDecomposition",
                   "FilteredVariablesKStepAheadVariances", "SmoothedShocks", "SmoothedMeasurementErrors"):
@@ -124,6 +125,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         from .smoother import smooth, SmootherError
         R = _R()
         self._refresh_options(st)
+        self._undo_logged_steady()                  # dynare_estimation.m: a steady state logged by stoch_simul(loglinear) is undone
         if "parameter_set" not in (st.get("options") or {}):
             self.set_options("parameter_set", "calibration")     # the preprocessor's CalibSmootherStatement
         fo = self.opt("first_obs", None)
@@ -173,6 +175,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         from .smoother import smooth, SmootherError
         R = _R()
         self._refresh_options(st)
+        self._undo_logged_steady()                  # dynare_estimation.m: a steady state logged by stoch_simul(loglinear) is undone
         self._init_filter_options()
         self.pull()
         self._estimation_order(st, "estimation")
@@ -180,6 +183,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         mh_replic = int(np.max(np.atleast_1d(self.opt("mh_replic", 0) or 0)))
         h_fc = int(self.opt("forecast", 0) or 0)
         st_vars = self._estimation_var_list(st)
+        self.vars["var_list_"] = R.cellstr([str(x) for x in (st.get("symbol_list") or [])])      # the driver's var_list_
         for key in ("load_mh_file", "mh_recover", "particle.status",
                     "mh_posterior_mode_estimation"):
             if self.opt_flag(key):
@@ -318,7 +322,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             raise R.ResultsError(f"estimation: forecast: {exc}") from None
         self._store_forecast(fc)
 
-    def _store_forecast(self, fc):
+    def _forecast_struct(self, fc):
         R = _R()
         out = R.rstruct("oo_.forecast")
         for key in ("Mean", "HPDinf", "HPDsup", "HPDinf_ME", "HPDsup_ME", "Exogenous"):
@@ -328,7 +332,10 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
                 for v, x in d.items():
                     s[v] = R.col(x)
                 out[key] = s
-        self.set_oo("forecast", out)
+        return out
+
+    def _store_forecast(self, fc):
+        self.set_oo("forecast", self._forecast_struct(fc))
         self.fig_forecast(fc)
 
     def _run_chains(self, est, mode):
@@ -610,6 +617,15 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         from .estimation import Estimation
         m = self.model
         if not any(st.get("statementName") == "estimated_params" for st in m.statements):
+            R = _R()                            # Dynare leaves empty prior fields (estimated_params is absent)
+            s = R.rstruct("oo_.prior")
+            for k in ("mean", "mode", "variance"):
+                s[k] = np.zeros((0, 0))
+            h = R.rstruct("oo_.prior.hyperparameters")
+            h["first"] = np.zeros((0, 0))
+            h["second"] = np.zeros((0, 0))
+            s["hyperparameters"] = h
+            self.set_oo("prior", s)
             return
         try:
             with warnings.catch_warnings():
@@ -1163,7 +1179,11 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         if isinstance(md, Struct):
             new.update(md)
         md = new
-        md["ModifiedHarmonicMean"] = _F(float(modified_harmonic_mean(mc, drop=est.options.get("mh_drop")).value))
+        try:
+            mhm = float(modified_harmonic_mean(mc, drop=est.options.get("mh_drop")).value)
+        except np.linalg.LinAlgError:
+            mhm = np.inf                      # a singular covariance of the draws (a very short chain): Octave's inv gives Inf
+        md["ModifiedHarmonicMean"] = _F(mhm)
         self.set_oo("MarginalDensity", md)
         return np.asarray(stats.mean, float)
 

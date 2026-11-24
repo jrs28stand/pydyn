@@ -320,12 +320,16 @@ class BackwardMixin:
             if nm in ds.names:
                 exo0[:, i] = ds.data[:, ds.names.index(nm)]
         # the auxiliary variables the data do not hold (dynamic_set_auxiliary_series)
-        if any(a.get("type") != 6 and m.endo_names[a["endo_index"] - 1] not in ds.names for a in aux):
+        # (checkdatabase calls dynamic_set_auxiliary_series, which sets every auxiliary variable that has a definition, also
+        # those the database holds)
+        def _set_aux(a):
+            return a.get("type") != 6
+        if any(_set_aux(a) for a in aux):
             live = self._sim_live()
             with np.errstate(all="ignore"):
                 filled = _bw.aux_series(m, endo0, np.where(np.isnan(exo0), 0.0, exo0), m.params.copy(), live["ss"])
             for a in aux:
-                if a.get("type") != 6 and m.endo_names[a["endo_index"] - 1] not in ds.names:
+                if _set_aux(a):
                     endo0[a["endo_index"] - 1] = filled[a["endo_index"] - 1]
         for names_, lags_, rows in ((m.endo_names, lag_of, endo0), (m.exo_names, exo_lag_of, exo0.T)):
             for i, lg in lags_.items():

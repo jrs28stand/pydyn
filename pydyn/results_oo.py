@@ -16,6 +16,7 @@ import warnings
 
 import numpy as np
 
+from . import dseries as _ds
 from . import matlab as _ml
 from .matlab import Cell, MatlabError, Struct, Unsupported, farr, _F
 from .model import ModelError
@@ -142,8 +143,45 @@ class CommandsMixin:
         self.pull()
         self.stoch_simul_run(list(st.get("symbol_list") or []))
 
+    def _undo_logged_steady(self):
+        """stoch_simul.m (lines 103-107): a steady state logged by an earlier stoch_simul is undone first."""
+        if not self.ss_is_logged():
+            if self.ss_flag():
+                self.set_options("logged_steady_state", _F(0.0))      # a stale flag (steady.m leaves it) is undone too
+            return
+        k = self.log_variable_mask()
+        dr = self.oo_.get("dr")
+        if isinstance(dr, Struct) and "ys" in dr:
+            y = np.asarray(farr(dr["ys"]), float).ravel(order="F").copy()
+            y[k] = np.exp(y[k])
+            self.set_oo("dr.ys", _R().col(y))
+        ss = self.oo_steady_levels()
+        self.set_oo("steady_state", _R().col(ss))               # also ends the logged state
+        self._ss_logged = False
+        self.set_options("logged_steady_state", _F(0.0))
+
+    def ss_flag(self):
+        v = self.options_.get("logged_steady_state")
+        return v is not None and bool(np.asarray(farr(v), float).ravel()[0])
+
+    def _log_steady(self):
+        """stoch_simul.m (lines 111-115): with loglinear, oo_.dr.ys and oo_.steady_state are logged for display."""
+        R = _R()
+        k = self.log_variable_mask()
+        dr = self.oo_["dr"]
+        y = np.asarray(farr(dr["ys"]), float).ravel(order="F").copy()
+        y[k] = np.log(y[k])
+        self.set_oo("dr.ys", R.col(y))
+        ss = np.asarray(farr(self.oo_["steady_state"]), float).ravel(order="F").copy()
+        ss[k] = np.log(ss[k])
+        self.I.globals["oo_"] = R.struct_set(self.oo_, "steady_state", R.col(ss))     # not set_oo: the flag stays on
+        self._last_ss = (ss.copy(), self._last_ss[1] if self._last_ss else np.zeros(0))
+        self._ss_logged = True
+        self.set_options("logged_steady_state", _F(1.0))
+
     def stoch_simul_run(self, var_list):
         R = _R()
+        self._undo_logged_steady()
         from .korder import KOrderError, k_order
         from .moments import theoretical_moments, stoch_simul_moments, solve as _solve
         from .perturbation import first_order
@@ -208,6 +246,8 @@ class CommandsMixin:
         m.params[:] = sol.params
         self.push()
         self.set_oo("dr", self._discretionary_dr(dres) if disc else self._make_dr(sol, dr, order, qz))
+        if loglinear and not disc:
+            self._log_steady()
         # --- simulation
         Sigma = np.array(m.Sigma_e, float)
         ys = np.asarray(dr["ys"], float)
@@ -223,6 +263,9 @@ class CommandsMixin:
             hv = self.M_.get("endo_histval")
             if isinstance(hv, np.ndarray) and hv.size:
                 y0 = np.asarray(hv, float).ravel(order="F")
+                if loglinear:                       # stoch_simul.m: y0 = log_variable(1:endo_nbr, M_.endo_histval, M_)
+                    from .forecast import _histval_state
+                    y0 = _histval_state(m, y0)
             y = simulate(dr, shocks_used, order=order, pruning=pruning, y0=y0)
             self.set_oo("endo_simul", R.mat(y.T))
             self.set_oo("exo_simul", R.mat(shocks_used))
@@ -436,7 +479,7 @@ class CommandsMixin:
     def _sim_live(self):
         R = _R()
         m, oo = self.model, self.oo_
-        ss = np.asarray(farr(oo["steady_state"]), float).ravel(order="F")
+        ss = self.oo_steady_levels()
         xss = np.asarray(farr(oo["exo_steady_state"]), float).ravel(order="F") if m.n_exo else np.zeros(0)
         ss0, xss0 = oo.get("initial_steady_state"), oo.get("initial_exo_steady_state")
         ss0 = None if isinstance(ss0, np.ndarray) and ss0.size == 0 else np.asarray(farr(ss0), float).ravel(order="F")
@@ -644,7 +687,7 @@ class CommandsMixin:
             raise R.ResultsError(f"{what}: oo_.endo_simul or oo_.exo_simul has the wrong size; was the setup command run "
                                  "with the same periods?")
         o["linear"] = pf._model_is_linear(m)
-        steady0 = (np.asarray(farr(self.oo_["steady_state"]), float).copy(),
+        steady0 = (self.oo_steady_levels().copy(),
                    np.asarray(farr(self.oo_["exo_steady_state"]), float).copy() if m.n_exo else np.zeros(0))
         try:
             out = pf._solve_pfwee(m, ws, T, o, False, None, None, setup=(shocks, terminal, E.T.copy(), X.copy()))
@@ -739,7 +782,7 @@ class CommandsMixin:
         E = np.asarray(farr(self.oo_["endo_simul"]), float)
         X = np.asarray(farr(self.oo_["exo_simul"]), float) if m.n_exo else np.zeros((E.shape[1], 0))
         init = first - m.info["maximum_lag"]
-        ds = _ml.DSeriesV(np.hstack([E[:nor].T, X]), _ml.DatesV(init.freq, [init.time]), list(m.orig_endo_names) + list(m.exo_names))
+        ds = _ds.DSeries(np.hstack([E[:nor].T, X]), list(m.orig_endo_names) + list(m.exo_names), init)
         self.I.base.vars["Simulated_time_series"] = ds
 
     def _pf_recomputed(self, o, live):

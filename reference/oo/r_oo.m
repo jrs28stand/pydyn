@@ -3,9 +3,14 @@
 % Each case's oo_, M_, options_ and the MATLAB variables of the .mod file are saved to <case>.mat.
 % nd_oo and nd_oo2 plot shock decompositions: without a graphics toolkit, stubs of the plotting functions are put
 % first in the path (they draw nothing; get returns a screen size).
-zz_cases = {'rbc_oo', 'rbc_oo_o2', 'rbc_oo_o3', 'rbc_oo_pf', 'rbc_oo_loop', 'rbc_oo_pfloop', 'est_smoother0', 'est_mode4', 'est_nm7', 'est_ml', 'cs1', 'fc1', 'occ1', 'ram1', 'osr1', 'est_mh', 'est_fc_trend', 'est_fc_mode', 'est_fc_mh', 'est_fc_mh2', 'est_fc_mhx', 'est_fc_mhs', 'est_fc_early', 'est_fc_nkp', 'est_fc_nkm', 'est_fc_mhj', 'est_fc_cal', 'cf_cal', 'cf_hist', 'cf_init', 'cf_pad', 'cf_mh', 'cf_ml', 'est_birf', 'est_birf2', 'est_conv', 'disc_gali', 'disc_nk', 'rng_oo', 'nd_oo', 'nd_oo2', 'pfwee_oo', 'pfwee_oo_dates', 'pfwee_oo_hl', 'pfwee_oo_ramst'};
+zz_cases = {'rbc_oo', 'rbc_oo_o2', 'rbc_oo_o3', 'rbc_oo_pf', 'rbc_oo_loop', 'rbc_oo_pfloop', 'est_smoother0', 'est_mode4', 'est_nm7', 'est_ml', 'cs1', 'fc1', 'occ1', 'ram1', 'osr1', 'est_mh', 'est_fc_trend', 'est_fc_mode', 'est_fc_mh', 'est_fc_mh2', 'est_fc_mhx', 'est_fc_mhs', 'est_fc_early', 'est_fc_nkp', 'est_fc_nkm', 'est_fc_mhj', 'est_fc_cal', 'cf_cal', 'cf_hist', 'cf_init', 'cf_pad', 'cf_mh', 'cf_ml', 'est_birf', 'est_birf2', 'est_conv', 'disc_gali', 'disc_nk', 'll_ss', 'sm2h', 'pe_t6', 'pe_t17', 'pe_t15', 'pe_t18', 'pe_t25', 'pe_t19g', 'pe_t9', 'pe_v9', 'pe_t7', 'pe_t12', 'rng_oo', 'nd_oo', 'nd_oo2', 'pfwee_oo', 'pfwee_oo_dates', 'pfwee_oo_hl', 'pfwee_oo_ramst'};
 if exist('zz_only', 'var'), zz_cases = zz_only; end
 zz_here = pwd;
+if ~exist('datetime', 'file')       % Octave has no datetime; pac.estimate.* write it into the comment of the residual routines
+    zz_shims = tempname; mkdir(zz_shims);
+    zz_fid = fopen(fullfile(zz_shims, 'datetime.m'), 'w'); fprintf(zz_fid, 'function s = datetime(varargin)\ns = ''now'';\nend\n'); fclose(zz_fid);
+    addpath(zz_shims);
+end
 if isempty(available_graphics_toolkits())
     zz_stubs = tempname; mkdir(zz_stubs);
     for zz_f = {'figure', 'plot', 'subplot', 'hold', 'title', 'legend', 'xlabel', 'ylabel', 'zlabel', 'close', 'saveas', ...
@@ -30,7 +35,10 @@ for zz_i = 1:numel(zz_cases)
     zz_aux = dir([zz_here '/' zz_c '_*.mat']);                                                   % a mode file, a jumping covariance
     for zz_k = 1:numel(zz_aux), copyfile([zz_here '/' zz_aux(zz_k).name], zz_d); end
     cd(zz_d);
-    evalc(['dynare ' zz_c ' nograph noclearall']);
+    zz_opt = '';                                                                       % '// --+ options: json=compute +--' of Dynare's tests
+    zz_m = regexp(fileread([zz_here '/' zz_c '.mod']), '^//\s*--\+\s*options:\s*([^\n]*?)\s*\+--', 'tokens', 'once', 'lineanchors');
+    if ~isempty(zz_m), zz_opt = strrep(strrep(zz_m{1}, ',', ' '), 'stochastic', ''); end
+    evalc(['dynare ' zz_c ' nograph noclearall ' zz_opt]);
     zz_vars = who; zz_keep = {};
     for zz_j = 1:numel(zz_vars)
         if ~strncmp(zz_vars{zz_j}, 'zz_', 3), zz_keep{end+1} = zz_vars{zz_j}; end

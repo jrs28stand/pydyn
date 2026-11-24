@@ -16,6 +16,8 @@ import pydyn
 from pydyn import ResultsError
 from pydyn.results_m import known_missing
 from pydyn.matlab import Cell, Struct, Tainted, Unsupported
+from pydyn.dseries import DSeries
+from pydyn.submodels import StructArray as SubStructArray
 from pydyn.results_post import StructArray
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
@@ -24,7 +26,8 @@ CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo
          "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst",
          "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
          "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal",
-         "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk"]
+         "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk", "ll_ss", "sm2h",
+         "pe_t6", "pe_t7", "pe_t9", "pe_t12", "pe_t15", "pe_t17", "pe_t18", "pe_t19g", "pe_t25", "pe_v9"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is
@@ -36,7 +39,7 @@ CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo
 #: cf_mh, cf_ml: the conditional forecasts replay Dynare's draws exactly; they differ by the estimates' optimiser tolerance
 #: (cf_mh: mode 5e-6 in the parameters, 1e-4 in the largest forecast; cf_ml: flat likelihood as in est_ml, 1e-2 in the forecast of k).
 TOL = {"est_mode4": 1e-3, "est_nm7": 1e-5, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3, "est_fc_mode": 1e-3, "est_fc_mh": 2e-3, "est_fc_mh2": 2e-3,
-       "cf_mh": 5e-4, "cf_ml": 2e-2}
+       "cf_mh": 5e-4, "cf_ml": 2e-2, "pe_t15": 5e-4}
 
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
 SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
@@ -59,6 +62,27 @@ def _diff(ref, ours, path, out, tol):
         for k, item in enumerate(ours.items):
             _diff(ref.ravel(order="F")[k:k + 1], item, f"{path}({k + 1})", out, tol)
         return
+    if isinstance(ours, SubStructArray):                 # M_.pac.*.growth_linear_comb, ...: a struct array
+        flat = ref.ravel() if isinstance(ref, np.ndarray) and ref.dtype.names else None
+        if flat is None or flat.size != len(ours.elems):
+            out.append((path, "struct array"))
+            return
+        for i, e in enumerate(ours.elems):
+            _diff(flat[i:i + 1].reshape(1, 1), e, f"{path}({i + 1})", out, tol)
+        return
+    if isinstance(ours, DSeries):                        # a dseries object: Octave saves its members (data, dates, name, ...)
+        if not (isinstance(ref, np.ndarray) and ref.dtype.names and "data" in ref.dtype.names and "dates" in ref.dtype.names):
+            out.append((path, "not a dseries"))
+            return
+        rdata = ref["data"].ravel()[0]
+        rnames = [str(x.ravel()[0]) for x in np.ravel(ref["name"].ravel()[0])]
+        rtime = int(np.ravel(ref["dates"].ravel()[0]["time"].ravel()[0])[0])
+        rfreq = int(np.ravel(ref["dates"].ravel()[0]["freq"].ravel()[0])[0])
+        if rnames != list(ours.names) or (ours.init.time, ours.init.freq) != (rtime, rfreq):
+            out.append((path, f"dseries names or dates {rnames} {rtime} vs {ours.names} {ours.init.time}"))
+            return
+        _diff(rdata, ours.data, path + ".data", out, tol)
+        return
     if isinstance(ref, np.ndarray) and ref.dtype.names:
         if not isinstance(ours, Struct):
             out.append((path, "not a struct"))
@@ -68,6 +92,9 @@ def _diff(ref, ours, path, out, tol):
             if p in REFUSED or p in SKIP:
                 continue
             if n not in ours:
+                r0 = ref[n].ravel()[0] if ref[n].size == 1 else ref[n]
+                if ")." in p and isinstance(r0, np.ndarray) and r0.size == 0:     # an element of a struct array: the fields of the others, empty here
+                    continue
                 if not (path == "M_" and known_missing(n)):      # M_ fields refused by name (see results_m)
                     out.append((p, "missing"))
                 continue
