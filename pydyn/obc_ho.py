@@ -102,28 +102,33 @@ class HigherOrderNews:
         m3 = 3 * nc
         rY = np.zeros((K, m3, n)); rY[0] = Ay
         rO = np.empty((K, m3, n)); rO[0] = Ao
-        Vy = Ay @ ghx                                                 # (3, ns): a ghx F^(k-1)
-        P = self.ob.P
         if two:
             nn = ns * ns
             rW = np.zeros((K, m3, nn)); rc = np.zeros((K, m3))
-            Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = row i of ghxx @ vec(W_j)
-            Z = np.zeros((ns, nn))                                    # state rows of the W0-coefficient of m2_k
+            # W-coefficients in adjoint form. With twist(X) = F' X F, G_i = ghxx[i] reshaped (ns x ns), Gbar = sum_i Ay_i G_i,
+            # B_m = Ay ghx F^m and H(B) = sum_l B_l G_{ist_l}:
+            #   rW_k = 0.5 (twist^(k-1)(Gbar) + D_k),  D_1 = 0,  D_(k+1) = H(B_(k-1)) + twist(D_k).
+            # Per k only 3 n_c matrices of size ns x ns are carried (the direct recursion carries ns x ns^2 and n x ns x ns arrays).
+            Gbar = (Ay @ self.ghxx).reshape(m3, ns, ns)
+            Gs = self.ghxx[ist]                                       # (ns, ns^2): rows G_{ist_l}
+            Bm = Ay @ ghx                                             # B_0, (m3, ns)
+            D = np.zeros((m3, ns, ns))
             zc = np.zeros(ns)                                         # state rows of the constant of m2_k
             S = np.zeros((ns, ns))
-            ghxst = (Ay @ ghx)                                        # a ghx, (3, ns)
+        Vy = Ay @ ghx                                                 # (m3, ns): a ghx F^(k-1)
+        P = self.ob.P
         for k in range(1, K):
             rY[k][:, ist] = Vy
             rO[k] = rO[k - 1] @ P
             if two:
-                Cf = Cj.reshape(n, nn)
                 dc = 0.5 * (self.ghxx @ S.ravel()) + self.c2          # state-independent part of d_{k-1}
-                rW[k] = 0.5 * (Ay @ Cf) + ghxst @ Z                   # a . AW_k = 0.5 a.C_{k-1} + (a ghx) Z_{k-1}
+                rW[k] = 0.5 * (Gbar + D).reshape(m3, nn)
                 rc[k] = Ay @ (ghx @ zc + dc)                          # a . a_k
-                Z = F @ Z + 0.5 * Cf[ist]
+                D = (Bm @ Gs).reshape(m3, ns, ns) + np.matmul(np.matmul(F.T, D), F)          # D_(k+1)
+                Gbar = np.matmul(np.matmul(F.T, Gbar), F)
+                Bm = Bm @ F
                 zc = F @ zc + dc[ist]
                 S = F @ S @ F.T + self.SigS
-                Cj = np.matmul(np.matmul(F.T, Cj), F)
             Vy = Vy @ F
         order = self.news._order                                       # rows: complementarity rows first, as NewsOBC
 
@@ -250,8 +255,10 @@ class HigherOrderNews:
             return np.zeros(self.nws)
         y = solve_active_set(nb.Mo, q, self.nws)
         if y is None:
+            self.stats["milp"] = self.stats.get("milp", 0) + 1
             y, _st = solve_news(nb.Mo, q, self.nws, horizons=sorted({max(1, T // 4), max(1, T // 2), T}), n_c=self.n_c)
         if y is None:
+            self.stats["no_solution"] = self.stats.get("no_solution", 0) + 1
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
 
@@ -267,7 +274,7 @@ class HigherOrderNews:
         if not need.any():
             return np.zeros(self.nws)
         Pn = P[:, need]
-        Y, ok = solve_active_set_batch(nb.Mo, Pn, self.nws, scale=nb._mscale, cache=self._fac_cache)
+        Y, ok = solve_active_set_batch(nb.Mo, Pn, self.nws, scale=nb._mscale, cache=self._fac_cache, info=self.stats)
         acc = Y[:, ok].sum(axis=1)
         nfail = int((~ok).sum())
         self.stats["batch_fail"] = self.stats.get("batch_fail", 0) + nfail

@@ -313,7 +313,7 @@ def _batch_factor(Ms, idx, scale, cache, n_s, cond_max=1e4):
     return (1, sz_pad, n)
 
 
-def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None, tail=8):
+def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None, tail=8, info=None):
     """``solve_active_set`` on every column of ``Q`` (N x k) at once: the same guess-and-verify iteration run in lockstep.
 
     Equivalence with the scalar routine holds by construction: per column the sequence of binding-set guesses
@@ -321,7 +321,7 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
     test of ``_solve_checked`` and the acceptance test of ``verify_lcp`` are the scalar ones; only the linear algebra is
     shared. Columns with the same guessed set are solved with one LU factorisation and a multi-right-hand-side
     back-substitution, and the factorisation of ``M[A, A]`` is kept in ``cache`` (a dict, valid for this M only) so
-    that later calls with the same set skip it. Returns (Y, ok): Y is n_s x k, ok[j] False where the scalar routine
+    that later calls with the same set skip it. ``info`` (a dict, optional) accumulates 'calls', 'cols', 'passes', 'groups', 'tail'. Returns (Y, ok): Y is n_s x k, ok[j] False where the scalar routine
     would return None (then Y[:, j] is not meaningful)."""
     Ms = M[:n_s]
     k = Q.shape[1]
@@ -339,10 +339,15 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
     act = np.arange(k)
     seen = {}
     nb = (n_s + 7) // 8
+    if info is not None:
+        info["calls"] = info.get("calls", 0) + 1
+        info["cols"] = info.get("cols", 0) + k
     for it in range(maxit):
         if act.size == 0:
             break
         if it > 0 and act.size <= tail:
+            if info is not None:
+                info["tail"] = info.get("tail", 0) + act.size
             # few columns left: the scalar routine from their current guess (same iteration; only the cycle memory restarts,
             # and a cycle is a failure either way)
             for c in act:
@@ -378,6 +383,9 @@ def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None
         if len(cache) > 20000:
             cache.clear()
         uk, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+        if info is not None:
+            info["passes"] = info.get("passes", 0) + 1
+            info["groups"] = info.get("groups", 0) + uk.size
         Ya = np.zeros((n_s, act.size))
         good = np.ones(act.size, bool)
         ukl = uk.tolist()                                         # python ints (or bytes): the cache keys
