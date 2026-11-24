@@ -354,11 +354,11 @@ class HigherOrderNews:
     def _classify(self, p):
         """A point on which the active-set iteration failed: (y, None) if the MILP finds a solution, else (None, cls).
 
-        cls 'a': proved no solution at this horizon. Either the LP {y >= 0, p + M y >= 0 on all N rows} (a necessary condition
-        of any LCP solution, complementarity dropped) is infeasible by more than 1e-6 max(1, |p|), and so is the same LP on the
-        first n_s rows only; or the MILP (horizons T/4, T/2, T) terminated with alpha = 0 at every horizon.
-        cls 'b': the LP on all N rows is infeasible (or the MILP finds no solution) but the check-ahead rows are the cause:
-        the LP on the first n_s rows alone is feasible (resp. the MILP on the first n_s rows finds a solution). This is the
+        cls 'a': proved no solution at this horizon. Either the LP {y >= 0, p + M y >= 0 on the first n_s rows} (a necessary
+        condition of any LCP solution, complementarity dropped) is infeasible by more than 1e-6 max(1, |p|) (so is the LP on
+        all N rows); or the MILP (horizons T/4, T/2, T) terminated with alpha = 0 at every horizon and also on the first n_s rows.
+        cls 'b': the LP on all N rows is infeasible (or the MILP on all rows finds no solution) but the check-ahead rows are the
+        cause: the LP on the first n_s rows alone is feasible (resp. the MILP on the first n_s rows finds a solution). This is the
         diagnosis NewsOBC reports as 'horizon_too_short'. It does NOT establish that a longer horizon has a solution (that needs
         M and the gap path for a longer horizon, which are not built for perturbed points), nor, in the LP case, that the
         complementarity conditions can be met on the first n_s rows (LP feasibility is necessary, not sufficient).
@@ -368,10 +368,12 @@ class HigherOrderNews:
         N = nb.Mo.shape[0]
         scale = max(1.0, float(np.abs(p).max()))
         tol = 1e-6 * scale
-        s_full = self._lp_gap(p, slice(0, N))
+        s_head = self._lp_gap(p, slice(0, n_s))                      # first n_s rows (the horizon proper) first: 1 LP decides 'a'
+        if s_head is not None and s_head > tol:
+            return None, "a"
+        s_full = self._lp_gap(p, slice(0, N)) if s_head is not None else None
         if s_full is not None and s_full > tol:
-            s_head = self._lp_gap(p, slice(0, n_s))
-            return None, ("b" if (s_head is not None and s_head <= tol) else "a")
+            return None, "b"
         hz = sorted({max(1, T // 4), max(1, T // 2), T})
         t_end = time.perf_counter() + self.milp_time_limit
         undecided = False

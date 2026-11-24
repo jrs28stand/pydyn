@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import pydyn
-from pydyn.obc import NewsOBC, OBCError
+from pydyn.obc import NewsOBC, OBCError, solve_active_set
 from pydyn.obc_ho import HigherOrderNews
 from pydyn.simulate import simulate
 
@@ -255,3 +255,140 @@ def test_batch_cache_is_bounded_and_harmless():
     np.testing.assert_array_equal(ok0, ok1)
     np.testing.assert_allclose(Y0[:, ok0], Y1[:, ok0], rtol=0, atol=1e-12)
     assert cache.get("_bytes", 0) < 200_000
+
+
+# ------------------------------------------------------------------ cubature defaults and failure handling
+from pydyn.obc_ho import CubatureFailure  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def borrcon(tmp_path_factory):
+    d = tmp_path_factory.mktemp("borrcon")
+    shutil.copy(REF / "occ_borrcon.mod", d)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(d / "occ_borrcon.mod"))
+    sd = np.sqrt(np.diag(m.Sigma_e))
+    return m, np.random.default_rng(4).normal(size=(30, m.n_exo)) * sd * 0.1
+
+
+@pytest.fixture(scope="module")
+def sw_cp():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))
+    import obc_ho_scale as sc
+    m = sc.sw_cp_model()
+    sd = np.sqrt(np.diag(m.Sigma_e))
+    return m, np.random.default_rng(4).normal(size=(30, m.n_exo)) * sd * 0.25
+
+
+def _qs(m, S, horizon):
+    qs, h1 = [], HigherOrderNews(m, order=2, horizon=horizon, check_ahead=horizon)
+    orig = h1.news_shocks
+    h1.news_shocks = lambda q: (qs.append(q.copy()), orig(q))[1]
+    h1.simulate(S)
+    return qs
+
+
+def test_cubature_defaults(nkm):
+    m, _ = nkm
+    h = HigherOrderNews(m, order=2, cubature=True)
+    assert h.regions == "all" and h.qmc_level == 11 and h.xi.shape[1] == 2 ** 12 - 1
+    assert h.failure_tolerance == 0.0 and h.milp_time_limit == 1.0
+    assert HigherOrderNews(m, order=2).cubature is False
+
+
+def test_m_diagnostic_warns_only_on_non_s_matrix(nkm, sw_cp):
+    m, _ = nkm
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        h = HigherOrderNews(m, order=1, cubature=True, qmc_level=3)          # nkm: S-matrix, no warning
+    assert h.m_diag["is_s"] is True and h.m_diag["level"] == "s" and h.m_diag["seconds"] >= 0
+    assert HigherOrderNews(m, order=1, cubature=True, qmc_level=3).m_diag is h.m_diag      # cached per parameter set
+    assert HigherOrderNews(m, order=1, cubature=True, qmc_level=3, m_diagnostic=False).m_diag is None
+    assert HigherOrderNews(m, order=1, qmc_level=3).m_diag is None           # no cubature: not computed
+    with pytest.warns(UserWarning, match="not an S-matrix"):
+        w = HigherOrderNews(sw_cp[0], order=1, cubature=True, qmc_level=3)
+    assert w.m_diag["is_s"] is False
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert HigherOrderNews(m, order=1, cubature=True, qmc_level=3, m_diagnostic="full").m_diag["level"] == "full"
+
+
+def test_raise_by_default_with_classified_counts(borrcon, sw_cp):
+    m, S = borrcon                                    # failures are class (b): the check-ahead rows
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5)
+        with pytest.raises(CubatureFailure) as ei:
+            h.simulate(S)
+        e = ei.value
+        assert isinstance(e, OBCError) and e.period >= 1
+        assert e.n_points == 63 and 0 < e.n_relevant <= 63 and e.lower_bound and e.n_failed >= 1
+        assert sum(e.counts.values()) == e.n_failed and e.counts["b"] >= 1 and e.status == "horizon_too_short"
+        assert e.n_active_set_failed >= e.n_failed and any("longer `horizon`" in a for a in e.advice)
+        # the advice works here: with a longer horizon no point fails
+        HigherOrderNews(m, order=2, horizon=96, check_ahead=96, cubature=True, qmc_level=5).simulate(S[:10])
+        m2, S2 = sw_cp                                 # class (a): proved no solution
+        h2 = HigherOrderNews(m2, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5)
+        with pytest.raises(CubatureFailure) as e2:
+            h2.simulate(S2)
+        assert e2.value.counts["a"] >= 1 and e2.value.status == "no_solution" and e2.value.period >= 1
+
+
+def test_tolerance_drops_and_renormalises(borrcon):
+    m, S = borrcon
+    kw = dict(order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False)
+    h = HigherOrderNews(m, cubature_failure_tolerance=0.9, **kw)
+    with pytest.warns(UserWarning, match="dropped") as rec:
+        r = h.simulate(S[:12])
+    assert sum("dropped" in str(w.message) for w in rec) == 1                  # one warning per simulation
+    assert r["dropped"].sum() > 0 and r["dropped"].sum() == h.stats["dropped_points"]
+    assert (r["dropped"] <= 0.9 * r["relevant"]).all() and r["relevant"].max() <= 63
+    qs = _qs(m, S[:12], 32)
+    checked = 0
+    for q in qs:                                                              # weights: sum over solved / (points - failed)
+        idx = h._relevant_points(q)
+        if not idx.size:
+            continue
+        pr = q[:, None] + h.R @ h.xi[:, idx]
+        out = [h._solve_unit(pr[:, j]) for j in range(idx.size)]
+        nf = sum(c is not None for _, c in out)
+        if nf == 0 or nf > 0.9 * idx.size:
+            continue
+        expect = sum(y for y, c in out if c is None) / (63 - nf)
+        np.testing.assert_allclose(h.news_shocks(q), expect, rtol=0, atol=1e-11)
+        assert h._dropped_last == nf
+        checked += 1
+    assert checked >= 2
+    # the failed share of relevant points above the tolerance raises, with the exceeded count as a lower bound
+    h2 = HigherOrderNews(m, cubature_failure_tolerance=0.02, **kw)
+    with pytest.raises(CubatureFailure) as ei:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            h2.simulate(S)
+    assert ei.value.tolerance == 0.02 and ei.value.n_failed > 0.02 * ei.value.n_relevant
+    with pytest.raises(ValueError):
+        HigherOrderNews(m, cubature_failure_tolerance=1.0, **kw)
+
+
+def test_milp_time_limit_gives_undecided_class(borrcon):
+    m, S = borrcon
+    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False)
+    q = _qs(m, S[:3], 32)[0]
+    idx = h._relevant_points(q)
+    pr = q[:, None] + h.R @ h.xi[:, idx]
+    p = next(pr[:, j] for j in range(idx.size) if solve_active_set(h.news.Mo, pr[:, j], h.nws) is None)
+    assert h._classify(p) == (None, "b")                                      # the LP proof
+    h._lp_gap = lambda p, rows: 0.0                                           # pretend the LP is feasible: force the MILP
+    h.milp_time_limit = 1e-6
+    t = __import__("time").perf_counter()
+    assert h._classify(p) == (None, "c")
+    assert __import__("time").perf_counter() - t < 0.5
+    h.milp_time_limit = 10.0
+    assert h._classify(p) == (None, "b")                                      # MILP proof on the first n_s rows
+    h.milp_time_limit = 1e-6                                                  # (c) counts as a failure
+    h.failure_tolerance = 0.0
+    with pytest.raises(CubatureFailure) as ei:
+        h.news_shocks(q)
+    assert ei.value.counts["c"] >= 1 and ei.value.status == "not_converged"
