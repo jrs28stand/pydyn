@@ -1,0 +1,166 @@
+{
+ "meta": {
+  "seed": 20261124,
+  "reps": 5,
+  "s": {
+   "sw": 0.25
+  },
+  "impls": [
+   "after"
+  ],
+  "check_ahead": 40,
+  "occbin_check_ahead": 80,
+  "python": "3.13.18",
+  "numpy": "2.5.3",
+  "date": "2026-11-24 09:09",
+  "load_avg": [
+   1.2783203125,
+   1.7197265625,
+   1.83251953125
+  ]
+ },
+ "data": {
+  "sw": {
+   "0.5": {
+    "methods": {
+     "occbin": {
+      "solved": 1820,
+      "failed": 180,
+      "failures": {
+       "OccbinLoopError:313": 159,
+       "OccbinMaxitError:311": 15,
+       "OccbinPeriodicError:310": 6
+      },
+      "seconds": 3.424423272006152,
+      "solved_with_binding": 478
+     },
+     "regime/after": {
+      "solved": 1820,
+      "failed": 180,
+      "failures": {
+       "OBCError:not_converged": 146,
+       "OBCError:horizon_too_short": 34
+      },
+      "seconds": 75.69099076599241,
+      "solved_with_binding": 478
+     }
+    },
+    "pairs": {
+     "occbin vs regime/after": {
+      "both_solved": 1820,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 180
+     }
+    },
+    "before_vs_after": {}
+   },
+   "1.0": {
+    "methods": {
+     "occbin": {
+      "solved": 1771,
+      "failed": 229,
+      "failures": {
+       "OccbinPeriodicError:310": 8,
+       "OccbinLoopError:313": 190,
+       "OccbinMaxitError:311": 31
+      },
+      "seconds": 4.201629838002191,
+      "solved_with_binding": 461
+     },
+     "regime/after": {
+      "solved": 1771,
+      "failed": 229,
+      "failures": {
+       "OBCError:not_converged": 176,
+       "OBCError:horizon_too_short": 53
+      },
+      "seconds": 90.63966846601033,
+      "solved_with_binding": 461
+     }
+    },
+    "pairs": {
+     "occbin vs regime/after": {
+      "both_solved": 1771,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 229
+     }
+    },
+    "before_vs_after": {}
+   },
+   "1.5": {
+    "methods": {
+     "occbin": {
+      "solved": 1706,
+      "failed": 294,
+      "failures": {
+       "OccbinLoopError:313": 234,
+       "OccbinMaxitError:311": 49,
+       "OccbinPeriodicError:310": 11
+      },
+      "seconds": 5.1841893390032965,
+      "solved_with_binding": 455
+     },
+     "regime/after": {
+      "solved": 1706,
+      "failed": 294,
+      "failures": {
+       "OBCError:not_converged": 208,
+       "OBCError:horizon_too_short": 86
+      },
+      "seconds": 106.55419476598945,
+      "solved_with_binding": 455
+     }
+    },
+    "pairs": {
+     "occbin vs regime/after": {
+      "both_solved": 1706,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 294
+     }
+    },
+    "before_vs_after": {}
+   },
+   "2.0": {
+    "methods": {
+     "occbin": {
+      "solved": 1635,
+      "failed": 365,
+      "failures": {
+       "OccbinLoopError:313": 268,
+       "OccbinMaxitError:311": 78,
+       "OccbinPeriodicError:310": 19
+      },
+      "seconds": 8.860744850987885,
+      "solved_with_binding": 427
+     },
+     "regime/after": {
+      "solved": 1635,
+      "failed": 365,
+      "failures": {
+       "OBCError:not_converged": 248,
+       "OBCError:horizon_too_short": 117
+      },
+      "seconds": 127.1417966960048,
+      "solved_with_binding": 427
+     }
+    },
+    "pairs": {
+     "occbin vs regime/after": {
+      "both_solved": 1635,
+      "different_regimes": 0,
+      "only_first_fails": 0,
+      "only_second_fails": 0,
+      "both_fail": 365
+     }
+    },
+    "before_vs_after": {}
+   }
+  }
+ }
+}
