@@ -311,6 +311,8 @@ def shape_of(v):
         return v.shape
     if isinstance(v, Tainted):
         arr(v)
+    if hasattr(v, "ml_shape"):
+        return v.ml_shape()
     return (1, 1)
 
 
@@ -657,16 +659,25 @@ def _concat_nd(vals, d, hv):
 def _concat(vals, d):
     what = "vertical" if d == 0 else "horizontal"
     if any(isinstance(v, Cell) for v in vals):
-        vals = [v for v in vals if not (isinstance(v, np.ndarray) and v.size == 0) and not (isinstance(v, str) and v == "")]
-        items = []
+        vals = [v for v in vals if not (isinstance(v, np.ndarray) and v.size == 0) and not (isinstance(v, str) and v == "")
+                and not (isinstance(v, Cell) and 0 in v.shape)]
+        grids = []
         for v in vals:
             if isinstance(v, Cell):
-                if v.shape[d] > 1:
-                    raise Unsupported(f"{what} concatenation of cell {'rows' if d == 0 else 'columns'}")
-                items += v.items
+                g = np.empty(v.shape, dtype=object)
+                for k, x in enumerate(v.items):
+                    g[np.unravel_index(k, v.shape, order="F")] = x
             else:
-                items.append(v)
-        return Cell(items, (len(items), 1) if d == 0 else (1, len(items)))
+                g = np.empty((1, 1), dtype=object)
+                g[0, 0] = v
+            grids.append(g)
+        if not grids:
+            return Cell([], (0, 0))
+        o = 1 - d
+        if len({g.shape[o] for g in grids}) > 1:
+            raise MatlabError(f"{what} dimensions mismatch ({'x'.join(map(str, grids[0].shape))} vs {'x'.join(map(str, grids[1].shape))})")
+        g = np.concatenate(grids, axis=d) if len(grids) > 1 else grids[0]
+        return Cell([g[np.unravel_index(k, g.shape, order="F")] for k in range(g.size)], g.shape)
     for v in vals:
         if isinstance(v, Tainted):
             arr(v)
@@ -695,6 +706,8 @@ def _concat(vals, d):
 def hcat(vals):
     if len(vals) == 1 and not isinstance(vals[0], Tainted):
         return vals[0]
+    if any(hasattr(v, "ml_hcat") for v in vals):             # objects (dseries) concatenate themselves
+        return next(v for v in vals if hasattr(v, "ml_hcat")).ml_hcat(vals)
     return _concat(vals, 1)
 
 
@@ -1147,7 +1160,7 @@ COMMAND_WORDS = {"close", "clear", "clc", "hold", "format", "warning", "more", "
                  "addpath", "rmpath", "diary", "echo", "pause", "disp", "dbstop", "profile", "delete",
                  "cd", "clearvars", "pkg", "graphics_toolkit", "drawnow", "grid", "box", "axis", "clf",
                  "dynare", "type", "which", "mex", "import", "syms", "tic", "toc", "legend", "colormap",
-                 "shading", "rng", "beep", "commandwindow", "dbclear", "keyboard", "print", "run"}
+                 "shading", "rng", "beep", "commandwindow", "dbclear", "keyboard", "print", "run", "set_historical_values"}
 _CMD_RE = re.compile(r"^\s*([A-Za-z_]\w*)[ \t]+(?![=(;,]|[-+*/^<>~&|.:]?=|[-+*/^<>&|:](?:\s|$)|\.[*/^\\'])(\S[^;,%]*)(.*)$")
 _NUM_RE = re.compile(r"(?:\d+(?:\.(?![*/^\\'])\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?")
 _ID_RE = re.compile(r"[A-Za-z]\w*")      # MATLAB identifiers start with a letter
@@ -3717,7 +3730,7 @@ def _env(I, a, nout):
 
 @bi("isoctave")
 def _isoctave(I, a, nout):
-    return np.bool_(ISOCTAVE)
+    return np.bool_(getattr(I, "isoctave", ISOCTAVE))
 
 
 _ERR_ID_RE = re.compile(r"[^%\s:][^%\s]*:[^%\s]*[^%\s:]")
@@ -4349,6 +4362,8 @@ class Interpreter:
         op = n.op
         if op == "()":
             return v
+        if hasattr(v, "ml_unop") and op in ("-", "+"):
+            return v.ml_unop(op)
         if op == "-":
             return uminus(v)
         if op == "+":
@@ -4367,7 +4382,12 @@ class Interpreter:
             if (op == "&&") != a:
                 return np.bool_(a)
             return np.bool_(self._sc_bool(self.ev(n.r, sc)))
-        return self._BIN[op](self.ev(n.l, sc), self.ev(n.r, sc))
+        a, b = self.ev(n.l, sc), self.ev(n.r, sc)
+        if hasattr(a, "ml_binop"):
+            return a.ml_binop(op, b, True)
+        if hasattr(b, "ml_binop"):
+            return b.ml_binop(op, a, False)
+        return self._BIN[op](a, b)
 
     @staticmethod
     def _sc_bool(v):
@@ -4460,6 +4480,8 @@ class Interpreter:
         if hasattr(v, "snapshot"):
             v = v.snapshot()
         args = self.index_args(v, n.args, sc)
+        if hasattr(v, "ml_index"):
+            return v.ml_index(args, n.brace)
         try:
             return index_brace(v, args) if n.brace else index(v, args)
         except PY_ERRORS as exc:
@@ -4872,6 +4894,8 @@ class Interpreter:
     def _assign_chain(self, cur, chain, i, value, sc):
         if type(cur) is Tainted:
             arr(cur)
+        if hasattr(cur, "ml_assign"):                        # objects (dseries) assign to themselves
+            return cur.ml_assign(self, sc, chain[i:], value)
         acc = chain[i]
         last = i == len(chain) - 1
         if type(acc) is Field:

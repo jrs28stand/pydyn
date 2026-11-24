@@ -329,19 +329,25 @@ def _finite_at(model, y, x, params):
     return bool(np.all(np.isfinite(model.static_jac(y, x, params))))
 
 
-def _random_draws(ok, y0):
+def _random_draws(ok, y0, stream=None):
     """The randomised initial guesses of Dynare's dynare_solve.m (options_.solve_randomize_initial_guess,
     on by default): the entries ``idx`` are redrawn, first as rand*10, then randn*10, then -rand*10,
     up to 10*len(idx)+1 times each, keeping the draws ``y`` for which ``ok(y)`` (residuals and
     Jacobian finite). As in dynare_solve.m, ``idx`` is ``find(x)`` (the non-zero entries of the
     guess) unless the whole guess is zero, then every entry. Draws come from numpy's generator with
-    seed RESTART_SEED, not from Dynare's stream."""
+    seed RESTART_SEED, not from Dynare's stream, unless ``stream`` (a pydyn.octave_rng.OctaveRandom) is given: then
+    they are Dynare's (``rand(k, 1)*10``, ``randn(k, 1)*10``, ``-rand(k, 1)*10`` from Octave's generators)."""
     y0 = np.array(y0, float)
     nz = np.flatnonzero(np.where(np.isnan(y0), 1.0, y0))     # NaN counts as non-zero, as in MATLAB's find
     idx = nz if nz.size else np.arange(len(y0))
     k = len(idx)
-    rng = np.random.default_rng(RESTART_SEED)
-    for draw in (lambda: rng.random(k) * 10, lambda: rng.standard_normal(k) * 10, lambda: -rng.random(k) * 10):
+    if stream is not None:
+        draws = (lambda: stream.rand((k, 1)).ravel() * 10, lambda: stream.randn((k, 1)).ravel() * 10,
+                 lambda: -stream.rand((k, 1)).ravel() * 10)
+    else:
+        rng = np.random.default_rng(RESTART_SEED)
+        draws = (lambda: rng.random(k) * 10, lambda: rng.standard_normal(k) * 10, lambda: -rng.random(k) * 10)
+    for draw in draws:
         for _ in range(10 * k + 1):
             y = y0.copy()
             y[idx] = draw()
@@ -1162,7 +1168,7 @@ def dmperm(S):
     return np.array(p), np.array(q), np.array(r[:nb2 + 1]), np.array(s[:nb2 + 1])
 
 
-def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=True):
+def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=True, stream=None):
     """matlab/optimization/dynare_solve.m for ``solve_algo`` 4 (Dulmage-Mendelsohn blocks, then the
     whole system, with trust_region.m), 9 (trust_region.m on the whole system), 13 and 14 (the
     block_trust_region MEX, with and without the block decomposition). ``fun(x)`` returns the
@@ -1170,7 +1176,7 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
 
     As in Dynare: a guess whose residuals are below ``tolf`` is returned unchanged; when the
     residuals or the Jacobian are not finite at the guess, new guesses are drawn (see
-    _random_starts; pydyn's draws are not Dynare's). solve_algo 4 uses the exact blocks and block
+    _random_starts; pydyn's draws are not Dynare's unless ``stream`` is given). solve_algo 4 uses the exact blocks and block
     order of Octave's dmperm (see dmperm), including Dynare's handling of the non-square blocks of a
     structurally singular Jacobian. solve_algo 13 solves such a Jacobian without the block
     decomposition."""
@@ -1184,7 +1190,7 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
     if not _finite(fvec, fjac):
         if not randomize:
             return x, True, False
-        start = next(_random_draws(lambda y: _finite(*fun(y)), x), None)
+        start = next(_random_draws(lambda y: _finite(*fun(y)), x, stream), None)
         if start is None:
             return x, True, False
         x, restarted = start, True

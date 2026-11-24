@@ -46,6 +46,8 @@ from .matlab import (Cell, Interpreter, MatlabError, Struct, Tainted, Unsupporte
 from .model import Model, ModelError
 from .results_oo import CommandsMixin
 from .results_est import EstimationMixin
+from .results_bwd import BackwardMixin
+from .results_ep import ExtendedPathMixin
 
 __all__ = ["dynare", "Results", "ResultsError"]
 
@@ -319,6 +321,9 @@ class LiveInterp(Interpreter):
     """The interpreter of the results mode: ``M_``, ``options_`` and ``oo_`` are ordinary structs, Dynare
     statements run where they stand, and Dynare's functions act on the live workspace."""
 
+    #: the results mode reproduces Dynare under Octave (reference runs, Octave's random generators): isoctave is true
+    isoctave = True
+
     def __init__(self, directory, host, res):
         super().__init__(directory, host)
         self.res = res
@@ -423,6 +428,8 @@ def _to_mat_file(v, name):
         return {k: _to_mat_file(x, name) for k, x in v.items()}
     if isinstance(v, Tainted):
         raise Unsupported(f"save: '{name}' is unknown ({v.why})", "tainted")
+    if hasattr(v, "as_mat_struct"):              # a dseries is written as a struct (data, name, init, freq): read back as a struct
+        return {k: _to_mat_file(x, name) for k, x in v.as_mat_struct().items()}
     raise Unsupported(f"save: '{name}' is a {_ml._class(v)} value pydyn does not write", "file")
 
 
@@ -762,6 +769,18 @@ class _Core(CommandsMixin):
         """M_.endo_histval / M_.exo_histval: one column per lag (Dynare: column maximum_lag + lag)."""
         m = self.model
         ml = max(int(m.info["maximum_lag"]), 1)
+        if any(a.get("type") != 6 for a in m.raw.get("aux_vars", [])):
+            # auxiliary variables (lags beyond the first, diff(), exogenous lags): the driver's histval_dseries and
+            # dynamic_set_auxiliary_series (pydyn.backward.histval_matrices)
+            from .backward import BackwardError, histval_matrices
+            try:
+                live = self._sim_live()
+                endo, exo = histval_matrices(m, m._stmt_values.get(id(st), {}), m.params.copy(), live["ss"])
+            except BackwardError as exc:
+                raise ResultsError(f"histval: {exc}") from None
+            self.set_M("endo_histval", mat(endo))
+            self.set_M("exo_histval", mat(exo))
+            return
         endo, exo = np.zeros((m.n_endo, ml)), np.zeros((m.n_exo, ml))
         for (name, lag), v in m._stmt_values.get(id(st), {}).items():
             col_ = ml + int(lag) - 1
@@ -916,6 +935,7 @@ class _FunctionsMixin:
             "occbin_unpack_simulations": self.fn_unpack_simulations,
             "resol": self.fn_resol,
             "save": self.fn_save,
+            **self._functions_backward(),
         }
 
     def fn_command(self, kind):
@@ -1091,7 +1111,7 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin, EstimationMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

@@ -1303,8 +1303,9 @@ def _solve_period(model, guess, fixed_lag, fixed_lead, x, params, ss, o):
     algo = o.get("solve_algo")
     algo = steady_command_algo(model) if algo is None else int(algo)
     if algo in PORTED_SOLVE_ALGOS:
-        z, err, restarted = dynare_solve(lambda z: (f(z), jac(z)), guess, tolf, o["dynatol.x"], maxit, algo)
-        if restarted:
+        z, err, restarted = dynare_solve(lambda z: (f(z), jac(z)), guess, tolf, o["dynatol.x"], maxit, algo,
+                                         stream=o.get("_rng"))
+        if restarted and o.get("_rng") is None:
             _opt.warn_once(model, "perfect_foresight: a period's initial guess gave non-finite residuals, so the solver "
                                   "restarted from random guesses as Dynare's dynare_solve does (pydyn's draws differ "
                                   "from Dynare's)")
