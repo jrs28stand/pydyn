@@ -95,3 +95,49 @@ Not done
 - Uniqueness is not reported per period; when `M` is not a P-matrix the returned solution is one of possibly several
   (the shortest news horizon that works).
 - No reference yet from DynareOBC itself (it needs MATLAB and Dynare 4.5).
+
+## 2026-11-24 (third entry): why Smets-Wouters with a lower bound fails, and a proof instead of a cycle
+
+Benchmark `reference/obc_sw_zlb.mod` (Dynare's swpkfppf.mod without data and estimation lines; 32 variables; the
+constraint switches the rule and its lag term).
+
+Finding. OccBin cycles (error 313) on a -6 shock to `eb`, and at period 36 of a simulation at one standard
+deviation. The cause is not the algorithm: those states have no solution. Others have several.
+
+How it was established. In the alternative regime the second switched equation (`rlag = rnot`) ties its wedge to
+the first one's: `w2 = -w1 - ms`. With that tie the model is a complementarity problem in one wedge per period,
+`g = q + M y + G z` (`RegimeOBC.lcp`; G holds the `ms` offsets and vanishes when `ms = 0`). `_find_tie` detects the
+structure from the wedge responses: all but one switched equation respond to wedges only in the same period, with
+constant coefficients; and the bind/relax conditions are exact mirror images of the primary equation.
+- M is not an S-matrix and not a P-matrix (largest leading P block: 10 periods). So existence fails for some
+  states and uniqueness for others; this is the situation Holden's theory paper describes for this class of model.
+- `eb = -4`: exactly two single-spell solutions, binding for 9 or 13 periods, with paths up to 29 apart (output on
+  impact -18.8 or -26.1). OccBin and the news method both return the 9-period one. `eb = -2`: two as well.
+- `eb <= -5`: the linear programme `y >= 0, q + M y >= 0` is infeasible at horizons 40 and 80. That is a proof that no
+  path returns to the reference regime within the horizon. It takes 0.06 s, where OccBin cycles and the big-M
+  integer programme timed out.
+- 400 random periods (all shocks): at half a standard deviation 55 binding periods solved, 5 proved to have no
+  solution, 1 horizon too short, 1 time-out; at one standard deviation 78 solved, 27 proved to have no solution,
+  9 horizon too short, 1 unproved. Every binding state checked (55 and 60) had more than one single-spell solution.
+
+Added
+- `RegimeOBC.lcp`, `diagnostics`, `single_spell_solutions`; `_solve_lcp` is now the first fallback when the
+  guess-and-verify iteration cycles: Holden's homogenised integer programme when G = 0, a one-binary-per-period
+  programme otherwise, and in both cases an infeasible linear relaxation is reported as a proof.
+- `pydyn/obc_lk.py` (`LKNews`): cached single-spell fast path after Boehl's (l, k) idea, with the complete LCP test.
+  2,000 periods: 26 microseconds per period on `obc_zlb` (news 245, OccBin 1,057), 52 on NKM (news 219, OccBin 894).
+  One constraint, single-equation only, not yet wired into `obc_method`.
+- 32 tests in tests/test_obc.py.
+
+What pydsge does (read from its source, engine.py): precomputes transition matrices and five verification rows per
+(l, k) up to l_max = 3, k_max = 16 by default in estimation; checks five periods rather than the whole path; when
+no (l, k) passes it returns an approximation with a flag instead of failing. Compiled with numba.
+
+Caveats
+- The benchmark is Dynare's test calibration with its shock sizes, not an estimated model.
+- "No solution" means within the news horizon plus check-ahead; the infeasibility proof is for that horizon.
+- Which equilibrium is returned when there are several is decided by the iteration's starting guess, as in OccBin.
+- The tie structure is detected for one constraint; two constraints with several equations each still use the
+  slow general integer programme as the last resort.
+
+Not done: single-spell cache for the tied (several-equation) form; an equilibrium-selection option; `minnorm`.
