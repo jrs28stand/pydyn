@@ -245,10 +245,87 @@ rare: 13% on borrcon and 57% on a 32-variable SW-type model at level 9); bound t
 gap functionals stacked with the complementarity rows first (the `NewsOBC` order) so the wedge vector is n_c T long; cost of the order-2 step is n x ns^2 per period -- for n = 100+ avoid computing the full y2 every period
 if only the gap and the states are needed.
 
+## Cubature defaults and failure handling
+Specification for `HigherOrderNews` with `cubature=True` (decisions of the project owner; implemented in pydyn/obc_ho.py; tests in tests/test_obc_ho.py).
+
+### Defaults
+* `regions="all"`: the full quasi-Monte Carlo average over every relevant point. `regions=1` (DynareOBC's default: the solution at the single mean of the
+  relevant perturbed paths) and `regions=k` remain options. **One region does not price tail risk**: it solves one LCP at the mean path, so the wedge it
+  returns is the wedge of the average path, not the average of the wedges; the full average changes results a great deal (NKM, full-average mean shift:
+  -0.107 sd at level 9, -0.162 at level 11, -0.163 at level 13).
+* `qmc_level=11`: the first 2^12 - 1 = 4,095 Sobol points after the origin (symmetric set, mean exactly zero).
+* `cubature_milp_time_limit=1.0` (s per failed point), `cubature_failure_tolerance=0.0` (raise on any failed point), `m_diagnostic="s"`.
+Explicit old settings (`regions=1`, `qmc_level=9` / 10) reproduce the stored baselines and the DynareOBC references (tests unchanged apart from passing them).
+
+### Up-front M diagnostic
+When cubature is on, at construction `m_diagnostics` (pydyn/obc.py, reused unchanged) is run on the complementarity block `Ms` of M and stored as `h.m_diag`
+(dict: `is_s`, `is_p`, `largest_p`, ..., `seconds`, `level`). A `UserWarning` "M is not an S-matrix: some paths can have no solution; cubature points may fail" is issued if
+`is_s` is False. Levels: `"s"` (default) runs the S-matrix LP and a single leading P-block only (`is_p` is then None = not decided); `"full"` also runs the exact P-matrix tests;
+`False` skips it (`m_diag` is None; no information, no warning). Cached per parameter set in a module-level cache keyed by a digest of M. Cost (this machine, load ~1.3):
+| model | H = 20 | 32 | 40 | 60 | cached | full (T = 32) |
+|---|---|---|---|---|---|---|
+| nkm | 4.1 ms | 3.7 | 5.9 | 6.5 | 0.01-0.03 ms | 449 ms |
+| zlb2 (n_c = 2) | 4.7 | 6.5 | 11.1 | 15.3 | 0.02-0.09 ms | 266 ms |
+| sw_cp | 2.7 | 2.6 | 2.9 | 4.6 | 0.01 ms | 9 ms (not P: found early) |
+The S test is only informative one way: a non-S M means some q have no solution; an S-matrix M can still lack solutions for some q (borrcon is S and still has failing points: it is not a P-matrix).
+
+### What a failed point is
+A *unit* is a perturbed path (`regions="all"`) or a region's mean path (`regions=1`, `k`; a failed region counts all its points). The scalar active-set iteration (unchanged) is run first
+(batched for "all"); the unit is **failed** if no solution is found by it, by the MILP, or the MILP is undecided. Classification of a unit on which the iteration failed
+(`_classify`; LP first, tolerance 1e-6 max(1, |p|)):
+1. LP_head: min s s.t. y >= 0, p + M y + s >= 0 on the first n_s rows (the complementarity rows). s* > tol => **(a) proved no solution at this horizon** (necessary condition violated; ~2 ms).
+2. else LP_full on all N rows (check-ahead rows included). s* > tol => **(b)**: the wedges inside the news horizon cannot meet the check-ahead rows although they can meet the first n_s rows.
+3. else (both LPs feasible) the MILP (`solve_news`, horizons T/4, T/2, T in turn) with the shared per-point time limit: a solution => the unit is solved; alpha = 0 at every horizon => the MILP on the first n_s rows only decides
+   **(b)** (a solution exists there) or **(a)**; the time limit reached => **(c) undecided** (counts as a failure).
+What (b) establishes and what it does not: it establishes that no y >= 0 satisfies the gap conditions on all N rows (LP infeasibility is a proof of no LCP solution) while the head rows alone are satisfiable by some y >= 0 (an LP, not the
+LCP: complementarity on the head rows is not checked in the LP step, but is in the MILP step). It does **not** establish that a longer horizon has a solution: that needs M and the gap path for a larger T and N, which are not built for perturbed points
+(testing it means constructing a second `HigherOrderNews`). Empirically it is the right advice on borrcon (all failing points are (b); with horizon 32/48/64/96 the dropped share at level 7 is 13.4% / 2.2% / 0.4% / 0%).
+(a) is exact for what it claims (infeasibility of a relaxation, up to the LP tolerance); a point whose LP is feasible by less than the tolerance goes to the MILP rather than being called (a). Points where HiGHS returns no status are treated as not proved.
+In the MILP step the time limit is shared by all MILP calls for the point (not per horizon). It is rarely reached: on borrcon and sw_cp every failing point is decided by the LP (the MILP is never called).
+
+### Raise (default, tolerance 0)
+The first failed unit stops the search and `CubatureFailure(OBCError)` is raised, with: `period` (set by `simulate`, 1-based), `n_failed` (**a lower bound**, `lower_bound=True`, when units were left unexamined; it is the
+count so far), `n_relevant`, `n_points`, `counts={'a','b','c'}` (of the examined units, in points), `n_active_set_failed` (for "all": the number of points on which the batch active-set solver failed over the whole period, an upper bound on `n_failed`;
+None for regions modes), `tolerance`, `advice` (list of strings; (b): longer `horizon`; (c): raise `cubature_milp_time_limit`; (a): the model has reachable states without equilibrium) and `status` ('no_solution' if any (a), else
+'horizon_too_short' if any (b), else 'not_converged'). Cost of reaching the raise at level 11 (4,095 points): borrcon 359 ms (of which 1 batch pass), sw_cp 42 ms.
+
+### Tolerance mode (`cubature_failure_tolerance = tau > 0`, opt-in)
+All failed units are found (class counts exact); the search stops early only to raise, as soon as the failed points exceed tau x (relevant points). With F failed points out of P points of which R are relevant:
+* if F > tau R: raise `CubatureFailure` (`n_failed` is then a lower bound if units were left);
+* else the failed points are dropped and the period's result is **(sum over solved relevant units of size x y) / (P - F)**. F = 0 gives the plain average sum / P.
+Why P - F (redistribute over all non-failed points, not only over solved relevant points): non-relevant points are legitimate outcomes with y = 0 (the bound is not reached on that path); the failed points are the only ones
+about which nothing is known, so they are removed from the sample and the rest keep equal weights 1/(P - F). Spreading their mass over the solved relevant points alone would load it all on the nonzero wedges and bias the average upwards in exactly the periods where the bound matters.
+Undecided points (c) count as failed. Recording: `stats["dropped_points"]`, `stats["dropped_periods"]`; `simulate` returns `dropped` and `relevant` per period; one `UserWarning` per simulation with the totals. Weights check in the test: the period result equals
+the scalar sum divided by (P - F).
+
+### Measured
+Per period of `simulate`, order 2, cubature (2 repeats of 60 periods; machine load ~1.3; us):
+| model | old default (level 10, 1 region) | **new default (level 11, all)** | level 11, 4 regions | relevant share |
+|---|---|---|---|---|
+| nk | 711 | 14,044 | 10,496 | 69% |
+| nkm | 561 | 14,606 | 9,085 | 65% |
+| zlb2 (two constraints) | 1,275 | 99,824 | 32,056 | 86% |
+Failure handling at the default level 11, 8 periods:
+| model | mode | result | cost per period |
+|---|---|---|---|
+| borrcon (13% of points fail, class b) | raise | raised in period 1 after 359 ms (lower bound 1; 515 active-set failures) | 359 ms |
+| | tolerance 0.2 / 0.7 | 13.1% of relevant points dropped (4,275 of 32,749) | 2.5 s |
+| sw_cp (58% fail, class a) | raise | raised in period 1 after 42 ms | 42 ms |
+| | tolerance 0.2 | raised in period 1 after 1.14 s (507 failed points counted before exceeding 20% of 2,533 relevant) | 1.1 s |
+| | tolerance 0.7 | 58.2% dropped (11,960 of 20,564) | 3.5 s |
+Cost of tolerance mode is ~2.3-5 ms per failed point (the two LPs; scipy/HiGHS call overhead dominates a 64 x 33 LP): it must classify every failed point, so it is the expensive mode on models that fail often. No MILP was needed in any of these runs.
+
 ## State / next step
-Done and pushed (wip/obc-ho-perf): everything above (Parts 1-2 and Scaling); tests: tests/test_obc_ho.py (13), test_obc_dynareobc.py, test_obc.py, test_obc_perf.py pass (71).
-Possible next: (a) the first lockstep pass is mostly wasted (90% of columns change set); a better start cannot be used without changing the
-accepted solution, but the whole q-dependence is low rank (q + R xi, rank r+1), so the first guess could be shared among neighbouring points
-only if equivalence is re-argued; (b) ~1 ms per period of numpy overhead in regions=k (eigh 128 x 128 for the Gram matrix) could drop with a
-low-rank update; (c) not measured: level 14, cubature with more than two constraints, real SW (refused: tied wedge). Open decisions: the failure rule for perturbed points without solution (proposed above) and a time limit for the MILP in the cubature path; order-2 per period at n >= 100 (compute the full y2 only after the loop; only x2 = y2[ist] is needed inside it).
-Run: `python3 bench/obc_ho_bench.py rtime --reps 3`, `... compare tests/data/obc_ho_regions_baseline.npz --regions`.
+Done and pushed (wip/obc-ho-perf): Parts 1-2, Scaling, and "Cubature defaults and failure handling". Tests: 76 pass (tests/test_obc_ho.py 23, test_obc_dynareobc.py, test_obc.py, test_obc_perf.py).
+Open: the LP classification calls scipy `linprog` (~2.3 ms per point); a direct HiGHS call or a batched/dual-warm-started LP would cut tolerance mode several-fold; whether (b) failures are cured by a longer horizon is only
+evidenced on borrcon (a second `HigherOrderNews` with a longer horizon would test it per point); not measured: level 13, cubature with more than two constraints, real SW (refused: tied wedge).
+Run: `python3 bench/obc_ho_bench.py compare tests/data/obc_ho_baseline.npz`, `... compare tests/data/obc_ho_regions_baseline.npz --regions`, `python3 bench/obc_ho_scale.py run MODEL`.
+
+### Port to Julia: checklist
+1. Defaults: full average, 4,095 points; keep one region / k regions as options (document "does not price tail risk").
+2. Up-front: S-matrix LP on the complementarity block of M, cached per parameter set; warn; store the diagnostic; make it skippable.
+3. Per point: active set (batched, unchanged semantics) -> LP_head -> LP_full -> MILP with a time limit shared per point -> classes a/b/c exactly as above (note what (b) does not prove).
+4. Raise by default with the full error payload (period, failed lower bound, relevant, total, counts, active-set failures, advice); tolerance mode: count everything, stop only to raise, result sum / (P - F), per-period and total counts, one warning per run.
+5. Keep the LP tolerance 1e-6 max(1, |p|) and the rule that a feasible-within-tolerance LP goes to the MILP, not to (a).
+6. Make the failure test cheap: the LP dominates tolerance mode; use a native HiGHS/JuMP model rebuilt per point from M (fixed) and p (changing right-hand side only) so the basis can be warm-started.
+
