@@ -19,17 +19,16 @@ pydyn's rule is to refuse rather than guess. Everything below either raises a cl
 | Solution | Orders above 3; `k_order_welfare` (welfare above order 2) | Order 3 uses Dynare's C++ k-order library |
 | Solution | Spectral density, `partial_information` | |
 | Estimation | Order-3 (particle) estimation; the `gmf` filter | Order 2 supports `sis`, `apf`, `cpf`, `gf` and `nlkf` |
-| Estimation | `mode_compute` 2, 6, 10 and above | 1, 3, 7 and 9 are scipy equivalents and warn |
+| Estimation | `mode_compute` 2, 6, 10 and above | 7 is Octave's `fminsearch`, ported; 1, 3 and 9 are scipy equivalents and warn |
 | Estimation | Samplers `dime_mcmc` and `online`; TaRB whole-chain validation | TaRB matches block by block only |
-| Estimation | `initial_estimation_checks` | Singular-F handling itself matches Dynare |
 | Estimation | Posterior distributions of `filter_covariance` and `smoothed_state_uncertainty` | |
-| OccBin | Particle-filter options (`filter_particle_*`), OccBin forecasts | |
+| OccBin | Particle-filter options (`filter_particle_*`) | OccBin forecasts work (random or Sobol bands) |
 | Forecasts | `forecast` at order > 1 after estimation; `varexo_det` at order 3 or with pruning | `forecast` after `stoch_simul` works at orders 1–3 |
 | Optimal policy | OSR with optimisers other than csminwel, and `osr_params_bounds`; `mult_elimination` | |
 | Perfect foresight | `varexo_det`; `var(log)` auxiliaries in `initval_file`/`histval_file` | |
 | Extended path | Sparse-tree and hybrid stochastic EP, Stroud cubature, `extended_path_mc` | Order 0 and the full-tree stochastic EP work |
 | Backward models | `model_inversion` with leads; `histval` with `maximum_lag` > 1 | |
-| Semi-structural | `pac.estimate.*` with `annealing`/`particleswarm`, non-additive PAC residuals or lags other than 1; `equation.evaluate`/cherrypick, calls to model-named functions (`example1.dynamic_resid`) | `pac.estimate.nls`/`iterative_ols`, `var_model`, trend-component models, `var_expectation` and the PAC updates work |
+| Semi-structural | `pac.estimate` with `particleswarm` (a MATLAB toolbox function; Dynare fails under Octave), PAC lags other than 1 and non-additive residuals (Dynare fails on both); `equation.evaluate`/cherrypick, calls to model-named functions (`example1.dynamic_resid`) | `pac.estimate.nls`/`iterative_ols` (incl. `annealing`), `var_model`, trend-component models, `var_expectation` and the PAC updates work |
 | Toolboxes | `identification`, `dynare_sensitivity` (GSA), `method_of_moments`, `irf_calibration`/`moment_calibration`, Markov-switching SBVAR, BVAR, heterogeneous-agent models | Not started |
 | Output | LaTeX (`write_latex_*`), reporting | These warn |
 | Data | Full `dseries` (transformations, tags, non-MAT formats) | `dseries` covers names, dates, arithmetic, lags/leads, field/brace/paren assignment (Dynare's merge rules) and MAT files |
@@ -56,12 +55,8 @@ These still stop `pydyn.dynare()` (each raises `ResultsError` naming the item):
   - `oo_.dr.fuu`
 - **Unfilled fields:** `oo_.initval_series` and `oo_.time`.
 - **Statements still refused:**
-  - `discretionary_policy`
-  - `moments_varendo`
-  - `bayesian_irf`
   - `load_mh_file`/`mh_recover`
   - `shock_paths`
-  - `shock_decomposition(forecast_type=…)` (needs posterior-mean decompositions)
   - `with_epilogue`
   - `filter_decomposition`
 
