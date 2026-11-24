@@ -11,7 +11,8 @@ Measurements
 
 Implementations.  ``before`` is bench/obc_before.py, a frozen copy of pydyn/obc.py at the starting commit;
 ``after`` is the current pydyn.obc.  Both are driven in the same process and interleaved, as the protocol
-requires.  OccBin (pydyn.occbin) is the same code in both.
+requires.  OccBin: ``before`` is bench/occbin_before.py, a frozen copy of pydyn/occbin.py before the speed-ups
+of docs/OBC_PERF.md (same state, cloned from the current instance), ``after`` the current pydyn.occbin.
 
 Usage:  python3 bench/obc_bench.py {calibrate,p1,p2,p3,p4,r1,all} [--models zlb,nkm] [--reps 5] [--out DIR]
         [--impl before,after] [--seed N]
@@ -41,6 +42,7 @@ sys.path.insert(0, str(HERE))
 import pydyn  # noqa: E402
 import pydyn.obc as obc_after  # noqa: E402
 import obc_before  # noqa: E402
+import occbin_before  # noqa: E402
 from pydyn.occbin import Occbin  # noqa: E402
 from pydyn.perturbation import first_order  # noqa: E402
 from pydyn.steady import steady_state  # noqa: E402
@@ -100,7 +102,7 @@ def draw_shocks(m, n, s, seed):
 def make_obj(impl, method, ob, horizon):
     """The solver object for a method on a ready Occbin instance (OccBin itself is the instance)."""
     if method == "occbin":
-        return ob
+        return ob if impl == "after" else occbin_before.clone(ob)      # frozen pydyn/occbin.py (bench/occbin_before.py)
     if method == "lk":                      # LKNews (pydyn.obc_lk): only exists in the current code
         from pydyn.obc_lk import LKNews
         return LKNews(ob, horizon=horizon, check_ahead=CHECK_AHEAD)
@@ -194,7 +196,7 @@ def p1(models, impls, reps, seed, horizon=40, shocks_n=1000, tag="p1", model_cfg
         m = load_model(name)
         ob = Occbin(m)
         shocks = draw_shocks(m, shocks_n, cfg["s"], seed)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "lk" else impls)]
         objs = {c: make_obj(c[1], c[0], ob, horizon) for c in confs}
         times = {c: [] for c in confs}
         results, errors = {}, {}
@@ -214,7 +216,7 @@ def p1(models, impls, reps, seed, horizon=40, shocks_n=1000, tag="p1", model_cfg
         ref = results.get(("occbin", "after"))
         rows = {}
         for c in confs:
-            key = f"{c[0]}/{c[1]}" if c[0] != "occbin" else "occbin"
+            key = f"{c[0]}/{c[1]}" if c != ("occbin", "after") else "occbin"
             if c in errors:
                 rows[key] = dict(error=errors[c])
                 continue
@@ -250,7 +252,7 @@ def p2(models, impls, reps, horizon=40, tag="p2"):
         probe = Occbin(m)
         base = np.array(m.params, float)
         base[probe.switch] = 0.0
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "lk" else impls)]
         T = {c: dict(steady=[], first_order=[], ctor=[], precompute=[], total=[]) for c in confs}
         for rep in range(reps):
             for c in confs:
@@ -273,7 +275,7 @@ def p2(models, impls, reps, horizon=40, tag="p2"):
                 d["total"].append(t4 - t2)
         rows = {}
         for c in confs:
-            key = f"{c[0]}/{c[1]}" if c[0] != "occbin" else "occbin"
+            key = f"{c[0]}/{c[1]}" if c != ("occbin", "after") else "occbin"
             rows[key] = {k: {kk: vv * 1e3 if kk != "n" else vv for kk, vv in summarise(v).items()} for k, v in T[c].items()}
         out[name] = dict(horizon=horizon, rows=rows)
         print(f"[{tag}] {name} done", flush=True)
@@ -300,7 +302,7 @@ def p3(models, impls, reps, seed, iters=50, periods=200, horizon=40):
         m = load_model(name)
         shocks = draw_shocks(m, 1000, cfg["s"], seed)[:periods]
         sets = perturbation_sets(m, cfg["params"], iters, seed)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "lk" else impls)]
         tot = {c: [] for c in confs}
         parts = {c: [] for c in confs}
         errors, last = {}, {}
@@ -332,7 +334,7 @@ def p3(models, impls, reps, seed, iters=50, periods=200, horizon=40):
         ref = last.get(("occbin", "after"))
         rows = {}
         for c in confs:
-            key = f"{c[0]}/{c[1]}" if c[0] != "occbin" else "occbin"
+            key = f"{c[0]}/{c[1]}" if c != ("occbin", "after") else "occbin"
             if c in errors:
                 rows[key] = dict(error=errors[c])
                 continue
@@ -393,7 +395,7 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
         ob = Occbin(m)
         states = linear_states(ob, m, n_states, seed)
         z = np.random.default_rng(seed + 3).standard_normal((n_states, m.n_exo)) * shock_sd(m)
-        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth in ("occbin", "lk") else impls)]
+        confs = [(meth, imp) for meth in cfg["methods"] for imp in (["after"] if meth == "lk" else impls)]
         objs = {c: make_obj(c[1], c[0], ob, horizon) for c in confs}
         for c, o in objs.items():
             if c[0] == "regime":
@@ -417,7 +419,7 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
                     secs[c] += timer() - t0
             res = {}
             for c in confs:
-                key = f"{c[0]}/{c[1]}" if c[0] != "occbin" else "occbin"
+                key = f"{c[0]}/{c[1]}" if c != ("occbin", "after") else "occbin"
                 fails = Counter(e for e in errs[c] if e)
                 solved = sum(h is not None for h in hist[c])
                 bound = int(sum(bind[c]))
@@ -428,8 +430,8 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
                 for b in confs[i + 1:]:
                     if a[0] == b[0]:
                         continue                     # before vs after of the same method is a regression check
-                    ka = f"{a[0]}/{a[1]}" if a[0] != "occbin" else "occbin"
-                    kb = f"{b[0]}/{b[1]}" if b[0] != "occbin" else "occbin"
+                    ka = f"{a[0]}/{a[1]}" if a != ("occbin", "after") else "occbin"
+                    kb = f"{b[0]}/{b[1]}" if b != ("occbin", "after") else "occbin"
                     both = [j for j in range(n_states) if hist[a][j] is not None and hist[b][j] is not None]
                     pairs[f"{ka} vs {kb}"] = dict(
                         both_solved=len(both),

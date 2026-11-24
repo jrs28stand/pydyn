@@ -1200,10 +1200,10 @@ class RegimeOBC:
         args = (zl, ob.params, ob.ys)
         N = self.N
         binding, relax = np.empty((N, self.n_c), bool), np.empty((N, self.n_c), bool)
-        for j, (bind, _eb, rel, _er) in enumerate(ob._cons):
-            b = np.asarray(bind(*args), float) != 0
-            binding[:, j] = b
-            relax[:, j] = ~binding[:, j] if rel is None else np.asarray(rel(*args), float) != 0
+        for j, ev in enumerate(ob._cons):
+            ib, _eb, ir, _er = ev(*args)
+            binding[:, j] = ib
+            relax[:, j] = ~binding[:, j] if ir is None else ir
         return binding & ~z, relax & z
 
     def _path(self, init, shock, w, upto=None):
