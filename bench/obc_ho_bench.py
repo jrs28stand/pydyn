@@ -42,6 +42,11 @@ CASES = {
     "cub9": dict(order=2, cubature=True, qmc_level=9),
     "cubD": dict(order=2, cubature=True),
 }
+# regions cases: (kwargs, number of periods used). level 12 has 8191 points, so fewer periods.
+RCASES = {}
+for _lv, _np in ((9, 100), (12, 30)):
+    for _rg in ("all", 2, 4, 16):
+        RCASES[f"L{_lv}r{_rg}"] = (dict(order=2, cubature=True, qmc_level=_lv, regions=_rg), _np)
 MODELS = {
     "nk": dict(mod=REF / "dynareobc_octave" / "nk_occ.mod", horizon=32),
     "nkm": dict(mod=REF / "occest_nkm.mod", horizon=40),
@@ -72,9 +77,10 @@ def load(name):
 
 
 def build(cls, m, h, case):
+    kw = CASES[case] if case in CASES else RCASES[case][0]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return cls(m, horizon=h, check_ahead=h, **CASES[case])
+        return cls(m, horizon=h, check_ahead=h, **kw)
 
 
 def timeit(f, reps):
@@ -85,6 +91,27 @@ def timeit(f, reps):
         f()
         out.append(time.perf_counter() - t)
     return out
+
+
+def cmd_rtime(a):
+    impls = a.impl.split(",")
+    for name in a.models.split(","):
+        m, S, h = load(name)
+        print(f"\n== {name} regions cases, reps {a.reps}: per-period us (min / median)")
+        for case, (kw, nper) in RCASES.items():
+            if a.cases and case not in a.cases.split(","):
+                continue
+            row = []
+            objs = {i: build(impl_class(i), m, h, case) for i in impls}
+            res = {i: [] for i in impls}
+            for _ in range(a.reps):
+                for i in impls:
+                    t = time.perf_counter()
+                    objs[i].simulate(S[:nper])
+                    res[i].append((time.perf_counter() - t) / nper * 1e6)
+            for i in impls:
+                row.append(f"{i} {min(res[i]):9.0f}/{statistics.median(res[i]):9.0f}")
+            print(f"{case:9s} " + "   ".join(row))
 
 
 def cmd_time(a):
@@ -134,14 +161,26 @@ def paths(impl="after"):
     return out
 
 
+def rpaths(impl="after"):
+    out = {}
+    cls = impl_class(impl)
+    for name in MODELS:
+        m, S, h = load(name)
+        for case, (kw, nper) in RCASES.items():
+            r = build(cls, m, h, case).simulate(S[:nper])
+            for k in ("with_bound", "wedges"):
+                out[f"{name}_{case}_{k}"] = r[k]
+    return out
+
+
 def cmd_baseline(a):
-    np.savez_compressed(a.out, **paths(a.impl))
+    np.savez_compressed(a.out, **(rpaths(a.impl) if a.regions else paths(a.impl)))
     print("wrote", a.out)
 
 
 def cmd_compare(a):
     base = np.load(a.base)
-    new = paths(a.impl)
+    new = rpaths(a.impl) if a.regions else paths(a.impl)
     worst = 0.0
     for k in base.files:
         d = np.abs(base[k] - new[k]).max()
@@ -170,8 +209,10 @@ if __name__ == "__main__":
     sp = p.add_subparsers(dest="cmd", required=True)
     t = sp.add_parser("time"); t.add_argument("--reps", type=int, default=5); t.add_argument("--impl", default="before,after")
     t.add_argument("--models", default="nk,nkm"); t.set_defaults(f=cmd_time)
-    b = sp.add_parser("baseline"); b.add_argument("out"); b.add_argument("--impl", default="before"); b.set_defaults(f=cmd_baseline)
-    c = sp.add_parser("compare"); c.add_argument("base"); c.add_argument("--impl", default="after"); c.set_defaults(f=cmd_compare)
+    b = sp.add_parser("baseline"); b.add_argument("out"); b.add_argument("--impl", default="before"); b.add_argument("--regions", action="store_true"); b.set_defaults(f=cmd_baseline)
+    c = sp.add_parser("compare"); c.add_argument("base"); c.add_argument("--impl", default="after"); c.add_argument("--regions", action="store_true"); c.set_defaults(f=cmd_compare)
+    rt = sp.add_parser("rtime"); rt.add_argument("--reps", type=int, default=3); rt.add_argument("--impl", default="before,after")
+    rt.add_argument("--models", default="nk,nkm"); rt.add_argument("--cases", default=""); rt.set_defaults(f=cmd_rtime)
     pf = sp.add_parser("profile"); pf.add_argument("model"); pf.add_argument("case"); pf.add_argument("--impl", default="after")
     pf.set_defaults(f=cmd_profile)
     a = p.parse_args()
