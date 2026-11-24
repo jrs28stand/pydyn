@@ -18,6 +18,14 @@ Status: agreed with Jacob in outline; details below are a first version and shou
 
 - Out of scope for now: orders 2 and 3, cubature, estimation, constraints that switch several equations.
 
+**State on 2026-11-24, 13:15, superseding the lines above where they differ** (details in sections 3 to 6, each marked with the date):
+- `news` exists in both ports, in two formulations chosen automatically: the LCP when every constraint is one complementary pair, the general regime formulation otherwise (section 3a). Constraints that switch several equations are therefore in scope.
+- `minnorm` exists in JDyn only. Decision: it is not ported to pydyn as a solver. In pydyn it becomes an alias for `news` with `obc_selection = min_wedge`, so mod files written for JDyn run; JDyn is to become the same alias once selection is ported there.
+- Equilibrium selection is an option, `obc_selection`, default `occbin` (section 5a). In progress in pydyn.
+- Estimation through the inversion filter with the news solver: prototype in pydyn, being made an option. Not in JDyn yet.
+- Solver dependency: HiGHS in both ports (SciPy in pydyn; `HiGHS_jll` called directly as a hard dependency in JDyn).
+- Next phase (decided): orders 2 and 3 and cubature. Design: `claude/obc-higher-order-design.md`.
+
 ## 2. What the 7.2 preprocessor gives us (checked on the binary, 2026-11-24)
 
 - `occbin_constraints` appears in the JSON statements with `name`, `bind`, `relax`, `error_bind`, `error_relax` per constraint.
@@ -62,7 +70,22 @@ Classification rules:
 5. Any failure of 2 to 4: `inconsistent`, with the reason.
 6. Tolerance of the fits in 2 and 3 *(added 2026-11-24)*: exact when the relative residual is below 1e-6. Up to 0.05 the constraint is still `complementarity` but carries `approx` = the residual. This is needed for lower-bound models written as `inom = inomlb*exp(mp)` with `bind inomnot <= inomlb` (Dynare's NKM test files, residual 0.6%): the linearised equations have a term in `mp` that the condition lacks. OccBin switches on the condition and the news methods on the linearised residual, so paths may differ by a term of that order (on Dynare's NKM file they agreed to 1e-14 in the runs made).
 
-`minnorm` and `news` run only on `complementarity` constraints and raise a clear error otherwise, pointing the user to `obc_method = occbin`. `multi_equation` is to be revisited: one binary per constraint and period with a wedge on each switched equation should work in the integer programme.
+7. Orientation test *(added 2026-11-24, from the JDyn implementation; to be added to pydyn)*: with the fits of rules 2 and 3 written as `d_b = a*alt + b*ref` and `d_r = c*ref + e*alt`, require `b*s_y <= 0` and `e*s_g >= 0`. A model whose `relax` condition is the reverse of its `bind` condition passes rules 2 and 3 but has no consistent solution (OccBin cycles on it); this rule classifies it `inconsistent`.
+
+Amendments to the rules above *(2026-11-24)*:
+- Rule 1: the switched equations are those whose **linearisation** differs between the regimes, not those whose text contains the parameter. (In `rbc_occbin` an equation contains the INEG parameter but differs only at second order.)
+- A further class, `shared_equation`: an equation whose version depends on two constraints jointly. Refused by every news method. No Dynare file is in this class.
+
+`minnorm` runs only on `complementarity` constraints and raises a clear error otherwise. The original plan was the same for `news`; it now handles the other classes through section 3a.
+
+### 3a. The general regime formulation *(added 2026-11-24)*
+
+For `multi_equation` and `inconsistent` constraints (and available for any model):
+- Each switched equation gets its own wedge on its reference version. In a period spent in the alternative regime the wedges are whatever makes the alternative versions hold; otherwise they are zero.
+- A regime sequence is accepted by OccBin's own test: the `bind` condition false wherever the reference regime is assumed, the `relax` condition false wherever the alternative is assumed, conditions evaluated in levels. The answer is therefore OccBin's piecewise-linear solution, found from precomputed wedge responses with one small linear solve per guess.
+- Tied wedges: for one constraint with several equations, if all but one switched equation respond to wedges only in the same period with constant coefficients, and the conditions are exact mirror images of the remaining ("primary") equation, the model is a complementarity problem in one wedge per period, `g = q + M y + G z` (`z` the regime indicator, `G` state-dependent offsets, zero when no shock enters the tied equations). Then `M`'s diagnostics apply, single-spell solutions can be enumerated, and an infeasible linear relaxation (`y >= 0`, `0 <= z <= 1`, `q + M y + G z >= 0`) is a proof that no solution exists within the horizon.
+- Order of attempts: guess-and-verify from the no-binding guess; the tied-wedge problem (solve or prove infeasible); a big-M integer programme over regime indicators with a time limit as the last resort.
+- Models flagged `approx` (rule 6): the LCP and OccBin can pick different regimes at a knife-edge period (seen on Dynare's NKM file about once in 1,000 periods at large shocks, and once in 40 parameter vectors in a likelihood, where it moved the log posterior by 0.015). The regime formulation uses OccBin's test and agreed with OccBin in every such case. Open choice: default to the regime formulation for `approx` models, at about 3 to 5 times the cost per period.
 
 Worked cases the tests must cover:
 
@@ -101,11 +124,33 @@ solve(M, q; options) -> (y, status, info)
 
 Simulation loop: identical to OccBin's `simul` loop, with the regime iteration replaced by `solve`. The regime history is derived from `y > tol`.
 
+Notes from the implementations *(2026-11-24)*:
+- The integer programme is a fallback only. Forced on every binding period it costs 1.8 to 32 ms against 8 to 14 microseconds for the normal path (JDyn); in every test on well-behaved models the active-set iteration solved all binding periods.
+- After the integer programme, re-solve the square system on the binding set it reports, then verify.
+- Before the integer programme, an infeasible linear programme (`y >= 0`, `q + M y >= 0`) proves there is no solution; it is cheap and should come first wherever failures are expected (the filter's root finder tries implausible shocks).
+- Verification tolerance differs between the ports (pydyn: relative to `max(1, |q|)`; JDyn: absolute 1e-10). To be reconciled once the JDyn measurement run reports whether any decision depends on it.
+- Diagnostics on `M` cost about 10 ms per parameter set: compute on request, never inside an estimation loop.
+
+### 5a. Equilibrium selection *(decided 2026-11-24; in progress in pydyn)*
+
+Option `obc_selection` for `obc_method = news`:
+
+| Value | Meaning |
+|---|---|
+| `occbin` (default) | The solution the guess-and-verify / active-set iteration reaches from the no-binding guess. This is what OccBin returns. |
+| `shortest` | Among single-spell solutions at the state, the fewest binding periods (ties: earliest start) |
+| `longest` | The most binding periods (ties: earliest start) |
+| `min_wedge` | The smallest sum of squared wedges |
+
+Non-default values enumerate single-spell solutions in binding periods only; if none exists they fall back to the default and flag the period; with more than one constraint they are refused. `obc_method = minnorm` in pydyn is `news` with `min_wedge`.
+
 ## 6. Options and results
 
 - In the mod file, on its own line before `occbin_setup`: `options_.occbin.obc_method = 'minnorm';` Also `options_.occbin.obc_horizon = 40;`.
 - On the live workspace: keyword `obc_method` (and `obc_horizon`) on the OccBin simulate and IRF functions in each port.
 - Unknown method names are an error.
+- `options_.occbin.obc_selection = 'occbin';` and the keyword `obc_selection`, in the same places *(added 2026-11-24)*.
+- Estimation *(added 2026-11-24)*: the same options select the solver inside the inversion filter. The piecewise Kalman filter with a news method is refused until it is implemented.
 - Results go where OccBin's go (`oo_.occbin.simul.*` in JDyn, the same result object in pydyn), so `irf_occbin`, graphs and tables work unchanged.
 - Extra results under `oo_.occbin.news`: `method`, the wedges per period, `status` per period, and for `news` the diagnostics on `M`.
 
