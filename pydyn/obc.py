@@ -27,7 +27,7 @@ from itertools import combinations
 
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
-from scipy.linalg.lapack import dgesv as _dgesv
+from scipy.linalg.lapack import dgesv as _dgesv, dgetrf as _dgetrf, dgetrs as _dgetrs
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from .expr import NAMESPACE, Translator, tokenize
@@ -277,6 +277,97 @@ def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None, scale=None):
             return y if verify_lcp(M, q, y, n_s, tol) else None
         S = (S & ~drop) | add
     return None
+
+
+def solve_active_set_batch(M, Q, n_s, tol=1e-8, maxit=60, scale=None, cache=None):
+    """``solve_active_set`` on every column of ``Q`` (N x k) at once: the same guess-and-verify iteration run in lockstep.
+
+    Equivalence with the scalar routine holds by construction: per column the sequence of binding-set guesses
+    (start q < -tol; drop negative wedges, add violated periods; stop on a repeated set or after ``maxit``), the pivot
+    test of ``_solve_checked`` and the acceptance test of ``verify_lcp`` are the scalar ones; only the linear algebra is
+    shared. Columns with the same guessed set are solved with one LU factorisation and a multi-right-hand-side
+    back-substitution, and the factorisation of ``M[A, A]`` is kept in ``cache`` (a dict, valid for this M only) so
+    that later calls with the same set skip it. Returns (Y, ok): Y is n_s x k, ok[j] False where the scalar routine
+    would return None (then Y[:, j] is not meaningful)."""
+    Ms = M[:n_s]
+    k = Q.shape[1]
+    Y = np.zeros((n_s, k))
+    ok = np.zeros(k, bool)
+    if scale is None:
+        scale = float(np.abs(M).max())
+    if cache is None:
+        cache = {}
+    qscale = np.maximum(1.0, np.abs(Q).max(axis=0)) if Q.size else np.ones(k)
+    S = Q[:n_s] < -tol
+    act = np.arange(k)
+    seen = [None] * k
+    nb = (n_s + 7) // 8
+    for it in range(maxit):
+        if act.size == 0:
+            break
+        Sa = S[:, act]
+        keys = np.ascontiguousarray(np.packbits(Sa, axis=0).T).view(f"V{nb}").ravel()
+        if it > 0:                                                # cycle check, as the scalar ``seen`` set
+            kb = keys.tolist()
+            keep = np.ones(act.size, bool)
+            for i, c in enumerate(act):
+                sc = seen[c]
+                if kb[i] in sc:
+                    keep[i] = False
+                else:
+                    sc.add(kb[i])
+            if not keep.all():
+                act, Sa, keys = act[keep], Sa[:, keep], keys[keep]
+                if act.size == 0:
+                    break
+        else:
+            kb = keys.tolist()
+            for i, c in enumerate(act):
+                seen[c] = {kb[i]}
+        uk, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+        order = np.argsort(inv, kind="stable")
+        bounds = np.searchsorted(inv[order], np.arange(uk.size + 1))
+        Ya = np.zeros((n_s, act.size))
+        good = np.ones(act.size, bool)
+        for g in range(uk.size):
+            cols = order[bounds[g]:bounds[g + 1]]
+            idx = np.flatnonzero(Sa[:, first[g]])
+            if idx.size == 0:
+                continue
+            key = uk[g].tobytes()
+            fac = cache.get(key)
+            if fac is None:
+                lu, piv, info = _dgetrf(Ms[idx[:, None], idx])
+                bad = info != 0
+                if not bad:
+                    d = lu.diagonal()
+                    bad = bool(abs(d[0]) <= PIVOT_RTOL * scale if d.size == 1 else abs(d).min() <= PIVOT_RTOL * scale)
+                fac = (None, None) if bad else (lu, piv)
+                if len(cache) > 20000:
+                    cache.clear()
+                cache[key] = fac
+            if fac[0] is None:
+                good[cols] = False
+                continue
+            x, _info = _dgetrs(fac[0], fac[1], -Q[idx[:, None], act[cols]])
+            Ya[idx[:, None], cols] = x
+        gs = Q[:n_s][:, act] + Ms @ Ya
+        drop = Sa & (Ya < -tol)
+        add = (~Sa) & (gs < -tol)
+        changed = (drop.any(axis=0) | add.any(axis=0)) & good
+        fin = good & ~changed
+        if fin.any():
+            cf = act[fin]
+            Yf = Ya[:, fin]
+            G = Q[:, cf] + M @ Yf
+            sc = qscale[cf] * tol
+            v = ((Yf >= -sc).all(axis=0) & (G >= -sc).all(axis=0)
+                 & (np.minimum(np.abs(Yf), np.abs(G[:n_s])) <= sc).all(axis=0))
+            Y[:, cf[v]] = Yf[:, v]
+            ok[cf[v]] = True
+        S[:, act[changed]] = ((Sa & ~drop) | add)[:, changed]
+        act = act[changed]
+    return Y, ok
 
 
 def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_limit=None):

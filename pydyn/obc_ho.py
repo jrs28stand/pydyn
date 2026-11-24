@@ -31,7 +31,7 @@ import warnings
 
 import numpy as np
 
-from .obc import NewsOBC, OBCError, solve_active_set, solve_news
+from .obc import NewsOBC, OBCError, solve_active_set, solve_active_set_batch, solve_news
 from .occbin import Occbin
 
 __all__ = ["HigherOrderNews"]
@@ -78,6 +78,7 @@ class HigherOrderNews:
                 raise NotImplementedError("cubature with more than one constraint")
             self.R = self.conditional_root()
             self.xi = self._points(self.R.shape[1])
+        self._fac_cache = {}
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
 
     # ------------------------------------------------------------------------------------ precomputed maps
@@ -241,6 +242,27 @@ class HigherOrderNews:
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
 
+    def _solve_all(self, P):
+        """Sum over the columns of P of the scalar solution ``_solve(P[:, j])``, computed in batch: columns that need no
+        wedge are skipped as in ``_solve``; the rest go through ``solve_active_set_batch`` (the scalar iteration run in
+        lockstep, factorisations shared by guessed binding set and cached across periods); columns on which that iteration
+        fails take the scalar route (``_solve``, i.e. the MILP fallback)."""
+        nb, T = self.news, self.T
+        k = P.shape[1]
+        self.stats["lcp"] += k
+        need = ~np.all(P >= -1e-8 * np.maximum(1.0, np.abs(P).max(axis=0)), axis=0)
+        if not need.any():
+            return np.zeros(T)
+        Pn = P[:, need]
+        Y, ok = solve_active_set_batch(nb.Mo, Pn, T, scale=nb._mscale, cache=self._fac_cache)
+        acc = Y[:, ok].sum(axis=1)
+        nfail = int((~ok).sum())
+        self.stats["batch_fail"] = self.stats.get("batch_fail", 0) + nfail
+        self.stats["lcp"] -= nfail                                 # _solve counts them again
+        for j in np.nonzero(~ok)[0]:
+            acc += self._solve(Pn[:, j])
+        return acc
+
     def _cub_prep(self):
         """Quantities for the exact skipping rules, tied to the current (R, xi) objects."""
         if getattr(self, "_cc", None) is not None and self._cc[0] is self.R and self._cc[1] is self.xi:
@@ -300,10 +322,7 @@ class HigherOrderNews:
             return (idx.size / npts) * self._solve(q + self.R @ self.xi[:, idx].mean(axis=1))
         pr = q[:, None] + self.R @ self.xi[:, idx]                 # perturbed paths of the relevant points only
         if self.regions == "all":                                  # plain quasi-Monte Carlo average
-            acc = np.zeros(self.T)
-            for j in range(idx.size):
-                acc += self._solve(pr[:, j])
-            return acc / npts
+            return self._solve_all(pr) / npts
         k = int(self.regions)                                      # DynareOBC's CubatureRegions > 1
         if idx.size <= k:
             ids, k = np.arange(idx.size), idx.size
