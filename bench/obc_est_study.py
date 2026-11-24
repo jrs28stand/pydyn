@@ -256,6 +256,26 @@ def stage_mh(case, ests, mode_x, cov, jscale, nchains, replic, seed, log, starts
     return out
 
 
+def pilot_jscale(e, xm, cov, seed, log, case, grid=(0.15, 0.25, 0.4, 0.6, 0.9, 1.3), draws=300, target=0.30):
+    """Scale of the jumping distribution: the grid value whose acceptance rate over a 300-draw pilot chain (news solver,
+    which is the fast one; started at the mode) is closest to ``target``."""
+    d = np.linalg.cholesky(cov).T
+    rng = np.random.default_rng([seed, 77])
+    innov, unif = rng.standard_normal((1, draws, len(xm))), rng.random((1, draws))
+    best, rows = None, []
+    for js in grid:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            mc = e.sample(replic=draws, nblocks=1, mode=xm, cov=cov, jscale=js, x0=xm[None, :], innovations=innov,
+                          uniforms=unif)
+        ar = float(mc.acceptance_rate[0])
+        rows.append((js, ar))
+        log(f"[{case}] pilot jscale {js}: acceptance {ar:.3f}")
+        if best is None or abs(ar - target) < abs(best[1] - target):
+            best = (js, ar)
+    return best[0], rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("case")
@@ -292,8 +312,7 @@ def main():
         cov = np.array(hs["occbin"]["inv_hessian"])
         from pydyn import posterior as _post
         # same proposal for both: the inverse Hessian at OccBin's mode, scale tuned (news solver, fast) to about 1/3 acceptance
-        tuned = _post.tune_jscale(ests["news"], xm, cov, target=0.33, guess=0.3, rng=np.random.default_rng(a.seed))
-        log(f"[{a.case}] tuned jscale {tuned:.4f}")
+        tuned, pilot = pilot_jscale(ests["news"], xm, cov, a.seed, log, a.case)
         d = np.linalg.cholesky(cov).T
         lb, ub = est.prior.bounds(est.options["prior_trunc"])
         rng = np.random.default_rng([a.seed, 99])
@@ -303,7 +322,8 @@ def main():
             if np.all(cand >= lb) and np.all(cand <= ub) and np.isfinite(est.log_posterior(cand)):
                 starts.append(cand)
         mh = stage_mh(a.case, ests, xm, cov, tuned, a.chains, a.replic, a.seed, log, starts)
-        mh["settings"] = dict(replic=a.replic, chains=a.chains, seed=a.seed, jscale=tuned, starts=starts, cov="inverse Hessian at OccBin's mode")
+        mh["settings"] = dict(replic=a.replic, chains=a.chains, seed=a.seed, jscale=tuned, pilot=pilot, starts=starts,
+                              cov="inverse Hessian at OccBin's mode")
         (OUT / f"est_{a.case}_{tag}_mh.json").write_text(json.dumps(jl(mh), indent=1))
         log("mh done")
 
