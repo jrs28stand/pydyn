@@ -254,7 +254,7 @@ used by `moments`, the `simul_*` options of OccBin, the estimation and smoother 
 their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
 act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
 (for example OccBin constraints in linear estimation) raise an error instead.
-`docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
+`docs/GAPS.md` lists what is still missing (the earlier option-by-option audit is in git history); `docs/ACCEPTANCE.md` reports how Dynare's own test suite fares.
 
 ## Performance
 
