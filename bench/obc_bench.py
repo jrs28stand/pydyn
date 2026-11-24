@@ -444,10 +444,59 @@ def r1(models, impls, seed, n_states=2000, scales=(0.5, 1.0, 1.5, 2.0), milp_lim
     return out
 
 
+# ----------------------------------------------------------------------------------------- warm start
+def warm(models, reps, seed, horizon=40):
+    """P1 with and without ``warm_start`` (current implementation), interleaved."""
+    out = {}
+    for name in models:
+        cfg = MODELS[name]
+        m = load_model(name)
+        ob = Occbin(m)
+        shocks = draw_shocks(m, 1000, cfg["s"], seed)
+        out[name] = {}
+        for meth in cfg["methods"]:
+            if meth == "occbin":
+                continue
+            obj = make_obj("after", meth, ob, horizon)
+            ts = {False: [], True: []}
+            res = {}
+            for rep in range(reps):
+                for w in (False, True):
+                    t0 = timer()
+                    r = obj.simulate(shocks, periods=len(shocks), warm_start=w)
+                    ts[w].append(timer() - t0)
+                    res[w] = r
+            it = None
+            if meth == "regime":
+                its = {}
+                for w in (False, True):
+                    tot = 0
+                    orig = obj._iterate
+                    def counting(*a, _o=orig, **k):
+                        nonlocal_tot[0] += 1
+                        r = _o(*a, **k)
+                        nonlocal_tot[1] += r[4] + 1
+                        return r
+                    nonlocal_tot = [0, 0]
+                    obj._iterate = counting
+                    obj.simulate(shocks, periods=len(shocks), warm_start=w)
+                    del obj._iterate
+                    its[w] = tuple(nonlocal_tot)
+                it = {str(k): v for k, v in its.items()}
+            out[name][meth] = dict(
+                us_cold=summarise([x / len(shocks) * 1e6 for x in ts[False]]),
+                us_warm=summarise([x / len(shocks) * 1e6 for x in ts[True]]),
+                max_diff=float(np.abs(res[True].piecewise - res[False].piecewise).max()),
+                same_regimes=bool(res[True].regime_history == res[False].regime_history),
+                iterate_calls_and_passes=it)
+        print(f"[warm] {name} done", flush=True)
+    return out
+
+
 # --------------------------------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["calibrate", "p1", "p2", "p3", "p4", "r1", "all"])
+    ap.add_argument("what", choices=["calibrate", "p1", "p2", "p3", "p4", "r1", "warm", "all"])
     ap.add_argument("--models", default="zlb,zlb2,nkm,sw")
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--out", default=str(HERE / "results"))
@@ -482,6 +531,8 @@ def main():
             save("p3", p3(models, impls, a.reps, a.seed))
         elif w == "p4":
             save("p4", p4(impls, a.reps, a.seed))
+        elif w == "warm":
+            save("warm", warm(models, a.reps, a.seed))
         elif w == "r1":
             save("r1", r1(models, impls, a.seed))
 

@@ -109,3 +109,33 @@ def test_simulation_with_news_beyond_the_shocks_uses_the_last_period_path(zlb2):
         b = cls(ob, horizon=40, check_ahead=40).simulate(shocks, periods=90)
         np.testing.assert_allclose(b.piecewise, a.piecewise, atol=1e-11)
         assert b.regime_history == a.regime_history
+
+
+def test_warm_start_gives_the_same_simulation(zlb2, nkm):
+    """warm_start only changes where the iterations start; on these models the answers are identical."""
+    for m, ob in (zlb2, nkm):
+        sd = np.sqrt(np.diag(m.Sigma_e))
+        sd[sd < 1e-9] = 0.01
+        shocks = np.random.default_rng(11).normal(size=(200, m.n_exo)) * sd * 3
+        for cls in (NewsOBC, RegimeOBC):
+            obj = cls(ob, horizon=40, check_ahead=40)
+            a, b = obj.simulate(shocks, periods=200), obj.simulate(shocks, periods=200, warm_start=True)
+            np.testing.assert_allclose(b.piecewise, a.piecewise, atol=1e-11)
+            assert b.regime_history == a.regime_history
+
+
+def test_active_set_exact_start_returns_the_solution(zlb2):
+    from pydyn.obc import solve_active_set
+    m, ob = zlb2
+    nb = NewsOBC(ob, horizon=30, check_ahead=30)
+    rng = np.random.default_rng(2)
+    n_s, hits = nb.n_c * nb.T, 0
+    for init, shock in _random_inputs(m, 6, k=40, scale=0.08):
+        q = nb._q(init, shock)
+        y = solve_active_set(nb.Mo, q, n_s)
+        if y is None or not y.any():
+            continue
+        y2 = solve_active_set(nb.Mo, q, n_s, start=y > 1e-12)
+        np.testing.assert_allclose(y2, y, atol=1e-12)
+        hits += 1
+    assert hits > 5

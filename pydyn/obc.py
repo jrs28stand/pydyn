@@ -27,6 +27,7 @@ from itertools import combinations
 
 import numpy as np
 from scipy.linalg import lu_factor, lu_solve
+from scipy.linalg.lapack import dgesv as _dgesv
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from .expr import NAMESPACE, Translator, tokenize
@@ -214,11 +215,14 @@ def verify_lcp(M, q, y, n_s, tol=1e-8):
                 and np.all(np.minimum(np.abs(y), np.abs(g[:n_s])) <= tol * scale))
 
 
-def solve_active_set(M, q, n_s, tol=1e-8, maxit=60):
-    """Guess-and-verify on the binding set: start from the periods where q < 0, solve the square system on the
-    guessed set, drop negative wedges, add violated periods.  Returns y or None (no guarantee of success)."""
+def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None):
+    """Guess-and-verify on the binding set: start from the periods where q < 0 (or from the boolean vector
+    ``start``), solve the square system on the guessed set, drop negative wedges, add violated periods.
+    Returns y or None (no guarantee of success).  Only the complementarity rows are touched inside the loop; the
+    check-ahead rows enter once, in the final verification."""
     Ms = M[:n_s]
-    S = q[:n_s] < -tol
+    qs = q[:n_s]
+    S = qs < -tol if start is None else np.array(start, bool)
     seen = set()
     for _ in range(maxit):
         key = S.tobytes()
@@ -226,14 +230,15 @@ def solve_active_set(M, q, n_s, tol=1e-8, maxit=60):
             return None
         seen.add(key)
         y = np.zeros(n_s)
-        if S.any():
-            try:
-                y[S] = np.linalg.solve(Ms[np.ix_(S, S)], -q[:n_s][S])
-            except np.linalg.LinAlgError:
+        idx = np.flatnonzero(S)
+        if idx.size:
+            _lu, _piv, x, info = _dgesv(Ms[idx[:, None], idx], -qs[idx], overwrite_a=True, overwrite_b=True)
+            if info != 0:
                 return None
-        g = q + M @ y
+            y[idx] = x
+        g = qs + Ms @ y
         drop = S & (y < -tol)
-        add = (~S) & (g[:n_s] < -tol)
+        add = (~S) & (g < -tol)
         if not drop.any() and not add.any():
             return y if verify_lcp(M, q, y, n_s, tol) else None
         S = (S & ~drop) | add
@@ -599,13 +604,20 @@ class NewsOBC:
         return self._gap_of(sol[:N + 1], const=False)[self._order]
 
     # ------------------------------------------------------------------------------------------- solving
-    def _wedges(self, q, method, omega, tol):
-        """Wedges for the gaps q (complementarity rows first): (y, info)."""
+    def _wedges(self, q, method, omega, tol, start=None):
+        """Wedges for the gaps q (complementarity rows first): (y, info).  ``start``: boolean guess of the
+        binding set for the active-set iteration (tried first; the standard start follows if it fails)."""
         n_s = self.n_c * self.T
         info = dict(used="none")
-        if np.all(q >= -tol * max(1.0, np.abs(q).max())):
+        qmin = q.min()
+        if qmin >= 0.0 or qmin >= -tol * max(1.0, np.abs(q).max()):
             return np.zeros(n_s), info
-        y = solve_active_set(self.Mo, q, n_s, tol) if method in ("news", "active_set") else None
+        y = None
+        if method in ("news", "active_set"):
+            if start is not None and start.any():
+                y = solve_active_set(self.Mo, q, n_s, tol, start=start)
+            if y is None:
+                y = solve_active_set(self.Mo, q, n_s, tol)
         info["used"] = "active_set"
         if y is None:
             if method == "active_set":
@@ -624,14 +636,14 @@ class NewsOBC:
                                "no_solution")
         return y, info
 
-    def _step(self, init, shock, method="news", omega=1000.0, tol=1e-8):
+    def _step(self, init, shock, method="news", omega=1000.0, tol=1e-8, start=None):
         """One shock period without the path: (y, next state (deviations), info).  The path is only needed
         in the last shock period of a simulation (see ``_path``)."""
         init = np.asarray(init, float)
         shock = np.asarray(shock, float)
         x = np.concatenate([init[self._st], shock])
         q = self.q0 + self._Qx @ x
-        y, info = self._wedges(q, method, omega, tol)
+        y, info = self._wedges(q, method, omega, tol, start)
         nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
         if y.any():
             nxt = nxt + self._V0 @ y
@@ -649,9 +661,15 @@ class NewsOBC:
         y, info = self._wedges(q, method, omega, tol)
         return y, self._path(init, shock, y), info
 
-    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, omega=1000.0) -> OccbinResult:
+    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, omega=1000.0,
+                 warm_start=False) -> OccbinResult:
         """Simulation under a sequence of unanticipated shocks, with OccBin's timing: every shock period is
-        solved with no future shocks expected; after the last shock the perfect-foresight path is followed."""
+        solved with no future shocks expected; after the last shock the perfect-foresight path is followed.
+
+        ``warm_start``: start each active-set iteration from the previous period's binding set moved forward
+        by one period (exact when no new shock arrives); the standard start is the fallback.  Off by default:
+        with a fresh shock every period it needed more iterations than the standard start (docs/OBC_PERF.md),
+        and where M is not a P-matrix the two starts could in principle end in different solutions."""
         ob, n, T = self.ob, self.ob.n, self.T
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
@@ -670,16 +688,21 @@ class NewsOBC:
         init_orig = y0.copy()
         piecewise = np.zeros((n_periods, n))
         history, wedges, used = [], np.zeros((S, self.n_c * T)), []
-        path = None
+        path, start = None, None
         for sp in range(S):
             y_prev = y0
             try:
-                y, y0, info = self._step(y_prev, sh[sp], method=method, omega=omega)
+                y, y0, info = self._step(y_prev, sh[sp], method=method, omega=omega, start=start)
             except OBCError as err:
                 err.period = sp + 1
                 raise
             wedges[sp] = y
             used.append(info["used"])
+            if warm_start:
+                start = np.zeros(self.n_c * T, bool)
+                if y.any():
+                    flag = (y > 1e-9 * max(1.0, float(np.abs(y).max()))).reshape(self.n_c, T)
+                    start.reshape(self.n_c, T)[:, :-1] = flag[:, 1:]
             history.append(_regime_history(y, T, self.n_c))
             piecewise[sp] = y0
             if sp == S - 1:                      # the path is only needed once, after the last shock period
@@ -758,6 +781,7 @@ class RegimeOBC:
             for src in (c["bind"], c.get("relax") or ""):
                 used |= _used_variables(ob.model, src)
         self._cv = np.array(sorted(used), dtype=int)
+        self._jb = np.array([j for j, _r in self.cols], dtype=int)      # constraint of each wedge block
         self._build(self.T + self.L)
 
     def _build(self, N):
@@ -823,14 +847,16 @@ class RegimeOBC:
     # -------------------------------------------------------------------------------------------- pieces
     def _index(self, z):
         """Positions (in the stacked wedge vector) of the periods in which each block's constraint binds."""
-        T = self.T
-        return np.concatenate([b * T + np.nonzero(z[:T, j])[0] for b, (j, _r) in enumerate(self.cols)]).astype(int)
+        return np.flatnonzero(z[:self.T][:, self._jb].T.ravel())
 
     def _wedges(self, z, a):
         w = np.zeros(len(self.cols) * self.T)
         S = self._index(z)
         if S.size:
-            w[S] = np.linalg.solve(self.R[np.ix_(S, S)], -a[S])
+            _lu, _piv, x, info = _dgesv(self.R[S[:, None], S], -a[S], overwrite_a=True, overwrite_b=True)
+            if info != 0:
+                raise np.linalg.LinAlgError("Singular matrix")
+            w[S] = x
         return w
 
     def _violations(self, z, pcv):
@@ -840,10 +866,11 @@ class RegimeOBC:
         zl[:, self._cv] = pcv + ob.ys[self._cv]
         args = (zl, ob.params, ob.ys)
         N = self.N
-        binding, relax = np.zeros((N, self.n_c), bool), np.zeros((N, self.n_c), bool)
+        binding, relax = np.empty((N, self.n_c), bool), np.empty((N, self.n_c), bool)
         for j, (bind, _eb, rel, _er) in enumerate(ob._cons):
-            binding[:, j] = np.broadcast_to(np.asarray(bind(*args), float) != 0, (N,))
-            relax[:, j] = ~binding[:, j] if rel is None else np.broadcast_to(np.asarray(rel(*args), float) != 0, (N,))
+            b = np.asarray(bind(*args), float) != 0
+            binding[:, j] = b
+            relax[:, j] = ~binding[:, j] if rel is None else np.asarray(rel(*args), float) != 0
         return binding & ~z, relax & z
 
     def _path(self, init, shock, w, upto=None):
@@ -857,36 +884,50 @@ class RegimeOBC:
         z, w, _nxt, info = self._step(init, shock, maxit=maxit, method=method)
         return z, w, self._path(init, shock, w), info
 
-    def _step(self, init, shock, maxit=60, method="news"):
-        """Regime indicators, wedges, next state and info for one shock period (no full path)."""
+    def _iterate(self, z, Ycv, a, maxit):
+        """OccBin's guess-and-verify iteration from the guess ``z``: (ok, beyond, z, w, iterations).  ``beyond``:
+        the iteration wants a regime change after the news horizon."""
+        T, N, k = self.T, self.N, len(self._cv)
+        seen = set()
+        for it in range(maxit):
+            if z[T:].any():
+                return False, True, z, None, it
+            try:
+                w = self._wedges(z, a)
+            except np.linalg.LinAlgError:
+                return False, False, z, None, it
+            pcv = Ycv + (self._Wcv @ w).reshape(N, k) if w.any() else Ycv
+            vb, vr = self._violations(z, pcv)
+            if not vb.any() and not vr.any():
+                return True, False, z, w, it
+            key = z.tobytes()
+            if key in seen:
+                return False, False, z, None, it
+            seen.add(key)
+            z = (z & ~vr) | vb
+        return False, False, z, None, maxit
+
+    def _step(self, init, shock, maxit=60, method="news", z0=None):
+        """Regime indicators, wedges, next state and info for one shock period (no full path).  ``z0``: a
+        starting guess (N, n_c) tried before the reference regime everywhere."""
         T, N, k = self.T, self.N, len(self._cv)
         init, shock = np.asarray(init, float), np.asarray(shock, float)
         xs = np.concatenate([init[self._st], shock])
         Ycv = (self._Bx @ xs).reshape(N, k)
         a = self.a0 + self._Ax @ xs
         z = np.zeros((N, self.n_c), bool)
-        seen, info = set(), dict(used="none", iterations=0)
+        info = dict(used="none", iterations=0)
         ok = beyond = False
         if method != "milp":
-            for it in range(maxit):
-                if z[T:].any():
-                    beyond = True                           # the iteration wants a regime change after the horizon
-                    break
-                try:
-                    w = self._wedges(z, a)
-                except np.linalg.LinAlgError:
-                    break
-                pcv = Ycv + (self._Wcv @ w).reshape(N, k)
-                vb, vr = self._violations(z, pcv)
-                if not vb.any() and not vr.any():
-                    ok = True
+            if z0 is not None and z0.any():
+                ok, beyond, zg, w, it = self._iterate(z0.copy(), Ycv, a, maxit)
+                if ok:
+                    z = zg
                     info.update(used="guess_verify" if it else "none", iterations=it)
-                    break
-                key = z.tobytes()
-                if key in seen:
-                    break
-                seen.add(key)
-                z = (z & ~vr) | vb
+            if not ok:
+                ok, beyond, z, w, it = self._iterate(z, Ycv, a, maxit)
+                if ok:
+                    info.update(used="guess_verify" if it else "none", iterations=it)
         if not ok and beyond and method != "milp":
             raise OBCError("a constraint still binds after the news horizon: increase obc_horizon", "horizon_too_short")
         if not ok and method == "guess_verify":
@@ -974,7 +1015,9 @@ class RegimeOBC:
         z[:T] = (res.x[nw:] > 0.5).reshape(nc, T).T
         return z
 
-    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None) -> OccbinResult:
+    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, warm_start=False) -> OccbinResult:
+        """As ``NewsOBC.simulate``.  ``warm_start``: start the guess-and-verify iteration from the previous period's
+        regime indicators moved forward by one period (the reference regime everywhere is the fallback)."""
         ob, n, T = self.ob, self.ob.n, self.T
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
@@ -992,14 +1035,17 @@ class RegimeOBC:
         init_orig = y0.copy()
         piecewise = np.zeros((n_periods, n))
         history, used, wedges = [], [], np.zeros((S, len(self.cols) * T))
-        path = None
+        path, z0 = None, None
         for sp in range(S):
             y_prev = y0
             try:
-                z, w, y0, info = self._step(y_prev, sh[sp], method=method)
+                z, w, y0, info = self._step(y_prev, sh[sp], method=method, z0=z0)
             except OBCError as err:
                 err.period = sp + 1
                 raise
+            if warm_start:
+                z0 = np.zeros_like(z)
+                z0[:-1] = z[1:]
             wedges[sp] = w
             used.append(info["used"])
             history.append([_map_regime(z[:, j].astype(np.int64)) for j in range(self.n_c)])
