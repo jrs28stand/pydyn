@@ -139,3 +139,19 @@ def test_active_set_exact_start_returns_the_solution(zlb2):
         np.testing.assert_allclose(y2, y, atol=1e-12)
         hits += 1
     assert hits > 5
+
+
+def test_linear_path_on_state_variables_matches_the_full_recursion(zlb2, nkm):
+    from pydyn.obc import _linear_path
+    for m, ob in (zlb2, nkm):
+        nb = NewsOBC(ob, horizon=10, check_ahead=10)
+        rng = np.random.default_rng(8)
+        sh = rng.normal(0, 0.05, (25, m.n_exo))
+        init = rng.normal(0, 0.05, m.n_endo)
+        got = _linear_path(ob, nb._st, init, sh, 40)
+        y, want = init.copy(), np.empty((40, m.n_endo))
+        for t in range(40):
+            y = ob.P @ y + (ob.Q @ sh[t] if t < 25 else 0.0)
+            want[t] = y
+        np.testing.assert_allclose(got[1:], want[1:], atol=1e-12)  
+        np.testing.assert_allclose(got[0], want[0], atol=1e-12)

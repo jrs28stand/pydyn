@@ -68,6 +68,14 @@ class ConstraintObject:
 
 # --------------------------------------------------------------------------------------------- post-processor
 def _condition_fn(model, src):
+    """Compiled condition ``lambda z, params, ss``; depends on the model's equations only, so kept on the model."""
+    cache = model.__dict__.setdefault("_obc_condition_fns", {})
+    if src not in cache:
+        cache[src] = _condition_fn_uncached(model, src)
+    return cache[src]
+
+
+def _condition_fn_uncached(model, src):
     def resolve(name, shift):
         if name in model._ie:
             if shift != 0:
@@ -445,6 +453,21 @@ def _wedge_path(P, G, FE, init_term, w, T, upto):
     return Y
 
 
+def _linear_path(ob, st, init, sh, n_periods):
+    """Unconstrained path y_t = P y_{t-1} + Q u_t (deviations) for n_periods; the recursion runs on the state
+    variables ``st`` only and the other variables follow from them."""
+    n = ob.n
+    QU = np.zeros((n_periods, n))
+    QU[:len(sh)] = sh @ ob.Q.T
+    Pss = ob.P[np.ix_(st, st)]
+    xs = np.asarray(init, float)[st]
+    prev = np.empty((n_periods, len(st)))
+    for t in range(n_periods):
+        prev[t] = xs
+        xs = Pss @ xs + QU[t, st]
+    return prev @ ob.P[:, st].T + QU
+
+
 def _map_regime(col):
     """``Occbin.map_regime`` of a 0/1 integer column, without the Python loop over its elements."""
     ch = np.flatnonzero(col[1:] != col[:-1])
@@ -708,11 +731,7 @@ class NewsOBC:
             if sp == S - 1:                      # the path is only needed once, after the last shock period
                 path = self._path(y_prev, sh[sp], y, upto=n_periods - S + 1)
         piecewise[S:] = path[1:n_periods - S + 1]
-        linear = np.empty((n_periods, n))
-        yl = init_orig
-        for t in range(n_periods):
-            yl = ob.P @ yl + (ob.Q @ sh[t] if t < S else 0.0)
-            linear[t] = yl
+        linear = _linear_path(ob, self._st, init_orig, sh, n_periods)
         res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
                            regime_history=history, ys=ob.ys, exo_pos=exo_idx)
         res.news = dict(method=method, wedges=wedges, solver=used, horizon=T)
@@ -1053,11 +1072,7 @@ class RegimeOBC:
             if sp == S - 1:                      # the path is only needed once, after the last shock period
                 path = self._path(y_prev, sh[sp], w, upto=n_periods - S + 1)
         piecewise[S:] = path[1:n_periods - S + 1]
-        linear = np.empty((n_periods, n))
-        yl = init_orig
-        for t in range(n_periods):
-            yl = ob.P @ yl + (ob.Q @ sh[t] if t < S else 0.0)
-            linear[t] = yl
+        linear = _linear_path(ob, self._st, init_orig, sh, n_periods)
         res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
                            regime_history=history, ys=ob.ys, exo_pos=exo_idx)
         res.news = dict(method=method, formulation="regime", wedges=wedges, solver=used, horizon=T,
