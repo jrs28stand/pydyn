@@ -29,10 +29,10 @@ pydyn's rule is to refuse rather than guess. Everything below either raises a cl
 | Perfect foresight | `varexo_det`; `var(log)` auxiliaries in `initval_file`/`histval_file` | |
 | Extended path | Sparse-tree and hybrid stochastic EP, Stroud cubature, `extended_path_mc` | Order 0 and the full-tree stochastic EP work |
 | Backward models | `model_inversion` with leads; `histval` with `maximum_lag` > 1 | |
-| Semi-structural | `pac.estimate.*` (in progress), `equation.evaluate`/cherrypick, calls to model-named functions (`example1.dynamic_resid`) | `var_model`, trend-component models, `var_expectation` and the PAC updates work |
+| Semi-structural | `pac.estimate.*` with `annealing`/`particleswarm`, non-additive PAC residuals or lags other than 1; `equation.evaluate`/cherrypick, calls to model-named functions (`example1.dynamic_resid`) | `pac.estimate.nls`/`iterative_ols`, `var_model`, trend-component models, `var_expectation` and the PAC updates work |
 | Toolboxes | `identification`, `dynare_sensitivity` (GSA), `method_of_moments`, `irf_calibration`/`moment_calibration`, Markov-switching SBVAR, BVAR, heterogeneous-agent models | Not started |
 | Output | LaTeX (`write_latex_*`), reporting | These warn |
-| Data | Full `dseries` (transformations, tags, non-MAT formats) | A minimal `dseries` covers names, dates, arithmetic and MAT files |
+| Data | Full `dseries` (transformations, tags, non-MAT formats) | `dseries` covers names, dates, arithmetic, lags/leads, field/brace/paren assignment (Dynare's merge rules) and MAT files |
 
 ## 2. The MATLAB interpreter and `pydyn.dynare()`
 
@@ -61,11 +61,9 @@ These still stop `pydyn.dynare()` (each raises `ResultsError` naming the item):
   - `bayesian_irf`
   - `load_mh_file`/`mh_recover`
   - `shock_paths`
-  - `smoother2histval` (in progress)
-  - `shock_decomposition(forecast_type=…)` (in progress)
+  - `shock_decomposition(forecast_type=…)` (needs posterior-mean decompositions)
   - `with_epilogue`
   - `filter_decomposition`
-- **After `stoch_simul(loglinear)`:** the steady state is not yet stored in logs as Dynare stores it (in progress).
 
 ## 3. Numerical differences that are expected
 

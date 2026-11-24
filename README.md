@@ -279,13 +279,13 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 ## Known limits
 
-- MATLAB inside `.mod` files: complex numbers, struct arrays, N-d cell and char arrays, classes (`dseries`,
-  dates), random-number functions other than `rand`/`randn`/`randi`/`randperm` (and any random numbers in
+- MATLAB inside `.mod` files: complex numbers, struct arrays, N-d cell and char arrays, classes other than
+  Dynare's `dseries` and `dates`, random-number functions other than `rand`/`randn`/`randi`/`randperm` (and any random numbers in
   steady-state files or helpers the solvers call), and file-system functions other than `load` and the
   sandboxed `save` are not supported; see the section above. N-d numeric and logical arrays follow
   MATLAB/Octave (indexing, growth, deletion, `end`, reductions along dimensions, `permute`, `reshape`,
   `cat`, `repmat`, implicit expansion); functions that handle matrices only refuse them.
-- Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
+- Not handled: heterogeneous-agent models,
   dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
   (`write_latex_*` warns), `varexo_det` in perfect foresight.
 - Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other
