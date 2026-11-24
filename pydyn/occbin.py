@@ -22,6 +22,10 @@ from .perturbation import first_order
 from .steady import steady_state
 
 
+OBC_METHODS = ("occbin", "news")
+OBC_SELECTIONS = ("occbin", "shortest", "longest", "min_wedge")
+
+
 class OccbinError(Exception):
     """Failure of the OccBin solver. ``error_flag`` is Dynare's code: 310 (guesses alternate between
     two regimes and ``periodic_solution`` is off), 311 (no convergence within ``maxit``), 312 (a
