@@ -740,8 +740,7 @@ def test_mode_compute_choices(post, tmp_path):
         bfgs = e.mode(x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)
     assert abs(bfgs.log_posterior - r["logpost"]) < 1e-3
     e = post("post_nk", 0, mode_compute=7, optim="'MaxIter',120,'TolFun',1e-6")
-    with pytest.warns(pydyn.options.UnsupportedOptionWarning, match="fminsearch"):
-        simplex = e.mode(x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)
+    simplex = e.mode(x0=r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])), compute_hessian=False)   # ported: no warning
     assert simplex.log_posterior > e.log_posterior(r["xparam1"] + 0.05 * np.sqrt(np.diag(r["Vmode"])))
     # additional_optimizer_steps: csminwel stopped early, then continued by a second run
     e = post("post_nk", 0, mode_compute=4, optim=("MaxIter", 3), additional_optimizer_steps=[4], cova_compute=0)

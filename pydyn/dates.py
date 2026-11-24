@@ -37,6 +37,8 @@ _PATTERNS = [
 _WRAPPED = re.compile(r"""^\s*\(?\s*dates\(\s*['"]([^'"]+)['"]\s*\)\s*\)?\s*$""")
 # Monday of ISO week 1 of year 1: the origin of the weekly time index
 _W0 = _dt.date.fromisocalendar(1, 1, 1).toordinal()
+# Dynare counts the weeks from year 0 (weeksince.m): year 0 has 52 ISO weeks, so the times are those counted from year 1 plus 52
+_WOFF = 52
 
 
 class DateError(ValueError):
@@ -74,7 +76,7 @@ class Date:
                     day = _dt.date.fromisocalendar(y, w, 1)
                 except ValueError:
                     raise DateError(f"{s!r}: week {w} does not exist in {y}") from None
-                return cls(52, (day.toordinal() - _W0) // 7 + 1)
+                return cls(52, (day.toordinal() - _W0) // 7 + 1 + _WOFF)
             if freq == 365:
                 d = _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                 return cls(365, d.toordinal() + 366)               # MATLAB's datenum
@@ -149,7 +151,7 @@ class Date:
         if self.freq == 365:
             return _dt.date.fromordinal(self.time - 366)
         if self.freq == 52:
-            return _dt.date.fromordinal(_W0 + 7 * (self.time - 1))
+            return _dt.date.fromordinal(_W0 + 7 * (self.time - 1 - _WOFF))
         raise DateError("only weekly and daily dates convert to a calendar day")
 
     def __str__(self):

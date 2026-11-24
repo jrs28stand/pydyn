@@ -98,3 +98,10 @@ def test_estimation_with_the_data_command(tmp_path, v):
     if v == 2:
         res = smoother.smooth(m, estimation=est, theta=est.x0)
         np.testing.assert_allclose(res.shocks, r["shocks"], rtol=1e-9, atol=1e-10)
+
+
+def test_native_statement_date_literals_are_rewritten_like_dynares_preprocessor():
+    from pydyn import matlab as ml
+    assert ml.native_dates("d = 2000Q1:2001Q4;") == "d = dates('2000Q1'):dates('2001Q4');"
+    assert ml.native_dates("x = a2000Q1; y = '2000Q1'; z = 12;") == "x = a2000Q1; y = '2000Q1'; z = 12;"
+

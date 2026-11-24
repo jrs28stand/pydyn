@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from scipy import optimize
+from scipy import optimize, sparse
 
 from . import matlab
 from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name
@@ -166,6 +166,35 @@ def steady_state_file_fn(model):
     return fn
 
 
+def _solve_auxiliary_jointly(model, ys, x, params, idx, rows):
+    """Set the auxiliary variables ``idx`` (in place) by solving their static equations ``rows`` together, the other
+    variables held fixed. The preprocessor's set_auxiliary_variables does this in dependency order; the equation of
+    an auxiliary variable of the expectation operator or of a nested lead/lag does not always sit in the row of its own
+    index (EXPECTATION(1)(.. EXPECTATION(3)(..)) creates auxiliary variables that define each other), so a variable-by-variable
+    update leaves some NaN. Returns False (``ys`` unchanged) if the system is singular or the residuals do not vanish."""
+    idx, rows = np.asarray(idx, int), np.asarray(rows, int)
+    y = ys.copy()
+    y[idx] = np.where(np.isfinite(y[idx]), y[idx], 0.0)
+    with np.errstate(all="ignore"):
+        for _ in range(4):
+            r = model.static_resid(y, x, params)[rows]
+            if not np.all(np.isfinite(r)):
+                return False
+            if np.max(np.abs(r), initial=0.0) < 1e-14:
+                break
+            J = model.static_jac(y, x, params)[np.ix_(rows, idx)]
+            try:
+                step = np.linalg.solve(J, r)
+            except np.linalg.LinAlgError:
+                return False
+            y[idx] -= step
+        r = model.static_resid(y, x, params)[rows]
+    if not (np.all(np.isfinite(r)) and np.max(np.abs(r), initial=0.0) < 1e-10 * max(1.0, np.max(np.abs(y[idx])))):
+        return False
+    ys[idx] = y[idx]
+    return True
+
+
 def fill_auxiliary(model, ys, x, params):
     """Set auxiliary variables (added by the preprocessor for leads/lags > 1 etc.) from their
     defining equations, which are linear in the auxiliary variable itself, except those of
@@ -181,6 +210,12 @@ def fill_auxiliary(model, ys, x, params):
     # sets LOG_x = log(x) (the preprocessor's orig_expr), which the Newton steps below would not give
     logs = {d["endo_index"] - 1: d["orig_index"] - 1 for d in model.raw.get("aux_vars", [])
             if d.get("type") == 7 and d.get("orig_index") is not None}
+    free = [(i, r) for i, r in zip(aux, rows) if i not in logs]
+    for i in logs:
+        with np.errstate(all="ignore"):
+            ys[i] = np.log(ys[logs[i]]) if ys[logs[i]] >= 0 else np.nan
+    if free and _solve_auxiliary_jointly(model, ys, x, params, [i for i, _ in free], [r for _, r in free]):
+        return ys
     for _ in range(2 if aux else 0):
         for i, row in zip(aux, rows):
             if i in logs:
@@ -236,7 +271,10 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     from . import options as _opt
     so = _opt.steady_options(model)          # steady and check options, accumulated in file order
     if tol is None:
-        tol = float(so.get("solve_tolf", DYNARE_TOLF))
+        tol = so.get("solve_tolf")
+        if tol is None:                      # options_.solve_tolf = ... written by MATLAB lines of the .mod file
+            tol = _opt.matlab_option(model, "solve_tolf", default=DYNARE_TOLF)
+        tol = float(np.asarray(tol).reshape(-1)[0])
     if check is None:
         check = not so.get("steadystate.nocheck", False)
     if maxit is None and so.get("steady.maxit") is not None:
@@ -246,8 +284,12 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     ported = solve_algo is not None and int(solve_algo) in PORTED_SOLVE_ALGOS
     # tolx is used by the ported algorithms, and by the default search when it runs Dynare's
     # solve_algo=4 (structurally singular Jacobian, see _singular_default)
-    if tolx is None and (ported or solve_algo is None) and so.get("solve_tolx") is not None:
-        tolx = float(so["solve_tolx"])
+    if tolx is None and (ported or solve_algo is None):
+        tx = so.get("solve_tolx")
+        if tx is None:
+            tx = _opt.matlab_option(model, "solve_tolx")
+        if tx is not None:
+            tolx = float(np.asarray(tx).reshape(-1)[0])
     _opt.warn_unused(model, "steady", {"solve_tolf", "steadystate.nocheck", "homotopy_mode", "homotopy_steps",
                                        "steady.maxit", "solve_algo"} | ({"solve_tolx"} if ported or solve_algo is None else set()),
                      "steady_state")
@@ -259,7 +301,15 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     with np.errstate(all="ignore"):
         ys, params = _steady_state(model, params, guess, x, tol=tol, maxit=maxit, solve_algo=solve_algo, tolx=tolx)
     if check:
-        res = np.max(np.abs(model.static_resid(ys, x, params)))
+        r_ = np.abs(model.static_resid(ys, x, params))
+        if solve_algo is not None and int(solve_algo) == 10:
+            from .perfect_foresight import complementarity_conditions, has_complementarity
+            if has_complementarity(model):       # dynare_solve.m: the residual of an equation whose variable sits on a bound is ignored
+                lb_, ub_, order_ = complementarity_conditions(model, params)
+                eps_ = np.finfo(float).eps
+                onb = (np.isfinite(lb_) | np.isfinite(ub_)) & ((ys <= lb_ + eps_) | (ys >= ub_ - eps_))
+                r_[order_[onb]] = 0.0
+        res = np.max(r_)
         if not res < tol:
             raise SteadyStateError(f"steady state not found: max |residual| = {res:.3e}")
         if res > 1e-8:
@@ -287,19 +337,25 @@ def _finite_at(model, y, x, params):
     return bool(np.all(np.isfinite(model.static_jac(y, x, params))))
 
 
-def _random_draws(ok, y0):
+def _random_draws(ok, y0, stream=None):
     """The randomised initial guesses of Dynare's dynare_solve.m (options_.solve_randomize_initial_guess,
     on by default): the entries ``idx`` are redrawn, first as rand*10, then randn*10, then -rand*10,
     up to 10*len(idx)+1 times each, keeping the draws ``y`` for which ``ok(y)`` (residuals and
     Jacobian finite). As in dynare_solve.m, ``idx`` is ``find(x)`` (the non-zero entries of the
     guess) unless the whole guess is zero, then every entry. Draws come from numpy's generator with
-    seed RESTART_SEED, not from Dynare's stream."""
+    seed RESTART_SEED, not from Dynare's stream, unless ``stream`` (a pydyn.octave_rng.OctaveRandom) is given: then
+    they are Dynare's (``rand(k, 1)*10``, ``randn(k, 1)*10``, ``-rand(k, 1)*10`` from Octave's generators)."""
     y0 = np.array(y0, float)
     nz = np.flatnonzero(np.where(np.isnan(y0), 1.0, y0))     # NaN counts as non-zero, as in MATLAB's find
     idx = nz if nz.size else np.arange(len(y0))
     k = len(idx)
-    rng = np.random.default_rng(RESTART_SEED)
-    for draw in (lambda: rng.random(k) * 10, lambda: rng.standard_normal(k) * 10, lambda: -rng.random(k) * 10):
+    if stream is not None:
+        draws = (lambda: stream.rand((k, 1)).ravel() * 10, lambda: stream.randn((k, 1)).ravel() * 10,
+                 lambda: -stream.rand((k, 1)).ravel() * 10)
+    else:
+        rng = np.random.default_rng(RESTART_SEED)
+        draws = (lambda: rng.random(k) * 10, lambda: rng.standard_normal(k) * 10, lambda: -rng.random(k) * 10)
+    for draw in draws:
         for _ in range(10 * k + 1):
             y = y0.copy()
             y[idx] = draw()
@@ -363,6 +419,23 @@ def _numerical(model, y0, x, params, tol, maxit, solve_algo=None, tolx=None):
         if err:
             raise SteadyStateError(f"steady state not found (solve_algo={int(solve_algo)}, as Dynare's dynare_solve)")
         return ys
+    if solve_algo is not None and int(solve_algo) in (10, 11):
+        from .perfect_foresight import complementarity_conditions, has_complementarity, lmmcp
+        if has_complementarity(model):
+            if int(solve_algo) == 11:
+                raise SteadyStateError("steady state: solve_algo=11 (PATH) is not available in Dynare without the "
+                                       "separately installed PATH solver, nor in pydyn")
+            # evaluate_steady_state.m with solve_algo=10: lmmcp on static_mcp_problem (equations reordered so that equation
+            # order[i] is paired with variable i; Dynare ignores the residuals of equations whose variable sits on a bound)
+            lb, ub, order = complementarity_conditions(model, params)
+
+            def fun(y, jac):
+                F = np.asarray(model.static_resid(y, x, params), float)[order]
+                return F, (sparse.csc_matrix(model.static_jac(y, x, params)[order]) if jac else None)
+            ys, F, flag, _ = lmmcp(fun, y0, lb, ub, tolfun=None)
+            if flag != 1 or not np.all(np.isfinite(ys)):
+                raise SteadyStateError("steady state not found (solve_algo=10, lmmcp did not converge)")
+            return ys
     if np.all(np.isfinite(y0)):
         r0 = model.static_resid(y0, x, params)
         if np.all(np.isfinite(r0)) and np.max(np.abs(r0), initial=0.0) < EXACT:
@@ -1120,7 +1193,7 @@ def dmperm(S):
     return np.array(p), np.array(q), np.array(r[:nb2 + 1]), np.array(s[:nb2 + 1])
 
 
-def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=True):
+def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=True, stream=None):
     """matlab/optimization/dynare_solve.m for ``solve_algo`` 4 (Dulmage-Mendelsohn blocks, then the
     whole system, with trust_region.m), 9 (trust_region.m on the whole system), 13 and 14 (the
     block_trust_region MEX, with and without the block decomposition). ``fun(x)`` returns the
@@ -1128,7 +1201,7 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
 
     As in Dynare: a guess whose residuals are below ``tolf`` is returned unchanged; when the
     residuals or the Jacobian are not finite at the guess, new guesses are drawn (see
-    _random_starts; pydyn's draws are not Dynare's). solve_algo 4 uses the exact blocks and block
+    _random_starts; pydyn's draws are not Dynare's unless ``stream`` is given). solve_algo 4 uses the exact blocks and block
     order of Octave's dmperm (see dmperm), including Dynare's handling of the non-square blocks of a
     structurally singular Jacobian. solve_algo 13 solves such a Jacobian without the block
     decomposition."""
@@ -1142,7 +1215,7 @@ def dynare_solve(fun, x, tolf, tolx, maxit, solve_algo=4, factor=1.0, randomize=
     if not _finite(fvec, fjac):
         if not randomize:
             return x, True, False
-        start = next(_random_draws(lambda y: _finite(*fun(y)), x), None)
+        start = next(_random_draws(lambda y: _finite(*fun(y)), x, stream), None)
         if start is None:
             return x, True, False
         x, restarted = start, True

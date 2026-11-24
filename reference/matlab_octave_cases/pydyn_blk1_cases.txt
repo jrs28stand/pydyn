@@ -1,0 +1,487 @@
+d = dates('1990Y'); r = [d.freq; d.time];
+%%
+d = dates('1990Y'); r = double(d.freq);
+%%
+d = dates('1990S2'); r = [d.freq; d.time];
+%%
+d = dates('1990S2'); r = double(d.freq);
+%%
+d = dates('1990Q3'); r = [d.freq; d.time];
+%%
+d = dates('1990Q3'); r = double(d.freq);
+%%
+d = dates('1990M11'); r = [d.freq; d.time];
+%%
+d = dates('1990M11'); r = double(d.freq);
+%%
+d = dates('1990W12'); r = [d.freq; d.time];
+%%
+d = dates('1990W12'); r = double(d.freq);
+%%
+d = dates('1990-03-15'); r = [d.freq; d.time];
+%%
+d = dates('1990-03-15'); r = double(d.freq);
+%%
+d = dates('-5Y'); r = [d.freq; d.time];
+%%
+d = dates('-5Y'); r = double(d.freq);
+%%
+d = dates('2000q4'); r = [d.freq; d.time];
+%%
+d = dates('2000q4'); r = double(d.freq);
+%%
+d = dates('1990A'); r = [d.freq; d.time];
+%%
+d = dates('1990A'); r = double(d.freq);
+%%
+d = dates('1990H1'); r = [d.freq; d.time];
+%%
+d = dates('1990H1'); r = double(d.freq);
+%%
+d = dates('1990Q1'); r = d.ndat;
+%%
+d = dates('1990Q1'); r = length(d);
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d.time;
+%%
+d = dates('1990Q1','1990M3'); r = 1;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = length(d);
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(2).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d([1 3]).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(end).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(4).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(0).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(1.5).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d([true false true]).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d(:).time;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = isempty(d(zeros(1,0)));
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d.year;
+%%
+d = dates('1990Q1','1990Q3','1991Q1'); r = d.subperiod;
+%%
+d = dates('1990M1','1990M12'); r = [d.year d.subperiod];
+%%
+r = (dates('1990Q1'):dates('1991Q2')).time;
+%%
+r = length(dates('1990Q1'):dates('1990Q1'));
+%%
+r = (dates('1990Q1'):dates('1991Q2')).ndat;
+%%
+r = (dates('1990Q1'):2:dates('1991Q2')).time;
+%%
+r = (dates('1991Q2'):-1:dates('1990Q1')).time;
+%%
+r = (dates('1991Q2'):dates('1990Q1')).time;
+%%
+r = (dates('1990Q1'):0:dates('1990Q3')).time;
+%%
+r = (dates('1990Q1'):dates('1991M2')).time;
+%%
+r = (dates('1990Q1','1990Q2'):dates('1991Q2')).time;
+%%
+r = (dates('1990Q1'):1.5:dates('1991Q2')).time;
+%%
+r = (dates('1990Q1'):2).time;
+%%
+r = (1:dates('1990Q1')).time;
+%%
+r = (dates('1990Y'):dates('2000Y')).time;
+%%
+r = (dates('1990M1'):dates('1991M12')).ndat;
+%%
+r = (dates('1990-01-30'):dates('1990-02-02')).time;
+%%
+r = (dates('1990W50'):dates('1991W3')).time;
+%%
+r = (dates('1990Q1')+3).time;
+%%
+r = (3+dates('1990Q1')).time;
+%%
+r = (dates('1990Q1')-3).time;
+%%
+r = (dates('1990Q1')+1.5).time;
+%%
+r = (dates('1990Q1')-0.5).time;
+%%
+r = (dates('1990Q1','1990Q2')+[1 2]).time;
+%%
+r = (dates('1990Q1','1990Q2')+[1;2]).time;
+%%
+r = (dates('1990Q1','1990Q2')+[1 2 3]).time;
+%%
+r = (dates('1990Q1')+[1 2 3]).time;
+%%
+r = (dates('1990Q1')-[1 2 3]).time;
+%%
+r = ([1 2 3]+dates('1990Q1')).time;
+%%
+r = (dates('1990Q1','1990Q2')-[1 2]).time;
+%%
+r = (dates('1990Q1','1990Q2')+dates('1990Q4')).time;
+%%
+r = (dates('1990Q1','1990Q2')+dates('1990M4')).time;
+%%
+r = dates('1991Q2')-dates('1990Q1');
+%%
+r = dates('1990Q1')-dates('1991Q2');
+%%
+r = dates('1990Q1','1990Q3')-dates('1990Q1');
+%%
+r = dates('1990Q1')-dates('1990Q1','1990Q3');
+%%
+r = dates('1990Q1','1990Q3')-dates('1990Q1','1990Q2');
+%%
+r = dates('1990Q1','1990Q3','1991Q1')-dates('1990Q1','1990Q2');
+%%
+r = dates('1990Q1')-dates('1990M1');
+%%
+r = dates('1990Y')-dates('1960Y');
+%%
+r = (dates('1990Y')+10).time;
+%%
+r = -dates('1990Q1');
+%%
+r = dates('1990Q1')*2;
+%%
+r = dates('1990Q1')+'a';
+%%
+r = (dates('1990Q1')+int8(2)).time;
+%%
+r = (dates('1990Q1')+true).time;
+%%
+r = (dates('1990Q1')+NaN).time;
+%%
+r = (dates('1990Q1')+Inf).time;
+%%
+r = dates('1990Q1') == dates('1990Q1');
+%%
+r = dates('1990Q1') == dates('1990Q2');
+%%
+r = dates('1990Q2') == dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') == dates('1990Q2');
+%%
+r = dates('1990Q2') == dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') == dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') == dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') == dates('1990M1');
+%%
+r = dates('1990Q1') == 3;
+%%
+r = dates('1990Q1') ~= dates('1990Q1');
+%%
+r = dates('1990Q1') ~= dates('1990Q2');
+%%
+r = dates('1990Q2') ~= dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') ~= dates('1990Q2');
+%%
+r = dates('1990Q2') ~= dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') ~= dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') ~= dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') ~= dates('1990M1');
+%%
+r = dates('1990Q1') ~= 3;
+%%
+r = dates('1990Q1') < dates('1990Q1');
+%%
+r = dates('1990Q1') < dates('1990Q2');
+%%
+r = dates('1990Q2') < dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') < dates('1990Q2');
+%%
+r = dates('1990Q2') < dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') < dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') < dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') < dates('1990M1');
+%%
+r = dates('1990Q1') < 3;
+%%
+r = dates('1990Q1') > dates('1990Q1');
+%%
+r = dates('1990Q1') > dates('1990Q2');
+%%
+r = dates('1990Q2') > dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') > dates('1990Q2');
+%%
+r = dates('1990Q2') > dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') > dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') > dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') > dates('1990M1');
+%%
+r = dates('1990Q1') > 3;
+%%
+r = dates('1990Q1') <= dates('1990Q1');
+%%
+r = dates('1990Q1') <= dates('1990Q2');
+%%
+r = dates('1990Q2') <= dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') <= dates('1990Q2');
+%%
+r = dates('1990Q2') <= dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') <= dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') <= dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') <= dates('1990M1');
+%%
+r = dates('1990Q1') <= 3;
+%%
+r = dates('1990Q1') >= dates('1990Q1');
+%%
+r = dates('1990Q1') >= dates('1990Q2');
+%%
+r = dates('1990Q2') >= dates('1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') >= dates('1990Q2');
+%%
+r = dates('1990Q2') >= dates('1990Q1','1990Q2','1990Q3');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') >= dates('1990Q3','1990Q2','1990Q1');
+%%
+r = dates('1990Q1','1990Q2','1990Q3') >= dates('1990Q3','1990Q2');
+%%
+r = dates('1990Q1') >= dates('1990M1');
+%%
+r = dates('1990Q1') >= 3;
+%%
+r = isequal(dates('1990Q1'), dates('1990Q1'));
+%%
+r = isequal(dates('1990Q1'), dates('1990Q2'));
+%%
+r = isequal(dates('1990Q1'):dates('1991Q1'), dates('1990Q1'):dates('1991Q1'));
+%%
+r = isequal(dates('1990Q1'), dates('1990M1'));
+%%
+r = isequal(dates('1990Q1'), 3);
+%%
+r = isequal(3, dates('1990Q1'));
+%%
+r = isequal(dates('1990Q1','1990Q2'), dates('1990Q1'));
+%%
+if dates('1990Q1') == dates('1990Q1'), r = 1; else r = 0; end
+%%
+if dates('1990Q1') ~= dates('1990Q1'), r = 1; else r = 0; end
+%%
+if dates('1990Q1','1990Q2') == dates('1990Q1','1990Q2'), r = 1; else r = 0; end
+%%
+r = any(dates('1990Q1'):dates('1991Q1') == dates('1990Q4'));
+%%
+d = dates('1990Q1'):dates('1991Q1'); r = find(d == dates('1990Q4'));
+%%
+d = dates('1990Q1','1990Q3'); r = max(d).time;
+%%
+d = dates('1990Q1','1990Q3'); r = min(d).time;
+%%
+r = max(dates('1990Q1'), dates('1990Q3')).time;
+%%
+r = min(dates('1990Q1'), dates('1990Q3'), dates('1989Q4')).time;
+%%
+r = max(dates('1990Q1'), 3);
+%%
+r = max(dates('1990Q1'), dates('1990M3')).time;
+%%
+r = double(char(dates('1990Q1')));
+%%
+r = double(char(dates('1990Y')));
+%%
+r = double(char(dates('1990M11')));
+%%
+r = double(char(dates('1990S2')));
+%%
+r = double(char(dates('1990W12')));
+%%
+r = double(char(dates('1990-03-15')));
+%%
+r = double(char(dates('1990Q1','1990Q2')));
+%%
+d = dates('1990Q1','1990Q2'); s = strings(d); r = double(s{2});
+%%
+d = dates('1990Q1','1990Q2'); s = strings(d); r = size(s);
+%%
+d = dates('1990Q1','1990Q2'); s = d.strings; r = double(s{1});
+%%
+d = dates('1990Q1','1990Q2'); r = double(d.char);
+%%
+d = dates('1990Q1'); r = double(d.char);
+%%
+d = dates('1990Q1'); r = isdates(d);
+%%
+r = isdates(3);
+%%
+r = isdates('1990Q1');
+%%
+d = dates('1990Q1'); r = isa(d, 'dates');
+%%
+d = dates('1990Q1'); r = double(class(d));
+%%
+d = dates('1990Q1'); r = isempty(d);
+%%
+d = dates('Q'); r = isempty(d);
+%%
+d = dates('Q'); r = d.freq;
+%%
+d = dates(); r = isempty(d);
+%%
+d = dates(4); r = d.freq;
+%%
+d = dates(1, [1990;1991]); r = d.time;
+%%
+d = dates(4, [1990;1991], [1;2]); r = d.time;
+%%
+d = dates(4, [1990;1991], [1;5]); r = d.time;
+%%
+d = dates(1,1); r = d.time;
+%%
+d = dates(dates('1990Q1'), dates('1990Q3')); r = d.time;
+%%
+d = dates('1990Q1','1990Q3'); e = dates(d, dates('1991Q1')); r = e.time;
+%%
+d = dates('1990Q3','1990Q1','1990Q2','1990Q1'); r = d.sort.time;
+%%
+d = dates('1990Q3','1990Q1','1990Q2','1990Q1'); r = d.unique.time;
+%%
+d = dates('1990Q3','1990Q1'); r = d.nosuch;
+%%
+d = dates('1990Q1'); r = d.freq();
+%%
+d = dates('1990Q1'); r = d.ndat();
+%%
+d = dates('1990Q1'); r = d.length();
+%%
+d = dates('1990Q1','1990Q2'); r = d.time(2);
+%%
+d = dates('1990Q1','1990Q2'); r = d.time';
+%%
+r = dates('1990Q5').time;
+%%
+r = dates('1990Q0').time;
+%%
+r = dates('abc').time;
+%%
+r = dates('1990').time;
+%%
+r = dates(1990).time;
+%%
+d = dates('1990Q1'):dates('1990Q4'); s = 0; for k = 1:d.ndat, s = s + d(k).time; end, r = s;
+%%
+d = dates('1990Q1'):dates('1990Q4'); r = zeros(1,4); for k = 1:length(d), r(k) = d(k).year; end
+%%
+d0 = dates('2000Q1'); d = d0:d0+200; r = d.ndat;
+%%
+d0 = dates('2000Q1'); d = d0+4:d0+8; r = d.time;
+%%
+d = dates('2005Q1'):dates('2000Q1')+200; r = d.ndat;
+%%
+x = dates('1990Q1'); y = x; y = y + 1; r = [x.time y.time];
+%%
+a = dates('2Y'); b = dates('3Y'); r = (a:b).time;
+%%
+r = (dates('1990Y'):dates('1992Y')).year;
+%%
+r = corr([1;2;3;5],[2;1;5;7]);
+%%
+r = corr([1 2 3 5]',[2 1 5 7]');
+%%
+r = corr([1 2 3 5],[2 1 5 7]);
+%%
+r = corr([1;2;3;5]);
+%%
+r = corr([1 2;2 1;3 5;5 7]);
+%%
+r = corr([1 2;2 1;3 5;5 7],[1;2;4;3]);
+%%
+r = corr([1;2;3;5],[2 1;1 3;5 5;7 6]);
+%%
+r = corr([1;2;3],[2;1]);
+%%
+r = corr(3);
+%%
+r = corr([1;1;1],[1;2;3]);
+%%
+r = corr([1;2;3;5],[2;1;5;NaN]);
+%%
+r = corr(zeros(0,1),zeros(0,1));
+%%
+x = (1:10)'; y = x.^2; r = corr(x,y);
+%%
+r = corr([1;2],[3;5]);
+%%
+r = corr(int8([1;2;3]),[3;5;1]);
+%%
+r = corr([1;2;3],'abc');
+%%
+x = linspace(-3,3,2001); r = sum(exp(x) == arrayfun(@(t) exp(t), x));
+%%
+r = exp(0.1:0.1:2);
+%%
+r = log(0.1:0.1:2);
+%%
+r = exp(-745:50:709);
+%%
+r = exp([710 -746 Inf -Inf NaN]);
+%%
+r = log([0 -1 Inf NaN 1e-320]);
+%%
+r = log2([0.5 3 10 1e-310]);
+%%
+r = log10([0.5 3 10 1e-310 0]);
+%%
+r = tanh(-3:0.37:3);
+%%
+r = atan(-3:0.37:3);
+%%
+r = sinh(-3:0.37:3);
+%%
+r = cosh(-3:0.37:3);
+%%
+r = asin(-1:0.17:1);
+%%
+r = acos(-1:0.17:1);
+%%
+r = asin(1.5);
+%%
+r = acosh(0.5);
+%%
+r = atanh(2);
+%%
+r = log1p(-1:0.3:2);
+%%
+r = expm1(-2:0.3:2);
+%%
+r = sin(0:0.3:6);
+%%
+r = cos(0:0.3:6);
+%%
+r = tan(0:0.3:6);
+%%
+r = exp(single(1));
+%%
+r = exp(1e-300);

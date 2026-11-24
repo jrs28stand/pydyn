@@ -1,0 +1,20 @@
+// extended path on a purely backward model
+var Efficiency efficiency;
+varexo EfficiencyInnovation;
+parameters rho effstar sigma;
+rho = 0.95; effstar = 1; sigma = 0.1;
+model;
+  efficiency = rho*efficiency(-1) + sigma*EfficiencyInnovation;
+  Efficiency = effstar*exp(efficiency);
+end;
+shocks;
+  var EfficiencyInnovation = 1;
+end;
+steady_state_model;
+efficiency = 0;
+Efficiency = effstar;
+end;
+steady(nocheck);
+extended_path(order=0, periods=40);
+ts1 = Simulated_time_series.data;
+st1 = oo_.extended_path.status;

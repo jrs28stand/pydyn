@@ -84,6 +84,8 @@ LU_ORDERING = os.environ.get("PYDYN_PF_LU", "NATURAL")
 #: pydyn's default tolerance on the residuals when neither the .mod file nor the caller gives
 #: ``tolf`` (Dynare's default is 1e-5)
 DEFAULT_TOLF = 1e-9
+#: Dynare's own default of options_.dynatol.f
+DYNARE_PF_TOLF = 1e-5
 
 
 class PerfectForesightError(Exception):
@@ -205,10 +207,30 @@ def _resolve_options(model, pfwee, kw):
         if v is not None:
             o[key] = v
             given.add(key)
+    # options_.<x> = ... written by MATLAB lines of the .mod file (as those before the solver statement left them) apply
+    # to the options the solver statement and the caller did not give
+    before = _opt.last_statement_index(model, names[1])
+    for key in ("stack_solve_algo", "solve_algo", "dynatol.f", "dynatol.x", "simul.maxit"):
+        if key not in given:
+            v = _opt.matlab_option(model, key, before)
+            if v is not None:
+                try:
+                    o[key] = float(np.asarray(v).reshape(-1)[0]) if key.startswith(("dynatol", "simul")) else int(np.asarray(v).reshape(-1)[0])
+                except (TypeError, ValueError, IndexError):
+                    raise ValueError(f"options_.{key} set by MATLAB code in the .mod file is not a number") from None
+                given.add(key)
+    if o["stack_solve_algo"] == 7 and o["solve_algo"] in (10, 11) and not o["lmmcp.status"]:
+        # perfect_foresight_solver_core.m: stack_solve_algo=7 with solve_algo=10 (LMMCP) solves the stacked problem as the
+        # lmmcp option does; with solve_algo=11 Dynare runs the PATH solver (mcppath)
+        if o["solve_algo"] == 11:
+            raise NotImplementedError("stack_solve_algo=7 with solve_algo=11 (the PATH solver, mcppath) is not implemented; "
+                                      "solve_algo=10 (lmmcp) is")
+        o["lmmcp.status"] = True
     excl = o["simul.homotopy_exclude_varexo"]
     if isinstance(excl, dict):
         excl = excl.get("symbol_list", [])
     o["simul.homotopy_exclude_varexo"] = [excl] if isinstance(excl, str) else list(excl or [])
+    o["_tolf_default"] = o["dynatol.f"] is None          # pydyn's own default: see _sim1 (rounding floor of large-scale models)
     if o["dynatol.f"] is None:
         o["dynatol.f"] = DEFAULT_TOLF
     o["dynatol.f"], o["dynatol.x"], o["simul.maxit"] = float(o["dynatol.f"]), float(o["dynatol.x"]), int(o["simul.maxit"])
@@ -218,7 +240,7 @@ def _resolve_options(model, pfwee, kw):
     o["simul.homotopy_marginal_linearization_fallback"] = 0.01 if m is True else float(m or 0.0)
     # reports (once per model) for options written in the .mod file that are not acted upon
     algo = int(o["stack_solve_algo"])
-    if "stack_solve_algo" in given:
+    if "stack_solve_algo" in given and not (algo == 7 and o["lmmcp.status"]):
         if not 0 <= algo <= 10:
             raise ValueError("stack_solve_algo must be between 0 and 10")
         _opt.warn_once(model, f"stack_solve_algo={algo}: pydyn has one solver for the stacked system, Newton's method with a "
@@ -235,7 +257,11 @@ def _resolve_options(model, pfwee, kw):
 
 
 def _statement_options(model, name):
-    """Options of the last statement ``name`` of the .mod file."""
+    """Options of the last statement ``name`` of the .mod file (in the results mode, ``pydyn.results``: the
+    options of options_ that the live workspace holds, in ``model._live_statement_options``)."""
+    live = getattr(model, "_live_statement_options", None)
+    if live is not None:
+        return dict(live.get(name, {}))
     out = {}
     for st in model.statements:
         if st.get("statementName") == name:
@@ -300,16 +326,16 @@ def _number(model, expr):
 
 
 def _period(v, what):
+    """A period: an int, or a pydyn.dates.Date converted later (``_undate``, with first_simulation_period)."""
     if isinstance(v, (int, np.integer)) or (isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v)):
         return int(v)
-    raise NotImplementedError(f"{what} given as a date or an expression ({v!r}): dates are only supported for the "
-                              "periods of shocks blocks (with first_simulation_period / last_simulation_period)")
+    if _dates.is_date_value(v):
+        return _dates.Date.parse(v[0] if isinstance(v, (list, tuple)) else v)
+    raise NotImplementedError(f"{what} given as an expression that is neither an integer nor a date ({v!r})")
 
 
 def _shock_period(v):
     """A period of a shocks/mshocks block: an int, or a pydyn.dates.Date converted later (``_undate``)."""
-    if _dates.is_date_value(v):
-        return _dates.Date.parse(v[0] if isinstance(v, (list, tuple)) else v)
     return _period(v, "period")
 
 
@@ -341,7 +367,29 @@ def simulation_periods(o):
 
 
 def _undate(ws, first, last):
-    """Dated shock periods (make_ex_.m): period index = date - first_simulation_period + 1."""
+    """Dated periods (make_ex_.m, controlled_paths_by_period.m, perfect_foresight_with_expectation_errors_setup.m):
+    period index = date - first_simulation_period + 1.  Covers the periods of shocks/mshocks, the learnt_in values and
+    periods of learnt shocks, endval(learnt_in=...) and perfect_foresight_controlled_paths."""
+    def conv(p, what):
+        if not isinstance(p, _dates.Date):
+            return p
+        if first is None:
+            raise PerfectForesightError(f"{what} is specified using a date but neither first_simulation_period nor "
+                                        "last_simulation_period option was passed")
+        try:
+            return p - first + 1
+        except _dates.DateError as exc:
+            raise PerfectForesightError(str(exc)) from None
+    for d in ws.learnt_endval:
+        d["learnt_in"] = conv(d["learnt_in"], "learnt_in")
+    for d in ws.learnt_shocks:
+        d["learnt_in"] = conv(d["learnt_in"], "learnt_in")
+        d["p1"], d["p2"] = conv(d["p1"], "a period"), conv(d["p2"], "a period")
+    for c in ws.controlled:
+        c["learnt_in"] = conv(c["learnt_in"], "learnt_in")
+        if c.get("dated") is not None:
+            p1, p2 = (conv(p, "a period of perfect_foresight_controlled_paths") for p in c.pop("dated"))
+            c["periods"] = list(range(p1, p2 + 1))
     out = []
     for j, p1, p2, val, typ in ws.det_shocks:
         if isinstance(p1, _dates.Date) or isinstance(p2, _dates.Date):
@@ -363,17 +411,24 @@ def steady_command_algo(model):
     return DYNARE_SOLVE_ALGO if algo is None else int(algo)
 
 
-def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learnt_endval=()):
-    """Replay the statements of the .mod file up to the last perfect_foresight_setup."""
+def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learnt_endval=(), upto=None, live=None):
+    """Replay the statements of the .mod file up to the last perfect_foresight_setup.
+
+    ``upto`` (the results mode, ``pydyn.results``): only the statements up to that index are replayed, and
+    ``live`` (a dict with ``ss``, ``xss``, ``ss0``, ``xss0``: the contents of oo_.steady_state,
+    oo_.exo_steady_state, oo_.initial_steady_state, oo_.initial_exo_steady_state when the command runs) replaces
+    the steady states the replay would compute: the steady-state commands of the file are not replayed."""
     if getattr(model, "n_exo_det", 0):
         raise NotImplementedError("perfect foresight with varexo_det variables is not supported; declare them "
                                   "with varexo (in a perfect foresight model they behave like any exogenous variable)")
     sts = model.statements
-    idx = [i for i, st in enumerate(sts) if _is_setup(st)]
-    last = idx[-1] if idx else len(sts) - 1
+    idx = [i for i, st in enumerate(sts) if _is_setup(st) and (upto is None or i <= upto)]
+    last = idx[-1] if idx else (len(sts) - 1 if upto is None else upto)
     ws = _Workspace(model, params)
     ws.has_setup = bool(idx)
     force = (not idx) if steady is None else bool(steady)
+    if live is not None:
+        steady, force = False, False
     never = steady is False
     ie, ix = model._ie, model._ix
     stored_values = getattr(model, "_stmt_values", {})
@@ -487,8 +542,10 @@ def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learn
                 for k, v in enumerate(path["values"]):
                     p1, p2 = _period(v["period1"], "period"), _period(v["period2"], "period")
                     val = stored[(i, k)] if (i, k) in stored else _number(model, v["value"])
+                    dated = isinstance(p1, _dates.Date) or isinstance(p2, _dates.Date)
                     ws.controlled.append(dict(exogenize_id=ie[path["exogenize"]], endogenize_id=ix[path["endogenize"]],
-                                              periods=list(range(p1, p2 + 1)), value=val, learnt_in=lin))
+                                              periods=None if dated else list(range(p1, p2 + 1)), value=val, learnt_in=lin,
+                                              dated=(p1, p2) if dated else None))
         elif kind in ("shock_paths", "smoother2histval"):
             raise NotImplementedError(f"{kind} is not implemented in pydyn.perfect_foresight")
         elif _is_setup(st):
@@ -501,6 +558,11 @@ def _replay(model, params=None, steady=None, extra_learnt_shocks=(), extra_learn
             apply_events(i)
     if force and ws.dirty:
         run_steady()
+    if live is not None:
+        ws.ss, ws.xss = np.array(live["ss"], float), np.array(live["xss"], float)
+        ws.ss0 = None if live.get("ss0") is None else np.array(live["ss0"], float)
+        ws.xss0 = None if live.get("xss0") is None else np.array(live["xss0"], float)
+        ws.dirty = False
     for d in extra_learnt_shocks:
         d = dict(d)
         p = d.pop("periods", None)
@@ -585,6 +647,12 @@ def _read_datafile(model, name):
         except (ValueError, TypeError, NotImplementedError) as exc:
             raise ValueError(f"datafile {path.name} is not a MAT-file scipy can read (MATLAB v4-v7; not v7.3 nor "
                              f"Octave's text format): {exc}") from None
+        if "DATA__" in data and "NAMES__" in data:                 # a dseries saved by dseries.save (smoother2histval's outfile)
+            names = [str(np.ravel(x)[0]) if isinstance(x, np.ndarray) and x.size else str(x) for x in np.ravel(data["NAMES__"])]
+            arr = np.atleast_2d(np.asarray(data["DATA__"], float))
+            if arr.shape[1] != len(names):
+                raise ValueError(f"datafile {path.name}: DATA__ has {arr.shape[1]} columns for {len(names)} names")
+            return {n: arr[:, i].copy() for i, n in enumerate(names)}
         for k, v in data.items():
             if k.startswith("__") or not isinstance(v, np.ndarray) or v.dtype.kind not in "fiub":
                 continue
@@ -1173,13 +1241,23 @@ def _sim1(model, problem, endo, exo, periods, o, log, cp=None):
                 dy = -_lin_solve_robust(A, res, o["simul.allow_nonfinite_values"]).reshape(T, n)
             else:
                 dy = -_lu_solve(A, res).reshape(T, n)
-            Y = Y + dy
-            if cp is not None:
-                for p in range(T):
-                    ex, en = cp[p]["exogenize_id"], cp[p]["endogenize_id"]
-                    if en:
-                        Y[p, ex] = cp[p]["values"]
-                        X[p, en] = X[p, en] + dy[p, ex]
+            if o.get("_tolf_default") and err < DYNARE_PF_TOLF and np.all(np.isfinite(dy)) \
+                    and np.max(np.abs(dy)) <= 1e-14 * max(1.0, np.max(np.abs(Y))):
+                # pydyn's default tolf (1e-9) is stricter than Dynare's (1e-5), but the residuals of a model whose variables
+                # are of order 1e7-1e8 (e.g. the late steps of a homotopy towards a large permanent shock) cannot fall below
+                # about 1e-16 * |y|: the Newton step is then rounding noise (<= 1e-14 relative). Accept it, as Dynare would
+                # (err < 1e-5), instead of failing at a precision the arithmetic cannot deliver.
+                log(f"Iter: {it},\t the residual has reached the rounding floor of the variables' scale (err. = {err:g} < "
+                    f"Dynare's tolf {DYNARE_PF_TOLF:g}, Newton step <= 1e-14 relative)")
+                converged = True
+            else:
+                Y = Y + dy
+                if cp is not None:
+                    for p in range(T):
+                        ex, en = cp[p]["exogenize_id"], cp[p]["endogenize_id"]
+                        if en:
+                            Y[p, ex] = cp[p]["values"]
+                            X[p, en] = X[p, en] + dy[p, ex]
         it += 1
     endo[lag:lag + T] = Y
     if o["endogenous_terminal_period"]:
@@ -1255,8 +1333,9 @@ def _solve_period(model, guess, fixed_lag, fixed_lead, x, params, ss, o):
     algo = o.get("solve_algo")
     algo = steady_command_algo(model) if algo is None else int(algo)
     if algo in PORTED_SOLVE_ALGOS:
-        z, err, restarted = dynare_solve(lambda z: (f(z), jac(z)), guess, tolf, o["dynatol.x"], maxit, algo)
-        if restarted:
+        z, err, restarted = dynare_solve(lambda z: (f(z), jac(z)), guess, tolf, o["dynatol.x"], maxit, algo,
+                                         stream=o.get("_rng"))
+        if restarted and o.get("_rng") is None:
             _opt.warn_once(model, "perfect_foresight: a period's initial guess gave non-finite residuals, so the solver "
                                   "restarted from random guesses as Dynare's dynare_solve does (pydyn's draws differ "
                                   "from Dynare's)")
@@ -1928,21 +2007,36 @@ def _pfwee_information(model, ws, periods, datafile):
     return shocks, terminal
 
 
-def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
-    """perfect_foresight_with_expectation_errors_solver.m."""
+def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile, setup=None):
+    """perfect_foresight_with_expectation_errors_solver.m.  ``setup`` = (shocks_info, terminal_info, endo_simul,
+    exo_simul) as the setup command left them in oo_ (``pydyn.dynare()``: endo_simul is [periods x n_endo]);
+    None builds them here."""
     lag, lead = model.info["maximum_lag"], model.info["maximum_lead"]
-    shocks, terminal = _pfwee_information(model, ws, periods, datafile)
-    ws_plain = ws
-    saved = ws.det_shocks
-    ws_plain.det_shocks = []                       # the setup command builds the paths without the shocks
-    endo_simul, exo_simul = _make_paths(model, ws_plain, periods)
-    ws.det_shocks = saved
+    if setup is None:
+        shocks, terminal = _pfwee_information(model, ws, periods, datafile)
+        ws_plain = ws
+        saved = ws.det_shocks
+        ws_plain.det_shocks = []                   # the setup command builds the paths without the shocks
+        endo_simul, exo_simul = _make_paths(model, ws_plain, periods)
+        ws.det_shocks = saved
+    else:
+        shocks, terminal = setup[0].copy(), setup[1].copy()
+        endo_simul, exo_simul = setup[2].copy(), setup[3].copy()
     o = dict(o)
     if lead > 0:
         o["simul.endval_steady"] = True
     ss, xss = ws.ss.copy(), ws.xss.copy()
     ss0, xss0 = (ss.copy(), xss.copy()) if ws.ss0 is None else (ws.ss0, ws.xss0)
     const = bool(o["pfwee.constant_simulation_length"])
+    cps = None
+    if ws.controlled:                              # controlled_paths_by_period(M_, options_, info_period), every period
+        if const:
+            raise PerfectForesightError("Option constant_simulation_length is incompatible with "
+                                        "perfect_foresight_controlled_paths or shock_paths+exogenize block")
+        try:
+            cps = [controlled_paths_by_period(model, ws, periods, q) for q in range(1, periods + 1)]
+        except ValueError as exc:
+            raise PerfectForesightError(str(exc)) from None
     info_period, increment, share0 = 1, 0, None
     out, solves = None, []
     marg = o["simul.homotopy_marginal_linearization_fallback"]
@@ -1962,7 +2056,10 @@ def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
         if info_period > 1 and share0 is not None and share0 < 1 and marg > 0:
             prev = {k: dict(endo=out[k]["endo"][increment:], exo=out[k]["exo"][increment:], share=out[k]["share"])
                     for k in ("sim1", "sim2")}
-        sim = _Sim(model, ws.params, endo, exo, ss, xss, ss0, xss0, o, verbose, stacked)
+        cp = None
+        if cps is not None and any(d["endogenize_id"] for d in cps[p][p:]):
+            cp = cps[p][p:]                        # (otherwise [], as perfect_foresight_solver expects)
+        sim = _Sim(model, ws.params, endo, exo, ss, xss, ss0, xss0, o, verbose, stacked, cp)
         out = sim.solve(sim_length, prev)
         out["solver"] = getattr(sim, "solver", "")
         solves.append((info_period, out["iterations"], out["maxerror"]))
@@ -1982,12 +2079,13 @@ def _solve_pfwee(model, ws, periods, o, verbose, stacked, datafile):
         increment = 1
         while (info_period + increment <= periods
                and np.array_equal(terminal[:, p], terminal[:, p + increment])
-               and np.array_equal(shocks[:, p + increment:, p], shocks[:, p + increment:, p + increment])):
+               and np.array_equal(shocks[:, p + increment:, p], shocks[:, p + increment:, p + increment])
+               and (cps is None or cps[p][p + increment:] == cps[p + increment][p + increment:])):
             increment += 1
         info_period += increment
     out = dict(out)
     out.update(endo=endo_simul, exo=exo_simul, ss=ss, xss=xss, ss0=ss0, xss0=xss0, solves=solves,
-               shocks_info=shocks, terminal_info=terminal)
+               shocks_info=shocks, terminal_info=terminal, sim_length=sim_length)
     return out
 
 
@@ -2094,9 +2192,6 @@ def perfect_foresight(model, periods=None, params=None, exo=None, y_init=None, y
     info = model.info
     lag, lead = info["maximum_lag"], info["maximum_lead"]
     if pfwee:
-        if ws.controlled:
-            raise NotImplementedError("perfect_foresight_controlled_paths together with expectation errors is not "
-                                      "implemented")
         if exo is not None or y_init is not None or y_term is not None or guess is not None:
             raise NotImplementedError("exo, y_init, y_term and guess cannot be combined with expectation errors")
         out = _solve_pfwee(model, ws, T, o, verbose, stacked, o["datafile"])

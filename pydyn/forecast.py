@@ -137,13 +137,12 @@ def _measurement_cov(model, varobs, H=None):
     if H is not None:
         Hm = np.atleast_2d(np.asarray(H, float))
         return Hm if np.any(Hm != 0) else None
-    me = getattr(model, "measurement_errors", {})
-    if not me:
+    if not getattr(model, "measurement_errors", None) and not getattr(model, "me_cov", None):
         return None
-    extra = set(me) - set(varobs)
-    if extra:
-        raise ValueError(f"measurement error declared on non-observed variable(s) {sorted(extra)}")
-    Hm = np.diag([float(me.get(v, 0.0)) for v in varobs])
+    try:
+        Hm = model.me_H(varobs)
+    except Exception as exc:                       # ModelError: a measurement error on a variable that is not observed
+        raise ValueError(str(exc)) from None
     return Hm if np.any(Hm != 0) else None            # forecasts.run stores *_ME only if nnz(M_.H) > 0
 
 
@@ -354,7 +353,7 @@ def _forecast_core(model, dr, G, H, y0, horizon, ivar, Sigma_e, Hme, varobs, con
     return yf, q, ci_me, "simulation"
 
 
-def _initial_state_simul(model, dr, ys_used):
+def _initial_state_simul(model, dr, ys_used, raw=False):
     """``y0`` of the 'simul' task: the steady state, or ``histval`` (zero for variables the block leaves out; with
     ``loglinear`` the logs of the values it gives)."""
     st = [s for s in getattr(model, "statements", []) if s.get("statementName") == "histval"]
@@ -368,6 +367,14 @@ def _initial_state_simul(model, dr, ys_used):
     h = ws.endo_histval
     if h is None:
         return np.array(ys_used, float)
+    return _histval_state(model, h, raw)
+
+
+def _histval_state(model, h, raw=False):
+    """The initial state of ``forecasts.run`` from ``M_.endo_histval`` (``h``, one value per endogenous variable):
+    ``h`` itself, or under ``loglinear`` ``log_variable(h)`` (zeros give -Inf).  ``raw``: ``h`` as given."""
+    if raw:                                      # the values of the histval block, as given (zero where it is silent)
+        return np.array(h, float)
     if _opt.stoch_options(model).get("loglinear", False):
         from .perturbation import log_mask
         mask = log_mask(model)
@@ -784,7 +791,7 @@ def _cf_paths_from_model(model):
         row = []
         for k, v in enumerate(p["values"]):
             p1, p2 = int(v["period1"]), int(v["period2"])
-            row.append((p1, p2, float(vals[(i, k)])))
+            row.append((p1, p2, np.asarray(vals[(i, k)], float)))
             L = max(L, p2)
         rows.append(row)
     arr = np.full((len(names), L), np.nan)
@@ -849,7 +856,7 @@ def conditional_forecast(model, paths=None, controlled_varexo=None, *, parameter
     Two sets of ``replic`` simulations are drawn (shocks ``chol(Sigma_e, 'lower') * randn(n_exo, periods)``, the
     controlled shocks zeroed): the first controls the paths (``cond``, ``controlled_exo_variables``), the second
     is the unconditional forecast (``uncond``). Bands are the order statistics ``round(replic*(1-conf_sig)/2)``
-    and ``round(replic*(1+conf_sig)/2)``. Refused: ``prefilter``, ``loglinear`` and OccBin models."""
+    and ``round(replic*(1+conf_sig)/2)``. Refused: ``prefilter`` and OccBin models."""
     from . import smoother as _sm
     _opt.refuse_occbin(model, "conditional_forecast")
     so = _cf_statement(model)
@@ -898,15 +905,17 @@ def conditional_forecast(model, paths=None, controlled_varexo=None, *, parameter
         res = smoothed
         if int(res.options.get("prefilter", 0)) == 1:
             raise ValueError("conditional_forecast: Conditional forecasting does not support the prefiltering option")
-        if res.loglinear:
-            raise NotImplementedError("conditional_forecast with loglinear is not supported (not validated)")
         sol = res.solution
         ys = np.asarray(res.SteadyState, float)
         G, Hr = np.asarray(res.G, float), np.asarray(res.H, float)
         Sigma = np.asarray(res.Sigma_e, float)
         gend, first_obs = res.nobs, int(res.first_obs)
         mf = np.asarray(res.obs_index, int)
-        const = np.zeros((n, periods + 1)) if res.options.get("noconstant", False) else np.repeat(ys[:, None], periods + 1, 1)
+        if res.options.get("noconstant", False):
+            const = np.zeros((n, periods + 1))
+        else:                                        # run.m: repmat(log(ys), 1, periods + 1) under loglinear
+            with np.errstate(all="ignore"):
+                const = np.repeat((np.log(ys) if res.loglinear else ys)[:, None], periods + 1, 1)
         t = first_obs + gend - 1 + np.arange(periods + 1)
         tc = np.asarray(res.TrendCoeffs, float)[mf]
         for k, v in enumerate(res.varobs):
@@ -918,15 +927,28 @@ def conditional_forecast(model, paths=None, controlled_varexo=None, *, parameter
                  "prior_mean": "Prior Mean"}.get(parameter_set if isinstance(parameter_set, str) else "", "Estimated")
         trend_full = const
     else:
-        if _opt.stoch_options(model).get("loglinear", False):
-            raise NotImplementedError("conditional_forecast with loglinear is not supported (not validated)")
-        from .perturbation import first_order
+        from .perturbation import first_order, log_mask
         sol = first_order(model)
-        ys = np.asarray(sol.ys, float)
+        ys = np.asarray(sol.ys, float)                       # logs of the logged variables under loglinear
         G, Hr = np.asarray(sol.G, float), np.asarray(sol.H, float)
         Sigma = np.array(model.Sigma_e, float)
         ov = np.asarray(sol.order_var, int)
-        start = _initial_state_simul(model, sol.as_dr(), ys) if y0 is None else np.asarray(y0, float)
+        if y0 is None and not _opt.stoch_options(model).get("loglinear", False):
+            start = _initial_state_simul(model, sol.as_dr(), ys)
+        elif y0 is None and not any(st_.get("statementName") == "histval" for st_ in getattr(model, "statements", [])):
+            start = ys
+        elif _opt.stoch_options(model).get("loglinear", False):
+            if y0 is None:
+                y0 = _initial_state_simul(model, sol.as_dr(), ys, raw=True)
+            # run.m: y0 = zeros; y0(histval ~= 0) = log_variable(histval)(histval ~= 0): zeros stay zero
+            h = np.asarray(y0, float)
+            mask = log_mask(model)
+            start = np.zeros_like(h)
+            nz = h != 0
+            start[nz & mask] = np.log(h[nz & mask])
+            start[nz & ~mask] = h[nz & ~mask]
+        else:
+            start = np.asarray(y0, float)
         init = start - ys
         title = "Calibration"
         trend_full = np.repeat(ys[:, None], periods + 1, 1)
