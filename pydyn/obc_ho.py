@@ -36,6 +36,8 @@ from .occbin import Occbin
 
 __all__ = ["HigherOrderNews"]
 
+_SOBOL_CACHE: dict = {}                                          # (dim, level) -> read-only (dim, 2^(level+1)-1) normals
+
 
 class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
@@ -66,6 +68,7 @@ class HigherOrderNews:
         a = co.s_g * co.alt
         n, nx = self.n, ob.n_exo
         self.aC, self.aB, self.aA, self.aJ, self.a0 = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx], a[-1]
+        self._build_gap_maps()
         self.cubature = bool(cubature)
         self.pruning_cutoff, self.max_cubature_dimension = pruning_cutoff, int(max_cubature_dimension)
         self.pou, self.qmc_level, self.regions, self.taper, self.seed = (int(periods_of_uncertainty), int(qmc_level),
@@ -76,6 +79,80 @@ class HigherOrderNews:
             self.R = self.conditional_root()
             self.xi = self._points(self.R.shape[1])
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
+
+    # ------------------------------------------------------------------------------------ precomputed maps
+    def _build_gap_maps(self):
+        """The gap path q is affine in z = (y1 + y2, vec(x1 x1'), o_pre) (x1 = y1[ist]): the expected path is linear
+        in them (the covariance recursion W_k = F^k W_0 F'^k + S_k with F = ghxs is linear in W_0 and its shock part
+        S_k does not depend on the state; y1 and y2 enter the path through the same coefficients), and so is the gap.
+        Computed once per parameter set:
+
+            q = q0 + Gz @ z,  then  q[0] += aC.prev_total + aJ.u.
+
+        Only the three gap coefficient vectors (aB, aA, aC) are propagated (adjoint form), never the full
+        (N+1) n x n_s^2 path map: per k a handful of small matmuls."""
+        N, n, ist, ov = self.N, self.n, self.ist, self.ov
+        ns, two = len(ist), self.order == 2
+        F, ghx = self.ghxs, self.ghx
+        K = N + 1
+        Ay = np.vstack([self.aB[ov], self.aA[ov], self.aC[ov]])      # DR order, for the y-parts   (3, n)
+        Ao = np.vstack([self.aB, self.aA, self.aC])                   # declaration order, for the o-part
+        rY = np.zeros((K, 3, n)); rY[0] = Ay
+        rO = np.empty((K, 3, n)); rO[0] = Ao
+        Vy = Ay @ ghx                                                 # (3, ns): a ghx F^(k-1)
+        P = self.ob.P
+        if two:
+            nn = ns * ns
+            rW = np.zeros((K, 3, nn)); rc = np.zeros((K, 3))
+            Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = row i of ghxx @ vec(W_j)
+            Z = np.zeros((ns, nn))                                    # state rows of the W0-coefficient of m2_k
+            zc = np.zeros(ns)                                         # state rows of the constant of m2_k
+            S = np.zeros((ns, ns))
+            ghxst = (Ay @ ghx)                                        # a ghx, (3, ns)
+        for k in range(1, K):
+            rY[k][:, ist] = Vy
+            rO[k] = rO[k - 1] @ P
+            if two:
+                Cf = Cj.reshape(n, nn)
+                dc = 0.5 * (self.ghxx @ S.ravel()) + self.c2          # state-independent part of d_{k-1}
+                rW[k] = 0.5 * (Ay @ Cf) + ghxst @ Z                   # a . AW_k = 0.5 a.C_{k-1} + (a ghx) Z_{k-1}
+                rc[k] = Ay @ (ghx @ zc + dc)                          # a . a_k
+                Z = F @ Z + 0.5 * Cf[ist]
+                zc = F @ zc + dc[ist]
+                S = F @ S @ F.T + self.SigS
+                Cj = np.matmul(np.matmul(F.T, Cj), F)
+            Vy = Vy @ F
+        def comb(r):                                                  # q_h <- rB_h + rA_{h+1} + rC_{h-1}
+            G = r[:N, 0] + r[1:K, 1]
+            G[1:] += r[:N - 1, 2]
+            return G
+        cols = [comb(rY)]
+        q0 = np.full(N, float(self.a0))
+        if two:
+            cols.append(comb(rW))
+            q0 += comb(rc[:, :, None])[:, 0]
+        cols.append(comb(rO))
+        self._q0 = q0
+        self._Gz = np.ascontiguousarray(np.hstack(cols))
+        self._nz = self._Gz.shape[1]
+        self._z = np.empty(self._nz)
+
+    def gap_from_state(self, y1, y2, o_pre, prev_total, shock):
+        """q from the precomputed maps; equals ``gap_path(expected_path(...), ...)`` up to rounding."""
+        n, ist = self.n, self.ist
+        z = self._z
+        if self.order == 2:
+            np.add(y1, y2, out=z[:n])
+            x1 = y1[ist]
+            ns = x1.size
+            z[n:n + ns * ns] = np.multiply.outer(x1, x1).ravel()
+        else:
+            z[:n] = y1
+        z[-n:] = o_pre
+        q = self._Gz @ z
+        q += self._q0
+        q[0] += self.aC @ prev_total + self.aJ @ shock
+        return q
 
     # --------------------------------------------------------------------------------------- expected path
     def expected_path(self, y1, y2, o_pre):
@@ -139,12 +216,18 @@ class HigherOrderNews:
         normals. The set is symmetric, so its mean is exactly zero (with one region and every point relevant,
         cubature then equals no cubature, as in DynareOBC). Dynare's direction numbers differ from SciPy's
         beyond the second dimension, so individual points are not DynareOBC's."""
-        from scipy.stats import norm, qmc
-        m = self.qmc_level + 1
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            u = qmc.Sobol(d=dim, scramble=False).random_base2(m)[1:]
-        return norm.ppf(u).T                                     # (dim, 2^m - 1)
+        key = (int(dim), int(self.qmc_level))
+        xi = _SOBOL_CACHE.get(key)
+        if xi is None:
+            from scipy.stats import norm, qmc
+            m = self.qmc_level + 1
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                u = qmc.Sobol(d=dim, scramble=False).random_base2(m)[1:]
+            xi = np.ascontiguousarray(norm.ppf(u).T)             # (dim, 2^m - 1)
+            xi.flags.writeable = False
+            _SOBOL_CACHE[key] = xi
+        return xi
 
     def _solve(self, q):
         nb, T = self.news, self.T
@@ -158,23 +241,68 @@ class HigherOrderNews:
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
 
+    def _cub_prep(self):
+        """Quantities for the exact skipping rules, tied to the current (R, xi) objects."""
+        if getattr(self, "_cc", None) is not None and self._cc[0] is self.R and self._cc[1] is self.xi:
+            return self._cc
+        xn = np.sqrt((self.xi * self.xi).sum(axis=0))
+        order = np.argsort(xn, kind="stable")
+        rown = np.sqrt((self.R * self.R).sum(axis=1))
+        xa = np.vstack([self.xi, np.ones((1, self.xi.shape[1]))])       # augmented: q + R xi = [R q] @ [xi; 1]
+        self._cc = (self.R, self.xi, xn[order], order, rown, float(xn.max()) if xn.size else 0.0, xa)
+        return self._cc
+
+    def _relevant_points(self, q):
+        """Indices (increasing) of the points q + R xi_j that fail the relevance test of the original code,
+        ``not all(p >= -1e-8 max(1, max|p|))``. Exact skipping: by Cauchy-Schwarz p_h >= q_h - |R_h| |xi_j|, so
+        points with |xi_j| <= min_h q_h/|R_h| (1 - 1e-9) are non-relevant (the margin dwarfs rounding), and
+        min_h p_h >= -1e-8 implies non-relevant whatever max|p| is."""
+        _, _, xn_sorted, order, rown, rmax, xa = self._cub_prep()
+        Ra = np.empty((self.R.shape[0], self.R.shape[1] + 1))
+        Ra[:, :-1] = self.R
+        Ra[:, -1] = q
+        npts = self.xi.shape[1]
+        cnt = 0
+        if q.min() >= 0.0:
+            pos = rown > 0
+            rho = (q[pos] / rown[pos]).min() / (1.0 + 1e-9) if pos.any() else np.inf
+            if rho >= rmax:
+                return np.empty(0, dtype=np.intp)
+            cnt = int(np.searchsorted(xn_sorted, rho, side="right"))
+        if cnt == 0:
+            pts = Ra @ xa
+            mn = pts.min(axis=0)
+            cand = np.nonzero(mn < -1e-8)[0]
+            sub, mnc = pts[:, cand], mn[cand]
+            rel = mnc < -1e-8 * np.maximum(1.0, np.maximum(sub.max(axis=0), -mnc))      # max|p| = max(max p, -min p)
+            return cand[rel]
+        else:
+            cand = order[cnt:]
+            sub = Ra @ xa[:, cand]
+            keep = sub.min(axis=0) < -1e-8
+            cand, sub = cand[keep], sub[:, keep]
+        rel = sub.min(axis=0) < -1e-8 * np.maximum(1.0, np.abs(sub).max(axis=0))
+        idx = cand[rel]
+        return idx if cnt == 0 else np.sort(idx)
+
     def news_shocks(self, q):
         """Solution at q, or its average over the perturbed paths when cubature is on."""
         if not self.cubature or self.R.shape[1] == 0:
             return self._solve(q)
-        pts = q[:, None] + self.R @ self.xi                        # (N, n_points)
-        npts = pts.shape[1]
-        rel = ~np.all(pts >= -1e-8 * np.maximum(1.0, np.abs(pts).max(axis=0)), axis=0)
+        npts = self.xi.shape[1]
+        idx = self._relevant_points(q)
         self.stats["cubature_points"] += npts
-        self.stats["relevant_points"] += int(rel.sum())
-        if not rel.any():
+        self.stats["relevant_points"] += idx.size
+        if idx.size == 0:
             return np.zeros(self.T)
         if self.regions == 1:                                      # DynareOBC's default: one region, its mean point
-            return rel.mean() * self._solve(pts[:, rel].mean(axis=1))
+            # mean of q + R xi_j over the relevant j  =  q + R mean(xi_j): an (r)-vector instead of an N x k array
+            return (idx.size / npts) * self._solve(q + self.R @ self.xi[:, idx].mean(axis=1))
+        pr = q[:, None] + self.R @ self.xi[:, idx]                 # perturbed paths of the relevant points only
         if self.regions == "all":                                  # plain quasi-Monte Carlo average
             acc = np.zeros(self.T)
-            for j in np.nonzero(rel)[0]:
-                acc += self._solve(pts[:, j])
+            for j in range(idx.size):
+                acc += self._solve(pr[:, j])
             return acc / npts
         raise NotImplementedError("regions must be 1 or 'all' in this prototype")
 
@@ -199,12 +327,12 @@ class HigherOrderNews:
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
             if self.order == 2:
-                y2 = self.ghx @ x2 + 0.5 * (self.ghxx @ np.kron(x1, x1) + self.ghuu @ np.kron(u, u)
-                                            + 2 * self.ghxu @ np.kron(x1, u) + self.ghs2)
+                y2 = self.ghx @ x2 + 0.5 * (self.ghxx @ np.multiply.outer(x1, x1).ravel()
+                                            + self.ghuu @ np.multiply.outer(u, u).ravel()
+                                            + 2 * self.ghxu @ np.multiply.outer(x1, u).ravel() + self.ghs2)
             y1 = self.ghx @ x1 + self.ghu @ u
             o_pre = ob.P @ o
-            path = self.expected_path(y1, y2, o_pre)
-            q = self.gap_path(path, prev_total, u)
+            q = self.gap_from_state(y1, y2, o_pre, prev_total, u)
             try:
                 y = self.news_shocks(q)
             except OBCError as err:
