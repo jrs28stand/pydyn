@@ -743,6 +743,7 @@ class _Core(CommandsMixin):
         if any(st["statementName"] in ("native", "verbatim") for st in sts):
             lines = [(_ml.native_dates(st["string"]) if st["statementName"] == "native" else st["string"])
                      .replace("occbin.unpack_simulations", "occbin_unpack_simulations")
+                     .replace("occbin.forecast(", "occbin_forecast(")
                      if st["statementName"] in ("native", "verbatim") else ("dyn", k)
                      for k, st in enumerate(sts)]
             try:
@@ -956,6 +957,7 @@ class _FunctionsMixin:
             "occbin_solver": self.fn_command("occbin_solver"),
             "isfield": self.fn_isfield,
             "occbin_unpack_simulations": self.fn_unpack_simulations,
+            "occbin_forecast": self.fn_occbin_forecast,
             "resol": self.fn_resol,
             # dynare() reproduces Dynare run under Octave (Octave's random streams, the reference outputs of the tests):
             # the Octave branch of `if isoctave` is the one whose tolerances Dynare's own tests were tuned to there

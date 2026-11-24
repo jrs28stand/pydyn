@@ -954,6 +954,9 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         m = self.model
         m._exec_statement(st)                       # records the statement's options (read by Occbin.mod_options)
         self.pull()
+        if self.opt_flag("loglinear"):
+            from .occbin_estimation import _LOGLINEAR_REFUSAL
+            raise R.ResultsError(f"occbin_solver: {_LOGLINEAR_REFUSAL}")
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -964,6 +967,9 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         except (ValueError, NotImplementedError) as exc:
             raise R.ResultsError(f"occbin_solver: {exc}") from None
         pos = np.asarray(res.exo_pos, int)
+        if res.shocks.ndim == 2 and res.shocks.shape[1] == len(m.exo_names):
+            nz = np.flatnonzero(np.any(res.shocks != 0, axis=0))      # occbin.setup: exo_pos = find(~all(temp == 0, 1))
+            pos = nz if nz.size else pos
         sim = R.rstruct("oo_.occbin.simul")
         sim["shocks_sequence"] = R.mat(np.asarray(res.shocks, float)[:, pos] if res.shocks.ndim == 2 and pos.size
                                        else np.asarray(res.shocks, float))
@@ -991,6 +997,61 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             ss = ss.strip().lower() not in ("false", "0")
         self.fig_occbin([str(x) for x in (st.get("symbol_list") or [])], bool(ss))
 
+    def fn_occbin_forecast(self, args, nargout):
+        """``[forecast, error_flag, yf] = occbin.forecast(options_, M_, dr, ys, exo_ys, exo_det_ys, horizon)`` for the
+        model of the .mod file at its current parameters (``forecast.regimes`` is not provided)."""
+        from .occbin import Occbin, OccbinError
+        from .occbin_forecast import occbin_forecast, STATISTICS
+        R = _R()
+        m = self.model
+        if len(args) != 7:
+            raise R.ResultsError("occbin.forecast needs seven arguments")
+        horizon = int(np.asarray(farr(args[6])).ravel()[0])
+        self.pull()
+        opts = args[0]
+        g = lambda k, d=None: (lambda v: d if v is None or (isinstance(v, np.ndarray) and v.size == 0) else R.py_value(v))(
+            R.struct_get(opts, "occbin.forecast." + k))
+        sh = R.struct_get(opts, "occbin.forecast.SHOCKS0")
+        shocks = None
+        if isinstance(sh, np.ndarray) and sh.size:
+            shocks = np.asarray(sh, float)
+        elif sh is not None and not isinstance(sh, np.ndarray) and hasattr(sh, "items") is False and len(sh):
+            shocks = [(str(c[0]), np.asarray(farr(c[1]), float).ravel()) for c in sh]
+        eh = np.asarray(farr(args[1]["endo_histval"]), float)
+        if eh.size == 0:
+            raise R.ResultsError("occbin.forecast: M_.endo_histval is empty (set the initial state first)")
+        occ = self.oo_.get("occbin")
+        if g("replic", 0) == 0 and isinstance(occ, Struct) and "simul" in occ and "exo_pos" in occ["simul"]:
+            npos = np.asarray(farr(occ["simul"]["exo_pos"])).size
+            if npos != len(m.exo_names):
+                raise R.ResultsError(
+                    f"occbin.forecast: with replic = 0 Dynare's solver uses options_.occbin.simul.exo_pos left by occbin_solver "
+                    f"({npos} of {len(m.exo_names)} shocks) and stops with a size mismatch (a defect of +occbin/forecast.m)")
+        fr = g("frcst_regimes")
+        if fr not in (None, [], 0):
+            raise R.ResultsError("occbin.forecast: options_.occbin.forecast.frcst_regimes is not supported by pydyn.dynare()")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ob = Occbin(m)
+            fc = occbin_forecast(ob, horizon, eh.reshape(eh.shape[0], -1, order="F")[:, 0], shocks=shocks,
+                                 replic=int(g("replic", 0)), qmc=bool(g("qmc", 0)), maxit=int(g("maxit", 30)),
+                                 check_ahead_periods=int(g("check_ahead_periods", 30)),
+                                 conf_sig=float(R.py_value(R.struct_get(opts, "forecasts.conf_sig")) or 0.9),
+                                 sigma_e=np.asarray(farr(args[1]["Sigma_e"]), float), rng=self.rng,
+                                 simul_options=ob.mod_options())
+        out = R.rstruct("forecast")
+        for fld in ("linear", "piecewise"):
+            d = R.rstruct(f"forecast.{fld}")
+            for stat, per in getattr(fc, fld).items():
+                sv = R.rstruct(f"forecast.{fld}.{stat}")
+                for nm, v in per.items():
+                    sv[nm] = R.mat(v) if np.ndim(v) == 2 else R.col(v)
+                d[stat] = sv
+            out[fld] = d
+        res = [out, _F(float(fc.error_flag if fc.replic == 0 else 0)) if fc.replic == 0 else _F(0.0)]
+        res.append(R.mat(fc.yf) if fc.yf is not None else np.zeros((0, 0)))
+        return res[:max(nargout, 1)]
+
     def fn_unpack_simulations(self, args, nargout):
         R = _R()
         m = self.model
@@ -998,7 +1059,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         if not isinstance(occ, Struct) or "simul" not in occ:
             raise R.ResultsError("occbin.unpack_simulations: oo_.occbin.simul is empty: run occbin_solver first")
         sim = occ["simul"]
-        lin, pw, ys = (np.asarray(R.farr(sim[k]), float) for k in ("linear", "piecewise", "ys"))
+        lin, pw, ys = (np.asarray(farr(sim[k]), float) for k in ("linear", "piecewise", "ys"))
         ys = ys.ravel(order="F")
         out = {"endo_linear": R.rstruct("oo_.occbin.endo_linear"), "endo_piecewise": R.rstruct("oo_.occbin.endo_piecewise"),
                "endo_ss": R.rstruct("oo_.occbin.endo_ss")}
@@ -1008,7 +1069,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             out["endo_ss"][v] = _F(float(ys[i]))
         ex = R.rstruct("oo_.occbin.exo")
         sh = self._occbin_shocks
-        pos = np.asarray(R.farr(sim["exo_pos"]), float).ravel(order="F").astype(int) - 1
+        pos = np.asarray(farr(sim["exo_pos"]), float).ravel(order="F").astype(int) - 1
         for k, j in enumerate(pos):
             ex[m.exo_names[k]] = R.col(sh[:, j])           # unpack_simulations indexes the names by position (as Dynare)
         out["exo"] = ex

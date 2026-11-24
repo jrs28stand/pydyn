@@ -1,0 +1,6 @@
+{"steady_state_model": [{"lhs": "b", "rhs":"M"}
+,{"lhs": "c", "rhs":"1+M-M*R"}
+,{"lhs": "ec", "rhs":"c"}
+,{"lhs": "lb", "rhs":"(1-R*BETA)/c^GAMMAC"}
+,{"lhs": "y", "rhs":"1"}
+]}
