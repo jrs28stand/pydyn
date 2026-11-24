@@ -1,0 +1,107 @@
+"""Order-2 and cubature prototype of the news-shock OBC method (pydyn.obc_ho): internal-consistency checks.
+
+No DynareOBC reference exists for these (it needs MATLAB and Dynare 4.5). The checks are: order 1 reproduces
+NewsOBC; the base simulation is pydyn's pruned simulation (validated against Dynare 7.2); the expected path
+equals the Monte Carlo mean of pruned simulations; the cubature covariance equals the sample covariance; cubature
+with vanishing shock variance equals no cubature. Model: Dynare's NKM OccBin estimation example.
+"""
+import os
+import shutil
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import pydyn
+from pydyn.obc import NewsOBC
+from pydyn.obc_ho import HigherOrderNews
+from pydyn.simulate import simulate
+
+REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))
+
+
+@pytest.fixture(scope="module")
+def nkm(tmp_path_factory):
+    d = tmp_path_factory.mktemp("obc_ho")
+    shutil.copy(REF / "occest_nkm.mod", d)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(d / "occest_nkm.mod"))
+    return m, np.random.default_rng(4).normal(size=(300, m.n_exo))
+
+
+def test_order_one_equals_news(nkm):
+    m, S = nkm
+    h = HigherOrderNews(m, order=1)
+    a = h.simulate(S)
+    b = NewsOBC(h.ob, horizon=40, check_ahead=40).simulate(S, periods=300)
+    np.testing.assert_allclose(a["with_bound"], b.piecewise, atol=1e-11)
+    assert (a["wedges"].max(axis=1) > 1e-10).sum() >= 10
+
+
+def test_order_two_base_is_pruned_simulation(nkm):
+    m, S = nkm
+    h = HigherOrderNews(m, order=2)
+    r = h.simulate(S)
+    np.testing.assert_allclose(r["without_bound"], simulate(h.dr, S, order=2, pruning=True), atol=1e-11)
+    assert (r["wedges"].max(axis=1) > 1e-10).sum() >= 10
+    small = h.simulate(S * 0.05)                                  # the bound is never reached
+    assert not small["wedges"].any()
+    np.testing.assert_array_equal(small["with_bound"], small["without_bound"])
+
+
+def test_expected_path_equals_monte_carlo_mean(nkm):
+    m, S = nkm
+    h = HigherOrderNews(m, order=2)
+    n = m.n_endo
+    y1, y2 = np.zeros(n), np.zeros(n)
+
+    def step(y1, y2, u):
+        x1, x2 = y1[h.ist], y2[h.ist]
+        y2 = h.ghx @ x2 + 0.5 * (h.ghxx @ np.kron(x1, x1) + h.ghuu @ np.kron(u, u) + 2 * h.ghxu @ np.kron(x1, u) + h.ghs2)
+        return h.ghx @ x1 + h.ghu @ u, y2
+
+    for t in range(151):
+        y1, y2 = step(y1, y2, S[t])
+    path = h.expected_path(y1, y2, np.zeros(n))
+    K, R = 8, 4000
+    rg = np.random.default_rng(9)
+    acc, acc2 = np.zeros((K, n)), np.zeros((K, n))
+    for _ in range(R):
+        z1, z2 = y1, y2
+        for k in range(K):
+            z1, z2 = step(z1, z2, rg.normal(size=m.n_exo))
+            tot = np.empty(n)
+            tot[h.ov] = z1 + z2
+            acc[k] += tot
+            acc2[k] += tot * tot
+    mean = acc / R
+    se = np.sqrt(np.maximum(acc2 / R - mean ** 2, 0) / R)
+    z = np.abs(mean - path[1:K + 1]) / np.maximum(se, 1e-12)
+    assert z.max() < 4.5                                           # 8 x 24 comparisons
+
+
+def test_cubature_limits_and_covariance(nkm):
+    m, S = nkm
+    tiny = m.Sigma_e * 1e-12
+    c = HigherOrderNews(m, order=2, cubature=True, Sigma_e=tiny, qmc_level=5).simulate(S[:100])
+    b = HigherOrderNews(m, order=2, Sigma_e=tiny).simulate(S[:100])
+    np.testing.assert_allclose(c["with_bound"], b["with_bound"], atol=1e-9)
+    h = HigherOrderNews(m, order=1, cubature=True, taper=False, periods_of_uncertainty=16, qmc_level=5)
+    Gq, N = h.news.Qm[:, m.n_endo:], h.news.N
+    cov = np.zeros((N, N))                                         # exact covariance of the gap path
+    for i in range(1, 17):
+        B = np.zeros((N, m.n_exo))
+        B[i:] = Gq[:N - i]
+        cov += B @ m.Sigma_e @ B.T
+    np.testing.assert_allclose(h.R @ h.R.T, cov, atol=1e-12 * max(1.0, np.abs(cov).max()))
+    w = HigherOrderNews(m, order=1, cubature=True, periods_of_uncertainty=16, qmc_level=5)
+    assert np.trace(w.R @ w.R.T) < np.trace(cov)                   # the cosine taper shrinks it
+
+
+def test_cubature_makes_agents_react_before_the_bound(nkm):
+    m, S = nkm
+    a = HigherOrderNews(m, order=2).simulate(S)
+    c = HigherOrderNews(m, order=2, cubature=True, qmc_level=7).simulate(S)
+    assert (c["wedges"].max(axis=1) > 1e-10).sum() > 3 * (a["wedges"].max(axis=1) > 1e-10).sum()
