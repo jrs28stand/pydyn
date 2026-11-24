@@ -77,9 +77,11 @@ def mat(a):
     return ret(a.copy())
 
 
-def col(a):
-    """An n x 1 column (a scalar for n = 1; ``zeros(0, 0)`` for an empty list)."""
-    a = np.asarray(a, float).ravel(order="F")
+def col(a, complex_ok=False):
+    """An n x 1 column (a scalar for n = 1; ``zeros(0, 0)`` for an empty list).  ``complex_ok``: keep a complex array
+    (oo_.dr.eigval) complex when it has a non-zero imaginary part."""
+    a = np.asarray(a)
+    a = a.astype(complex if complex_ok and np.iscomplexobj(a) and np.any(a.imag != 0) else float).ravel(order="F")
     return ret(a.reshape(-1, 1).copy()) if a.size else np.zeros((0, 0))
 
 

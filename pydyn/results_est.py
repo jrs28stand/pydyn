@@ -764,7 +764,8 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             raise R.ResultsError("forecast at order > 1 draws random numbers, which pydyn.dynare() does not "
                                  "reproduce from Dynare's stream")
         sopts = st.get("options") or {}
-        periods = int(sopts.get("periods", 0) or 0) or 5          # the statement's own periods (options_.forecast is reset)
+        # forecasts.run ('simul'): horizon = options_.periods (the statement's own, else that of an earlier stoch_simul), 5 if 0
+        periods = int(self.opt("periods", 0) or 0) or 5
         var_list = list(st.get("symbol_list") or [])
         if not var_list and isinstance(self.oo_.get("var_list"), Cell):
             var_list = [str(x) for x in self.oo_["var_list"].items]
@@ -1151,7 +1152,12 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                pv = evaluate_planner_objective(self.model, order=int(self.opt("order", 2)))
+                u0 = None
+                es = self.oo_.get("exo_simul")
+                if not self.model.det_shocks and isinstance(es, np.ndarray) and es.size:
+                    # get_initial_state: u = oo_.exo_simul(1,:)' (the first simulated shock of stoch_simul with periods > 0)
+                    u0 = np.asarray(farr(es), float)[0]
+                pv = evaluate_planner_objective(self.model, order=int(self.opt("order", 2)), u=u0)
         except (OptimalPolicyError, NotImplementedError, ValueError) as exc:
             raise R.ResultsError(f"evaluate_planner_objective: {exc}") from None
         out = R.rstruct("oo_.planner_objective_value")

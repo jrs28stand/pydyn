@@ -121,7 +121,7 @@ class CommandsMixin:
             return self._eigval(eig), False
         eig = self._eigval(sol.eigenvalues)
         self.set_oo("dr", R.struct_set(self.oo_.get("dr") if isinstance(self.oo_.get("dr"), Struct) else Struct(),
-                                       "eigval", R.col(eig)))
+                                       "eigval", R.col(eig, True)))
         return eig, True
 
     def _qz(self):
@@ -133,8 +133,8 @@ class CommandsMixin:
         e = np.asarray(eig)
         big = np.abs(e) > 1e15
         if np.any(big):
-            e = e.astype(float).copy()
-            e[big] = np.where(e[big] > 0, np.inf, -np.inf)
+            e = e.copy() if np.iscomplexobj(e) else e.astype(float)
+            e[big] = np.where(e[big].real > 0, np.inf, -np.inf)
         return e
 
     # ------------------------------------------------------------------ stoch_simul
@@ -183,6 +183,7 @@ class CommandsMixin:
         R = _R()
         self._undo_logged_steady()
         from .korder import KOrderError, k_order
+        from .steady import SteadyStateError
         from .moments import theoretical_moments, stoch_simul_moments, solve as _solve
         from .perturbation import first_order
         from .simulate import irf as _irf, simulate
@@ -237,7 +238,9 @@ class CommandsMixin:
                 if order >= 2 and not disc:
                     dr = k_order(m, order=order, pruning=pruning)
                     dr["order"] = order
-            except BlanchardKahnError as exc:
+            except (BlanchardKahnError, SteadyStateError) as exc:
+                if self.opt_flag("noprint"):      # stoch_simul.m: print_info(info, options_.noprint) is silent and stoch_simul returns
+                    return
                 raise R.ResultsError(f"stoch_simul: {exc}") from None
             except KOrderError as exc:
                 raise R.ResultsError(f"stoch_simul: {exc}") from None
@@ -267,8 +270,12 @@ class CommandsMixin:
                     from .forecast import _histval_state
                     y0 = _histval_state(m, y0)
             y = simulate(dr, shocks_used, order=order, pruning=pruning, y0=y0)
-            self.set_oo("endo_simul", R.mat(y.T))
             self.set_oo("exo_simul", R.mat(shocks_used))
+            if int(info["maximum_lag"]) == 0:      # simult_ gives iter + maximum_lag columns, simult drops the first: one fewer here
+                y = y[1:]                          # no states: simult_ gives ghu*ex_' for all iter periods, the first is dropped
+                shocks_used = shocks_used[1:]      # the moments' one-shock simulations then have the same length (exo_simul keeps all)
+            self._sim_y0 = y0               # disp_moments.m starts its one-shock simulations (variance decomposition) from the same y0
+            self.set_oo("endo_simul", R.mat(y.T))
         # --- moments
         if not self.opt_flag("nomoments"):
             self._moments(dr, names, ivar, order, pruning, shocks_used)
@@ -320,13 +327,18 @@ class CommandsMixin:
         D["ghu"] = R.mat(np.asarray(dr["ghu"], float))
         if order < 3:                       # Dynare's third-order dr (k_order_perturbation) has none of these
             D["state_var"] = R.row(np.asarray(sol.state_var, int) + 1)
-            D["eigval"] = R.col(eig)
+            D["eigval"] = R.col(eig, True)
             sdim = int(np.sum(np.abs(eig) < qz))
             D["sdim"] = _F(sdim)
             D["edim"] = _F(len(eig) - sdim)
             gx, Gy = ghx[nst + cnt["npred"]:, :], ghx[nst:nst + nsp, :]
             if loglin:
-                yo = ys_dr[order_var]
+                yo = ys_dr[order_var].copy()
+                # get_all_variables_but_lagged_leaded_exogenous: the auxiliary variables of lags/leads of exogenous variables
+                # (types 2 and 3) stay in levels, i.e. are not scaled by their (zero) steady state
+                exo_aux = [a["endo_index"] - 1 for a in m.raw.get("aux_vars", []) if a.get("type") in (2, 3)]
+                if exo_aux:
+                    yo[np.isin(order_var, exo_aux)] = 1.0
                 gx = gx * yo[nst + cnt["npred"]:, None] / yo[None, nst:nst + nsp]
                 Gy = Gy * yo[nst:nst + nsp, None] / yo[None, nst:nst + nsp]
             D["gx"] = R.mat(gx)
@@ -372,7 +384,7 @@ class CommandsMixin:
                 mom = theoretical_moments(m, dr, names, **kw)
             else:
                 y = np.asarray(farr(self.oo_["endo_simul"]), float).T
-                mom = simulated_moments(y, ivar=ivar, shocks=shocks_used, dr=dr, model=m, y0=None, **kw)
+                mom = simulated_moments(y, ivar=ivar, shocks=shocks_used, dr=dr, model=m, y0=getattr(self, "_sim_y0", None), **kw)
         oo = self.oo_
         theoretical = periods == 0
         self.set_oo("mean", R.col(mom.mean))

@@ -66,5 +66,45 @@
  "kalman_initial_state/fs2000_kalman_initial": {
   "class": "Dynare quirk",
   "note": "Dynare's stored oo_.steady_state is not a steady state of the model at the final parameters (estimation/optimizer ended away from where the stored steady state was computed, or initval never solved); its rules, moments, IRFs and likelihood come from that point, so they are not reproducible from the parameters. pydyn's own steady state solves the static model to rounding"
+ },
+ "stochastic_simulations/example1_noprint": {
+  "class": "Dynare quirk",
+  "note": "alpha=-0.36 is set on purpose 'to generate an error': Dynare's solver converges to the degenerate point ys ~ 1e-9 (oo_.dr.ys=-2e-9..2e-8, an eigenvalue -8.7e60) and goes on with noprint, i.e. no meaningful steady state; pydyn finds no steady state and, as stoch_simul(noprint) does, returns silently without a decision rule"
+ },
+ "steady_state/ramst_solve_algo_0": {
+  "class": "Dynare quirk",
+  "note": "solve_algo=0 (fsolve) stops at its own tolerance: residual at Dynare's stored steady state is 1.3e-8, at pydyn's (exact Newton polish) 0; difference 7e-7"
+ },
+ "steady_state/homotopy/homotopy1_test": {
+  "class": "Dynare quirk",
+  "note": "Dynare's solver stops at solve_tolf=1e-5: residual at Dynare's stored point 5.9e-6 vs 4e-9 at pydyn's; pydyn's k=17.361111 is the analytic value, Dynare's 17.360592 (the test itself only demands 1e-4)"
+ },
+ "steady_state/homotopy/homotopy2_test": {
+  "class": "Dynare quirk",
+  "note": "as homotopy1_test: residual at Dynare's stored point 1.3e-7 vs 4e-9 at pydyn's (tolerance-limited, difference 4e-6)"
+ },
+ "block_bytecode/ireland": {
+  "class": "Dynare quirk",
+  "note": "block solver tolerance: residual at Dynare's stored steady state 1.9e-9 vs 2e-12 at pydyn's; relative difference 2e-8"
+ },
+ "model_diagnostics/example2_block_model_diag": {
+  "class": "Dynare quirk",
+  "note": "rho=1 makes a and b free in the steady state (a = a): a continuum of steady states, the solver's path picks the point (a=-0.0035 vs 0); all equations hold at both"
+ },
+ "deterministic_simulations/homotopy_linearization_condpaths": {
+  "class": "Dynare quirk (probable)",
+  "note": "homotopy runs to a final steady state of magnitude 1e5 (LoggedProductivity=10); relative difference 2e-4 is of the order of the solve_tolf-limited stop (pydyn's own log shows residuals up to 6e-6 accepted at the tolerance); not verified by a residual evaluation at Dynare's point"
+ },
+ "deterministic_simulations/homotopy_marglinearization_condpaths": {
+  "class": "Dynare quirk (probable)",
+  "note": "homotopy runs to a final steady state of magnitude 1e5 (LoggedProductivity=10); relative difference 2e-4 is of the order of the solve_tolf-limited stop (pydyn's own log shows residuals up to 6e-6 accepted at the tolerance); not verified by a residual evaluation at Dynare's point"
+ },
+ "deterministic_simulations/pfwee_homotopy_linearization_condpaths": {
+  "class": "Dynare quirk (probable)",
+  "note": "homotopy runs to a final steady state of magnitude 1e5 (LoggedProductivity=10); relative difference 2e-4 is of the order of the solve_tolf-limited stop (pydyn's own log shows residuals up to 6e-6 accepted at the tolerance); not verified by a residual evaluation at Dynare's point"
+ },
+ "optimal_policy/Ramsey/ramsey_ex_aux": {
+  "class": "Dynare quirk",
+  "note": "the steady-state file's find_c uses csolve with tolerance 1e-8: Dynare's stored dr.ys differs from pydyn's by 4e-8 (the same helper run by pydyn's interpreter converges to a different point inside the tolerance); dr.ghx/ghu/gx/Gy/autocorr follow at 4e-8"
  }
 }

@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from scipy import optimize
+from scipy import optimize, sparse
 
 from . import matlab
 from .expr import FAST_ERRORS, FAST_NAMESPACE, NAMESPACE, Translator, safe_name
@@ -301,7 +301,15 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
     with np.errstate(all="ignore"):
         ys, params = _steady_state(model, params, guess, x, tol=tol, maxit=maxit, solve_algo=solve_algo, tolx=tolx)
     if check:
-        res = np.max(np.abs(model.static_resid(ys, x, params)))
+        r_ = np.abs(model.static_resid(ys, x, params))
+        if solve_algo is not None and int(solve_algo) == 10:
+            from .perfect_foresight import complementarity_conditions, has_complementarity
+            if has_complementarity(model):       # dynare_solve.m: the residual of an equation whose variable sits on a bound is ignored
+                lb_, ub_, order_ = complementarity_conditions(model, params)
+                eps_ = np.finfo(float).eps
+                onb = (np.isfinite(lb_) | np.isfinite(ub_)) & ((ys <= lb_ + eps_) | (ys >= ub_ - eps_))
+                r_[order_[onb]] = 0.0
+        res = np.max(r_)
         if not res < tol:
             raise SteadyStateError(f"steady state not found: max |residual| = {res:.3e}")
         if res > 1e-8:
@@ -411,6 +419,23 @@ def _numerical(model, y0, x, params, tol, maxit, solve_algo=None, tolx=None):
         if err:
             raise SteadyStateError(f"steady state not found (solve_algo={int(solve_algo)}, as Dynare's dynare_solve)")
         return ys
+    if solve_algo is not None and int(solve_algo) in (10, 11):
+        from .perfect_foresight import complementarity_conditions, has_complementarity, lmmcp
+        if has_complementarity(model):
+            if int(solve_algo) == 11:
+                raise SteadyStateError("steady state: solve_algo=11 (PATH) is not available in Dynare without the "
+                                       "separately installed PATH solver, nor in pydyn")
+            # evaluate_steady_state.m with solve_algo=10: lmmcp on static_mcp_problem (equations reordered so that equation
+            # order[i] is paired with variable i; Dynare ignores the residuals of equations whose variable sits on a bound)
+            lb, ub, order = complementarity_conditions(model, params)
+
+            def fun(y, jac):
+                F = np.asarray(model.static_resid(y, x, params), float)[order]
+                return F, (sparse.csc_matrix(model.static_jac(y, x, params)[order]) if jac else None)
+            ys, F, flag, _ = lmmcp(fun, y0, lb, ub, tolfun=None)
+            if flag != 1 or not np.all(np.isfinite(ys)):
+                raise SteadyStateError("steady state not found (solve_algo=10, lmmcp did not converge)")
+            return ys
     if np.all(np.isfinite(y0)):
         r0 = model.static_resid(y0, x, params)
         if np.all(np.isfinite(r0)) and np.max(np.abs(r0), initial=0.0) < EXACT:

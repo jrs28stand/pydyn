@@ -688,7 +688,17 @@ class BackwardMixin:
             raise Unsupported(f"simul_static_model: {exc}", "function") from None
         for t in failed:
             self.warnings.append(f"simul_static_mode: Nonlinear solver failed in period {t}.")
-        oo["endo_simul"] = R.mat(endo)
+        # backward_model.simul_static_model assigns oo_.endo_simul(:,t) period by period: columns of an earlier, longer
+        # oo_.endo_simul beyond samplesize are kept (and a shorter one is padded with zeros)
+        prior = oo.get("endo_simul")
+        prior = np.asarray(farr(prior), float) if isinstance(prior, np.ndarray) and prior.ndim == 2 and prior.shape[0] == endo.shape[0] else None
+        if prior is not None and prior.size:
+            full = np.zeros((endo.shape[0], max(prior.shape[1], endo.shape[1])))
+            full[:, :prior.shape[1]] = prior
+            full[:, :endo.shape[1]] = endo
+            oo["endo_simul"] = R.mat(full)
+        else:
+            oo["endo_simul"] = R.mat(endo)
         oo["exo_simul"] = R.mat(exo)
         sim = _ds.DSeries(np.hstack([endo[:n_orig].T, exo]), list(m.endo_names[:n_orig]) + list(m.exo_names), init)
         self.set_global("oo_", oo)

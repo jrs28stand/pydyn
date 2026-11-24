@@ -218,6 +218,8 @@ def arrn(v):
     """float (or bool) array view of a numeric value, 2-D or N-d (ndim >= 2, no trailing singleton
     beyond the second dimension: MATLAB's dimensions)."""
     if isinstance(v, np.ndarray):
+        if v.dtype.kind == "c":                  # e.g. oo_.dr.eigval with complex pairs: never silently take the real part
+            raise Unsupported("the result is a complex number in MATLAB; complex numbers are not supported", "complex")
         return v
     if isinstance(v, _SCAL):
         return np.array([[v]])
@@ -7271,7 +7273,9 @@ class _Translator:
         out = []
         for s in stmts:
             out += self.stmt(s, env, ind)
-        return out or [ind + "pass"]
+        if not any(not l.lstrip().startswith("#") for l in out):      # only comments (silenced disp/fprintf): Python needs a statement
+            out.append(ind + "pass")
+        return out
 
     def stmt(self, s, env, ind):
         t = type(s)

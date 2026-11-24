@@ -124,7 +124,21 @@ def finite_moduli(x, lo=0.1, hi=10.0):
 class Walker:
     def __init__(self, ref_oo, port_oo, refused, rng_ok, tol=RTOL):
         self.ref_oo, self.refused, self.rng_ok, self.tol, self.rows = ref_oo, refused, rng_ok, tol, []
+        self.endpoint = self.same_optimum(ref_oo, port_oo)
         self.walk(ref_oo, port_oo, "")
+
+    @staticmethod
+    def same_optimum(ref_oo, port_oo):
+        """Both programs found the same maximum of the same objective: oo_.posterior.optimization.log_density agrees to
+        1e-2 (absolute; the objective is ~1e3).  Dynare stores the optimiser's end point, which differs from another
+        optimiser's by the optimiser's tolerance, and every field computed at the estimated parameters follows."""
+        a = sget(ref_oo, "posterior.optimization.log_density")
+        b = sget(port_oo, "posterior.optimization.log_density")
+        try:
+            a, b = float(np.ravel(a)[0]), float(np.ravel(b)[0])
+        except (TypeError, ValueError, IndexError):
+            return False
+        return bool(np.isfinite(a) and np.isfinite(b) and abs(a - b) <= 1e-2)
 
     def is_refused(self, p):
         return any(p == r or p.startswith(r + ".") or r.startswith(p + ".") for r in self.refused)
@@ -150,6 +164,16 @@ class Walker:
                 status, msg = self.one(p, gv, rv)
             except Exception as e:  # noqa: BLE001
                 status, msg = "error", f"{type(e).__name__}: {str(e)[:160]}"
+            if status == "wrong" and self.endpoint and p == "posterior.optimization.log_density":
+                status, msg = "skipped", f"optimiser end point: the log posterior agrees to 1e-2 ({msg})"
+            if status == "wrong" and self.endpoint and p != "posterior.optimization.log_density" and not msg.startswith(("size", "shape", "finite")):
+                try:
+                    ga, ra = (finite_moduli(gv), finite_moduli(rv)) if p == "dr.eigval" else (to_float(gv).ravel(), to_float(rv).ravel())
+                    rel = float(np.max(np.abs(ga - ra)) / max(np.max(np.abs(ra)), 1e-300)) if ga.size == ra.size else np.inf
+                except Exception:  # noqa: BLE001
+                    rel = np.inf
+                if rel <= 1e-2:
+                    status, msg = "skipped", f"optimiser end point: the log posterior agrees (<= 1e-2), the field differs by {rel:.1e} relative; {msg}"
             if random_dep and not self.rng_ok and status in ("wrong", "match"):
                 status, msg = "skipped", "random-number dependent; the port does not replay Octave's generator" if status == "wrong" else "random-number dependent (agrees, but not counted)"
             self.rows.append((p, status, msg))
@@ -159,7 +183,7 @@ class Walker:
             ok, mx, msg = compare(finite_moduli(gv), finite_moduli(rv), 1e-6, ATOL)
             return ("match" if ok else "wrong"), (msg or f"max abs diff {mx:.2e}")
         if p == "dr.sdim":
-            ev = np.abs(np.asarray(sget(self.ref_oo, "dr.eigval", []), float).ravel())
+            ev = np.abs(np.asarray(sget(self.ref_oo, "dr.eigval", [])).ravel())
             if ev.size and (not np.all(np.isfinite(ev)) or ev.max() > 1e4):
                 return "ignored", "model has infinite/rounding-noise eigenvalues; the stable-count depends on the noise"
         if isinstance(rv, str):

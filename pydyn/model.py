@@ -125,6 +125,8 @@ class Model:
         self.n_exo_det = len(self.exo_det_names)
         self._ixd = {v: i for i, v in enumerate(self.exo_det_names)}
 
+        if self.n_endo == 0 and mf.get("heterogeneous_symbols"):
+            raise ModelError("heterogeneous-agent models (heterogeneity_dimension, heterogeneity= blocks) are not supported")
         info = mf["model_info"]
         lli = np.array(info["lead_lag_incidence"], dtype=int).reshape(self.n_endo, -1)
         # the preprocessor omits the lag (lead) column for models without lags (leads)
@@ -665,6 +667,8 @@ class Model:
         """One shocks block, applied in Dynare's order: reset, variances, covariances, correlations."""
         ix, S = self._ix, self.Sigma_e
         if st.get("overwrite"):
+            self.det_shocks = []                    # shocks(overwrite): M_.det_shocks = [] and the covariance matrices reset
+            self.det_shocks_exo_det = []
             S[:] = 0
             self.Correlation_matrix = np.eye(self.n_exo)
             self.measurement_errors.clear()
