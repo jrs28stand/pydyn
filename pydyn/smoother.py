@@ -1012,13 +1012,6 @@ _FROM_ESTIMATION = ("datafile", "first_obs", "nobs", "prefilter", "loglinear", "
 
 
 # --------------------------------------------------------------------------------- public: smoother
-def _loglinear_rules(G, H, ys):
-    if np.any(ys <= 0) or not np.all(np.isfinite(ys)):
-        raise SmootherError("loglinear needs a strictly positive steady state for every variable "
-                            "(models with auxiliary variables for lagged shocks are not handled)")
-    return G * ys[None, :] / ys[:, None], H / ys[:, None]
-
-
 def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, mcmc=None, _reuse=None,
            **options) -> SmootherResult:
     """Kalman filter and smoother (Dynare's ``calib_smoother`` and ``evaluate_smoother``).
@@ -1120,8 +1113,11 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     ys = np.asarray(sol.ys, float)
     loglinear = bool(opts["loglinear"])
     if loglinear:
-        G, Hs = _loglinear_rules(sol.G, sol.H, ys)
-        const_all = np.log(ys)
+        from .perturbation import log_mask, loglinearize, LoglinearError
+        try:       # store_smoother_results.m: the auxiliary variables of exogenous leads and lags stay in levels
+            const_all, G, Hs = loglinearize(ys, sol.G, sol.H, log_mask(model))
+        except LoglinearError as exc:
+            raise SmootherError(str(exc)) from None
     else:
         G, Hs = np.array(sol.G, float), np.array(sol.H, float)
         const_all = ys.copy()

@@ -21,14 +21,101 @@ def _R():
 
 
 from .results_pacest import PacEstimateMixin
+from .results_fd import ForecastDecompMixin
 
 
-class NextMixin(PacEstimateMixin):
+class _Omit(Exception):
+    pass
+
+
+class NextMixin(PacEstimateMixin, ForecastDecompMixin):
+    _RESULTS_MAX_FIELD = 4_000_000             # bytes: larger top-level fields of oo_ are not written to <name>_results.mat
     def _functions_nx(self):
         return {**self._functions_pacest(), "forecasts.run": self.fn_forecasts_run,
                 "send_endogenous_variables_to_workspace": self.fn_send_endo,
                 "send_exogenous_variables_to_workspace": self.fn_send_exo,
-                "send_irfs_to_workspace": self.fn_send_irfs}
+                "send_irfs_to_workspace": self.fn_send_irfs,
+                "collect_latex_files": self.fn_collect_latex_files, "system": self.fn_system}
+
+    # ------------------------------------------------------------------ <fname>/Output/<fname>_results.mat
+    def _save_results(self):
+        """Dynare's driver ends with ``save([M_.dname '/Output/' M_.fname '_results.mat'], 'oo_', 'M_', 'options_')`` (unless
+        ``nosave``): other files of the Dynare test suite load it.  Values pydyn cannot represent in a MAT-file (struct arrays
+        such as M_.aux_vars, unknown values) are left out and listed in ``pydyn_omitted``: ``load`` gives them back as unknown
+        values, which refuse when they are used."""
+        import hashlib
+        import json
+        from scipy.io import savemat
+        if getattr(self, "nosave", False):
+            return
+        R = _R()
+        omitted = []
+
+        def conv(v, path):
+            try:
+                return R._to_mat_file(v, path)
+            except (Unsupported, MatlabError):
+                if isinstance(v, Struct) and not hasattr(v, "get_field"):
+                    out = {}
+                    for k, x in v.items():
+                        try:
+                            out[k] = conv(x, f"{path}.{k}")
+                        except _Omit:
+                            pass
+                    return out
+                omitted.append(path)
+                raise _Omit() from None
+
+        def nbytes(x):
+            if isinstance(x, np.ndarray):
+                return x.nbytes
+            if isinstance(x, dict):
+                return sum(nbytes(y) for y in x.values())
+            return 0
+
+        data = {}
+        for name, v in (("oo_", self.oo_), ("M_", self.M_), ("options_", self.options_)):
+            try:
+                data[name] = conv(v, name)
+            except _Omit:
+                return
+            for k in [k for k, x in data[name].items() if nbytes(x) > self._RESULTS_MAX_FIELD]:     # posterior densities, ...
+                del data[name][k]
+                omitted.append(f"{name}.{k}")
+        if omitted:
+            data["pydyn_omitted"] = np.array(omitted, dtype=object).reshape(-1, 1)
+        base = self.model.json_dir.parents[1]
+        path = base / "Output" / f"{self.model.json_dir.parents[1].name}_results.mat"
+        rec_path = base / self._WRITTEN
+        try:
+            rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            rec = {}
+        key = f"{base.name}/Output/{path.name}"
+        if path.exists():
+            if not (path.is_file() and not path.is_symlink() and rec.get(key) == hashlib.sha256(path.read_bytes()).hexdigest()):
+                return                      # not written by pydyn.dynare(): left alone
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            savemat(str(path), data, do_compression=False, oned_as="column", long_field_names=True)
+        except (OSError, ValueError, TypeError, NotImplementedError):          # a value the MAT writer cannot take: no file
+            path.unlink(missing_ok=True)
+            return
+        rec[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+        rec_path.write_text(json.dumps(rec, indent=0))
+
+    def fn_collect_latex_files(self, args, nargout):
+        """``collect_latex_files`` written as a function call in a .mod file: like the statement, pydyn writes no LaTeX."""
+        from .options import warn_once
+        if args or nargout:
+            raise MatlabError("collect_latex_files: invalid call")
+        warn_once(self.model, "collect_latex_files: LaTeX output is not implemented in pydyn; the call writes no file "
+                              "(the model, parameters and priors are available as Python objects)", stacklevel=2)
+        return []
+
+    def fn_system(self, args, nargout):
+        raise Unsupported("system: pydyn.dynare() does not run external programs (such as pdflatex on the TeX binder, "
+                          "which pydyn does not write)", "function")
 
     # ------------------------------------------------------------------ forecasts.run
     def fn_forecasts_run(self, args, nargout):

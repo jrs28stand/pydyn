@@ -178,7 +178,7 @@ class FiguresMixin:
         d0 = Date(1, 1) if d0 is None else d0
         return d0 + (int(getattr(res, "first_obs", 1)) - 1)
 
-    def fig_shock_decomposition(self, i_var, init_cond=False):
+    def fig_shock_decomposition(self, i_var, init_cond=False, forecast_type=None):
         """``graph_decomp.m`` for the plain case of ``plot_shock_decomposition`` (one stacked-bar figure per variable)."""
         from .matlab import farr, arrn
         if not self.fig_on():
@@ -195,22 +195,29 @@ class FiguresMixin:
                     and not (isinstance(v, (int, float, np.number, np.bool_)) and float(v) == 0):
                 raise R.ResultsError(f"plot_shock_decomposition: the option {nm} is not supported by pydyn.dynare() "
                                      "(its figures are not written)")
-        if self.opt("shock_decomp.forecast_type", None):
-            raise R.ResultsError("plot_shock_decomposition: forecast_type is not supported by pydyn.dynare()")
+        ft = forecast_type
+        if ft is None:
+            v = self.opt("shock_decomp.forecast_type", None)
+            if isinstance(v, str) and v:
+                raise R.ResultsError("plot_shock_decomposition: forecast_type is not supported by pydyn.dynare()")
         flip = self.opt_flag("plot_shock_decomp.flip")
         diff = self.opt_flag("plot_shock_decomp.diff")
         steadystate = self.opt_flag("plot_shock_decomp.steadystate")
         fig_name = str(self.opt("plot_shock_decomp.fig_name", "") or "")
         fig_name = (" " + fig_name) if fig_name else ""
+        if ft:
+            fig_name += f" {ft} forecast"
         if flip:
             fig_name += " flip"
         if diff:
             fig_name += " diff"
-        z = np.array(arrn(self.oo_["initval_decomposition" if init_cond else "shock_decomposition"]), float)
+        z = np.array(arrn(self.oo_["forecast_shock_decomposition"][ft] if ft else
+                          self.oo_["initval_decomposition" if init_cond else "shock_decomposition"]), float)
         if z.ndim == 2:
             z = z[:, :, None]
         info = self.oo_["shock_decomposition_info"]
-        parameter_set = str(info["initval_decomposition"]["parameter_set"] if init_cond else info["parameter_set"])
+        parameter_set = str(info["forecast"][ft]["parameter_set"] if ft else
+                            info["initval_decomposition"]["parameter_set"] if init_cond else info["parameter_set"])
         dr = self.oo_.get("dr")
         ss = dr["ys"] if hasattr(dr, "keys") and "ys" in dr else self.oo_["steady_state"]
         ss = np.asarray(farr(ss), float).ravel()
@@ -273,6 +280,9 @@ class FiguresMixin:
                 g.plot([xmin, xmax], [0, 0], "--", linewidth=1, color=[0.7, 0.7, 0.7])
                 if ymin + ss[j - 1] < 0 and ymax + ss[j - 1] > 0:
                     g.plot([xmin, xmax], ss[j - 1] * np.array([-1.0, -1.0]), "k--", linewidth=1)
+            if ft:               # graph_decomp.m: the red line where the forecast starts (options_.plot_shock_decomp.forecast_length)
+                fid = gend - getattr(self, "_sd_forecast_length", 0) + 1.5
+                g.plot([fid, fid], [ymin, ymax], "-r", linewidth=.5)       # ylim of the axes: the stacked bars' extent
             g.set_xlim([xmin, xmax])
             g.axes([0.75, 0.1, 0.2, 0.8])
             g.axis_off()

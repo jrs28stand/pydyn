@@ -33,7 +33,7 @@ def test_lsqnonlin_finds_the_csminwel_minimum(tmp_path):
         assert abs(float(ws.vars[f"{p}_nls"]) - float(ws.vars[f"{p}_lsqnonlin"])) < 1e-4, p
 
 
-@pytest.mark.parametrize("opt, kind", [("'annealing'", "random search"), ("'particleswarm'", "random search")])
+@pytest.mark.parametrize("opt, kind", [("'particleswarm'", "Global Optimization Toolbox")])
 def test_random_search_is_refused(tmp_path, opt, kind):
     with pytest.raises(ResultsError, match=kind):
         run(tmp_path, "pe_t6", lambda s: s.replace("2005Q1+400);", f"2005Q1+400, {opt});"))

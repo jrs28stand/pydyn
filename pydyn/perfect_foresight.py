@@ -647,6 +647,12 @@ def _read_datafile(model, name):
         except (ValueError, TypeError, NotImplementedError) as exc:
             raise ValueError(f"datafile {path.name} is not a MAT-file scipy can read (MATLAB v4-v7; not v7.3 nor "
                              f"Octave's text format): {exc}") from None
+        if "DATA__" in data and "NAMES__" in data:                 # a dseries saved by dseries.save (smoother2histval's outfile)
+            names = [str(np.ravel(x)[0]) if isinstance(x, np.ndarray) and x.size else str(x) for x in np.ravel(data["NAMES__"])]
+            arr = np.atleast_2d(np.asarray(data["DATA__"], float))
+            if arr.shape[1] != len(names):
+                raise ValueError(f"datafile {path.name}: DATA__ has {arr.shape[1]} columns for {len(names)} names")
+            return {n: arr[:, i].copy() for i, n in enumerate(names)}
         for k, v in data.items():
             if k.startswith("__") or not isinstance(v, np.ndarray) or v.dtype.kind not in "fiub":
                 continue

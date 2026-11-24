@@ -66,7 +66,8 @@ def load_ref(path):
                     labs += [_s(y) for y in x.ravel()]
             f["calls"].append(("legend", labs))
         elif kind in ("xlim", "ylim"):
-            f["calls"].append((kind, _arr(a[0])))
+            if a:                                  # without an argument it reads the limits (graph_decomp.m: plot(..., ylim, ...))
+                f["calls"].append((kind, _arr(a[0])))
         elif kind == "text":
             f["calls"].append(("text", float(_arr(a[0])), float(_arr(a[1])), _s(a[2]).rstrip()))
     saved = []
@@ -75,7 +76,10 @@ def load_ref(path):
         sv = [sv] if sv.dtype != object or (sv.ndim == 1 and not isinstance(sv[0], np.ndarray)) else list(sv)
         for s_ in sv:
             s_ = list(s_)
-            saved.append((int(_arr(s_[0])), _s(s_[-1])))
+            if len(s_) >= 3:                       # dyn_saveas(h, stem, formats) as r_fig.m records it
+                saved.append((int(_arr(s_[0])), _s(s_[1]) + "." + _s(s_[2]).split("|")[0]))
+            else:                                  # print(h, file)
+                saved.append((int(_arr(s_[0])), _s(s_[-1])))
     return figs, saved
 
 
@@ -115,9 +119,9 @@ def _same_arr(a, b, tol):
     return bool(np.all(same | (np.abs(a - b) <= tol * np.maximum(1.0, np.abs(a)))))
 
 
-#: lines whose heights are the axis limits Octave's stubbed ``get(gca, 'ylim')`` cannot give (mode_check's mode line, NaN
-#: markers and bound line): only their abscissae are compared
-_Y_FREE = ("c", "o", "r--")
+#: lines whose heights are the axis limits Octave's stubbed ``get(gca, 'ylim')`` / ``ylim`` cannot give (mode_check's mode line, NaN
+#: markers and bound line, the red line where a forecast starts in graph_decomp.m): only their abscissae are compared
+_Y_FREE = ("c", "o", "r--", "-r")
 
 
 def _norm(c):

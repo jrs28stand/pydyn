@@ -18,8 +18,8 @@ equation (from the JSON of the preprocessor, with the PAC expectation replaced b
 a Python function of the parameter vector with :class:`pydyn.expr.Translator`.  Where the minimiser is deterministic
 and ported (csminwel, simplex, Gauss-Newton) the iterates are Dynare's; ``fmincon``, ``fminunc``, ``fminsearch`` and
 ``lsqnonlin`` are Octave optim / MATLAB toolbox routines that pydyn does not port: they are run with SciPy to a tight
-tolerance and agree with the minimiser of the sum of squares, not with the iterates of those routines; ``annealing`` and
-``particleswarm`` (random search) are refused."""
+tolerance and agree with the minimiser of the sum of squares, not with the iterates of those routines; ``annealing`` is Dynare's own
+(:mod:`pydyn.simulated_annealing`) and draws from Octave's stream; ``particleswarm`` (MATLAB toolbox only) is refused."""
 from __future__ import annotations
 
 import re
@@ -254,7 +254,7 @@ def _remove_residual(rhs, rname):
         return before + after[1:]
     if before.endswith("+") or before == "" and after == "":
         return before[:-1] + after
-    raise PacEstimateUnsupported(f"the residual {rname} is not an additive term of the equation")
+    raise PacEstimateUnsupported(f"the residual {rname} is not an additive term of the equation (Dynare removes its name and evaluates what is left, which is a MATLAB syntax error)")
 
 
 # ------------------------------------------------------------------------------------------------ residual functions
@@ -282,7 +282,7 @@ def residual_function(prep, param_names, endo_names, exo_names, update, base_par
                     return f"D[1:, {k}]"
                 if shift == -1:
                     return f"D[:-1, {k}]"
-                raise PacEstimateUnsupported(f"{name}({shift}): only lags of one period appear in a PAC equation")
+                raise PacEstimateUnsupported(f"{name}({shift}): only lags of one period are rewritten by Dynare (rewrite_equation_with_tables.m); it then evaluates data(2:end,k)({shift}), a MATLAB index error")
             if shift != 0:
                 raise PacEstimateUnsupported(f"{name}({shift}) in an equation without lags")
             return f"D[:, {k}]"
@@ -379,7 +379,7 @@ def gauss_newton(fun, x0):
     return x0, s1
 
 
-def minimise(ssrfun, resfun, x0, optimizer, bounds, opt, csminwel_defaults):
+def minimise(ssrfun, resfun, x0, optimizer, bounds, opt, csminwel_defaults, rng=None):
     """The minimisation step of nls.m for each optimiser; returns ``(x, ssr)``."""
     from scipy import optimize as so
     x0 = np.array(x0, float)
@@ -414,8 +414,25 @@ def minimise(ssrfun, resfun, x0, optimizer, bounds, opt, csminwel_defaults):
         o = simplex_options({k: v for k, v in opt.items()})
         res = simplex_optimization_routine(lambda z: (ssrfun(np.asarray(z, float)), True), x0, o)
         return np.asarray(res.x, float), float(res.fval)
-    if algo in ("annealing", "particleswarm"):
-        raise PacEstimateUnsupported(f"the optimiser '{algo}' is a random search: its result cannot be matched")
+    if algo == "particleswarm":
+        raise PacEstimateUnsupported("the optimiser 'particleswarm' is MATLAB's Global Optimization Toolbox routine (Dynare itself "
+                                     "stops under Octave: it is not available there), a random search whose result cannot be reproduced; "
+                                     "Dynare 7.2 also sets the lower bound of the error-correction parameter to 1 instead of 0 for it")
+    if algo == "annealing":
+        if rng is None:
+            raise PacEstimateUnsupported("the optimiser 'annealing' needs Dynare's random stream")
+        from .simulated_annealing import simulated_annealing, SAOPT
+        so_ = dict(SAOPT)
+        for k, v in opt.items():
+            if k in so_:
+                so_[k] = float(np.asarray(v).ravel()[0]) if not isinstance(v, str) else float(v)
+            else:
+                import warnings
+                warnings.warn(f"solveopt: Unknown option ({k})!")
+        huge = 1e7
+        lo_, hi_ = np.where(np.isinf(bounds[:, 0]), -huge, bounds[:, 0]), np.where(np.isinf(bounds[:, 1]), huge, bounds[:, 1])
+        xo, fo, *_ = simulated_annealing(lambda z: ssrfun(np.asarray(z, float)), x0, so_, lo_, hi_, rng)
+        return np.asarray(xo, float), float(fo)
     tol = 1e-12
     lo, hi = (None, None) if bounds is None else (bounds[:, 0], bounds[:, 1])
     if algo == "fmincon":

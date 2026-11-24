@@ -81,4 +81,12 @@ The OccBin authors ask that use of the algorithm be acknowledged by citing: Luca
 Matteo Iacoviello (2015), "OccBin: A toolkit for solving dynamic models with occasionally binding
 constraints easily", Journal of Monetary Economics 70, 22-38.
 
+## Added in the third results-layer batch
+
+- pydyn/forecast_decomp.py: port of the forecast_type branch of Dynare's shock_decomposition.m / evaluate_smoother (GPL-3.0-or-later).
+- pydyn/results_fd.py: glue for the above (GPL-3.0-or-later).
+- pydyn/simulated_annealing.py: port of Dynare's simulated_annealing.m (GPL-3.0-or-later).
+- reference/oo/{sd_fc_cal,sd_fc_pm,sd_fc_pmm,sd_fc_ml,sm_ll_aux,pe_t8a}.{mod,mat} and reference/fig/fig_sdf1.*: Octave output of Dynare 7.2 for small test models derived from fs2000 / var-8e.
+
+
 This file records provenance; it is not legal advice.

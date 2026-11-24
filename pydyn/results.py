@@ -779,6 +779,7 @@ class _Core(CommandsMixin):
         self.I.base.funcs = funcs
         with np.errstate(**_ml._ERRSTATE):
             self._guard(lambda: self.I.exec_block(body, self.I.base), top=True)
+        self._save_results()
         return self
 
     def _guard(self, fn, top=False, what=""):
@@ -919,6 +920,15 @@ class _LiveMatlab:
     def oo_value(self, name):
         m = self.res.model
         return _F(m._oo.get(name, 0.0))
+
+    def endo_steady(self, name):
+        """oo_.steady_state(i) of the endogenous variable ``name`` (the preprocessor's rewriting in conditional_forecast_paths)."""
+        res = self.res
+        ss = res.oo_.get("steady_state")
+        i = list(res.model.endo_names).index(name)
+        if ss is None or np.size(ss) <= i:
+            raise MatlabError("index out of bound; oo_.steady_state is empty")
+        return float(np.asarray(farr(ss), float).ravel()[i])
 
     def eval_value(self, text, local=None, vector=False):
         res = self.res
@@ -1195,17 +1205,34 @@ class _FunctionsMixin:
             data = loadmat(str(path), squeeze_me=False, chars_as_strings=True, struct_as_record=True)
         except Exception as exc:  # noqa: BLE001
             raise Unsupported(f"load: {path.name} is not a MAT-file that can be read ({exc})", "file") from None
-        wanted = [k for k in data if not k.startswith("__") and (len(names) == 1 or k in names[1:])]
+        wanted = [k for k in data if not k.startswith("__") and k != "pydyn_omitted" and (len(names) == 1 or k in names[1:])]
+        omitted = [str(x).rstrip() for x in np.ravel(data["pydyn_omitted"])] if "pydyn_omitted" in data else []
+
+        def value(k):
+            v = mat_value(data[k])
+            for path in omitted:                # what pydyn.dynare() could not write: unknown when the file is read back
+                first, _, rest = path.partition(".")
+                if first != k or not rest or not isinstance(v, Struct):
+                    continue
+                parts = rest.split(".")
+                d = v
+                for q in parts[:-1]:
+                    d = d.get(q) if isinstance(d, Struct) else None
+                if isinstance(d, Struct):
+                    d[parts[-1]] = Tainted(f"{path} was not written by pydyn.dynare() to {path_name}: pydyn cannot represent it")
+            return v
+
+        path_name = path.name
         if nargout > 0:
             s = Struct()
             for k in wanted:
-                s[k] = mat_value(data[k])
+                s[k] = value(k)
             return s
         sc = sc or self.I.scope_stack[-1]
         for k in wanted:
             if k in _HOST_GLOBALS:
                 raise Unsupported(f"'load {fname}' would replace {k}", "file")
-            sc.vars[k] = mat_value(data[k])
+            sc.vars[k] = value(k)
         return []
 
 
@@ -1256,7 +1283,7 @@ class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPa
 
 
 def dynare(mod_file, *, shocks=None, seed=None, preprocessor=None, functions=None, steady_state_fn=None,
-           run=True, nograph=True) -> Results:
+           run=True, nograph=True, nosave=False) -> Results:
     """Run a .mod file as Dynare does and return its workspace (:class:`Results`: ``M_``, ``options_``, ``oo_``).
 
     ``mod_file`` is a path (the preprocessor runs on it, as ``pydyn.run_preprocessor`` does) or the folder of
@@ -1264,7 +1291,7 @@ def dynare(mod_file, *, shocks=None, seed=None, preprocessor=None, functions=Non
     exogenous path it should use (rows = periods): without it the shocks are Octave's ``randn`` draws from
     Dynare's default seed (``randn('state', 0)``), in Dynare's order, so that a run reproduces Dynare run under
     Octave; ``seed`` replaces that seed. ``nograph`` (default true, as in ``dynare file nograph``) is the initial value
-    of ``options_.nograph``: with ``nograph=False`` the commands write Dynare's figures under ``<name>/graphs/``
+    of ``options_.nograph``; ``nosave`` (``dynare file nosave``) leaves out the <name>/Output/<name>_results.mat that Dynare writes at the end; with ``nograph=False`` the commands write Dynare's figures under ``<name>/graphs/``
     (``graph_format`` eps and pdf; needs matplotlib), unless the file itself says ``nograph``. ``functions`` and ``steady_state_fn`` are as for ``pydyn.Model``.
 
     Raises :class:`ResultsError` where Dynare would stop with an error (``error()`` in a MATLAB line, a failed
@@ -1279,4 +1306,5 @@ def dynare(mod_file, *, shocks=None, seed=None, preprocessor=None, functions=Non
         mod_path = p
     model = Model(json_dir, functions=functions, steady_state_fn=steady_state_fn, run_statements=False)
     res = Results(model, mod_path, shocks=shocks, seed=seed, nograph=nograph)
+    res.nosave = nosave
     return res.run() if run else res

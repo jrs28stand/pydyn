@@ -27,7 +27,8 @@ CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo
          "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
          "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal",
          "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk", "ll_ss", "sm2h",
-         "pe_t6", "pe_t7", "pe_t9", "pe_t12", "pe_t15", "pe_t17", "pe_t18", "pe_t19g", "pe_t25", "pe_v9"]
+         "pe_t6", "pe_t7", "pe_t9", "pe_t12", "pe_t15", "pe_t17", "pe_t18", "pe_t19g", "pe_t25", "pe_v9",
+         "sd_fc_cal", "sd_fc_pm", "sd_fc_pmm", "sd_fc_ml", "sm_ll_aux", "pe_t8a"]
 #: Per-case tolerance (relative, with an absolute floor of 1).  The estimation cases that run an optimiser stop at
 #: the optimiser's tolerance: the port of csminwel reaches Dynare's mode to about 3e-7 in the parameters, which moves
 #: the steady state and everything computed from it by up to 1e-4 (est_mode4).  est_ml has no prior: the likelihood is

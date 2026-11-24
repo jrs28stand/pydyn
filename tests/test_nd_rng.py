@@ -96,7 +96,7 @@ def test_save_writes_a_mat_file_in_the_model_folder(tmp_path):
     assert d["s"]["f"][0, 0].shape == (1, 1, 2)
     np.testing.assert_array_equal(r.vars["q"]["w"], r.vars["w"])
     rec = json.loads((tmp_path / "sv" / "pydyn_written_files.json").read_text())
-    assert set(rec) == {"data_s.mat"}
+    assert set(rec) == {"data_s.mat", "sv/Output/sv_results.mat"}   # plus the results file dynare() itself writes
     with warnings.catch_warnings():                       # pydyn's own file may be written again
         warnings.simplefilter("ignore")
         pydyn.dynare(tmp_path / "sv.mod")

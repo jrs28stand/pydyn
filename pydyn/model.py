@@ -590,7 +590,7 @@ class Model:
             for i, path in enumerate(st.get("paths", [])):
                 for k, v in enumerate(path.get("values", [])):
                     # a vector (``values (xx);``) gives one value per period, as ``constrained_paths_(i,p1:p2)=xx``
-                    stored[(i, k)] = self._det_value(v["value"], int(v["period2"]) - int(v["period1"]) + 1)
+                    stored[(i, k)] = self._det_value(v["value"], int(v["period2"]) - int(v["period1"]) + 1, endo_steady=True)
         elif kind in ("forecast", "conditional_forecast", "plot_conditional_forecast"):
             pass                                   # read by pydyn.forecast.run_forecasts
         elif kind in ("native", "verbatim"):
@@ -618,13 +618,17 @@ class Model:
         self.options_sequence.append((kind, dict(opts)))
         self._options_parsed[kind] = dict(self.options[kind])
 
-    def _det_value(self, text, n):
+    def _det_value(self, text, n, endo_steady=False):
         """Value of a deterministic shock over ``n`` periods: a number, or (``values (v);``) a MATLAB
-        vector with one value per period, as Dynare's make_ex_ assigns it."""
+        vector with one value per period, as Dynare's make_ex_ assigns it.  ``endo_steady``: the names of endogenous
+        variables stand for oo_.steady_state(i) as the preprocessor writes them in conditional_forecast_paths."""
+        local = None
+        if endo_steady and hasattr(self._matlab, "endo_steady"):
+            local = {v: self._matlab.endo_steady(v) for v in self.endo_names if re.search(r"\b%s\b" % re.escape(v), str(text))}
         try:
-            return self._value(text)
+            return self._value(text, local)
         except ModelError:
-            v = self._matlab.eval_value(text, vector=True)
+            v = self._matlab.eval_value(text, local, vector=True)
             if v.size == 1:
                 return float(v[0])
             if v.size != n:

@@ -19,7 +19,7 @@ needs_pp = pytest.mark.skipif(not os.environ.get("DYNARE_PREPROCESSOR"), reason=
 
 #: case -> tolerance.  mode_compute=4 (fig_est1) finds the mode only to about 1e-7, which moves the mode-check grid.
 CASES = {"fig_irf1": 1e-8, "fig_irf2": 1e-8, "fig_irf3": 1e-8, "fig_fc1": 1e-8, "fig_cf1": 1e-8, "fig_sd1": 1e-8,
-         "fig_est1": 1e-6, "fig_mh1": 1e-8, "fig_mh2": 1e-8, "fig_conv1": 1e-8, "fig_occ1": 1e-8, "fig_rpl1": 1e-8, "fig_sd2": 1e-8}
+         "fig_est1": 1e-6, "fig_mh1": 1e-8, "fig_mh2": 1e-8, "fig_conv1": 1e-8, "fig_occ1": 1e-8, "fig_rpl1": 1e-8, "fig_sd2": 1e-8, "fig_sdf1": 1e-8}
 
 
 def _run(case, tmp_path, **kw):

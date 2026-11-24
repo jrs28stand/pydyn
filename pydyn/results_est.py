@@ -222,7 +222,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
                 self._mode_check(est, mode.x)
         # dynare_estimation_1.m returns right after the smoother when mode_compute=0 and there is no mode file: no MCMC
         early = mode is None
-        if mh_replic > 0 and not early:
+        if mh_replic > 0 and not early and est.prior.is_bayesian:       # dynare_estimation_1.m: any(pshape>0) && mh_replic
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -431,11 +431,17 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         cols = [endo.index(v) for v in vl]
         gend = smoothers[0].nobs
 
-        def stack(get, names):
-            return np.stack([np.column_stack([np.asarray(get(r)[v], float) for v in names]) for r in smoothers])
+        # prior_posterior_statistics_core.m adds log(SteadyState) to every variable under loglinear, also to the auxiliary
+        # variables of exogenous leads and lags (the smoother of store_smoother_results.m leaves those in levels: for a zero
+        # steady state this is -Inf)
+        pdelta = {id(r): self._posterior_log_delta(r) for r in smoothers}
+
+        def stack(get, names, adjust=False):
+            return np.stack([np.column_stack([np.asarray(get(r)[v], float) + (pdelta[id(r)][endo.index(v)] if adjust else 0.0)
+                                              for v in names]) for r in smoothers])
 
         if self.opt_flag("smoother"):
-            sm_draws = stack(lambda r: r.SmoothedVariables, endo)
+            sm_draws = stack(lambda r: r.SmoothedVariables, endo, True)
             self._store_pm3("SmoothedVariables", sm_draws, vl, cols, mcs)
             self._store_pm3("SmoothedShocks", stack(lambda r: r.SmoothedShocks, exo), exo, list(range(len(exo))), mcs)
             sm = self.oo_["Smoother"]
@@ -445,15 +451,15 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             # correction (the classical Init_State has neither)
             def init_state(r):
                 ys = np.log(r.SteadyState) if r.loglinear else np.asarray(r.SteadyState, float)
-                return [float(r.Init_State[v]) + (float(r.Trend[v][0]) + float(r.Constant[v][0]) - ys[i] if v in obs else 0.0)
+                return [float(r.Init_State[v]) + pdelta[id(r)][i] + (float(r.Trend[v][0]) + float(r.Constant[v][0]) - ys[i] if v in obs else 0.0)
                         for i, v in enumerate(endo)]
             init = np.stack([init_state(r) for r in smoothers])[:, None, :]
             self._store_pm3("Init_State", init, vl, cols, mcs, parent="Smoother")
-            self._store_pm3("Constant", stack(lambda r: r.Constant, endo), vl, cols, mcs)
+            self._store_pm3("Constant", stack(lambda r: r.Constant, endo, True), vl, cols, mcs)
             trend = np.stack([np.column_stack([np.asarray(r.Trend[v], float) if v in obs else np.full(gend, np.nan)
                                                for v in endo]) for r in smoothers])    # NaN where the variable is not observed
             self._store_pm3("Trend", trend, vl, cols, mcs, parent="Smoother")
-            self._store_pm3("UpdatedVariables", stack(lambda r: r.UpdatedVariables, endo), vl, cols, mcs)
+            self._store_pm3("UpdatedVariables", stack(lambda r: r.UpdatedVariables, endo, True), vl, cols, mcs)
             if int(self._estimated_me_count(est)):
                 names = ["SE_EOBS_" + v for v in obs]
                 me = np.stack([np.column_stack([np.asarray(r.SmoothedMeasurementErrors[v], float) for v in obs])
@@ -515,13 +521,29 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         """estim_params_.nvn: the number of estimated standard deviations of measurement errors."""
         return sum(1 for n in est.names if n.startswith("stderr ") and n[7:] not in self.model.exo_names)
 
+    def _posterior_log_delta(self, r):
+        """log(ys) - ys for the variables loglinear leaves in levels (auxiliary variables of exogenous leads and lags), zero
+        elsewhere: what the posterior statistics add on top of the smoother's constant."""
+        from .perturbation import log_mask
+        n = len(r.endo_names)
+        if not r.loglinear:
+            return np.zeros(n)
+        keep = ~log_mask(self.model)
+        out = np.zeros(n)
+        if keep.any():
+            ys = np.asarray(r.SteadyState, float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out[keep] = np.log(ys[keep]) - ys[keep]
+        return out
+
     def _store_filtered(self, smoothers, vl, cols, fsa, mcs, gend):
         """pm3.m on the _filter_step_ahead files: oo_.FilteredVariables (the first entry of filter_step_ahead, entries 2 to
         gend+1 of the stored array, as Dynare does), oo_.Filtered_Variables_<k>_step_ahead, and the Mean-based
         oo_.FilteredVariablesKStepAhead (and ...Variances, which Dynare fills with the same means)."""
         from . import posterior as _post
         R = _R()
-        arr = np.stack([np.asarray(r.FilteredVariablesKStepAhead, float) for r in smoothers])   # (B, steps, n_endo, gend+max)
+        arr = np.stack([np.asarray(r.FilteredVariablesKStepAhead, float) + self._posterior_log_delta(r)[None, :, None]
+                        for r in smoothers])   # (B, steps, n_endo, gend+max)
         if arr.ndim != 4:
             raise R.ResultsError("estimation: the smoother returned no k-step ahead filtered variables")
         self._store_pm3("FilteredVariables", np.transpose(arr[:, 0, :, 1:1 + gend], (0, 2, 1)), vl, cols, mcs)
@@ -774,30 +796,44 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         self.fig_forecast(fc)
 
     # ------------------------------------------------------------------ shock decompositions
-    def _decomposition_smoother(self, kind, run=True):
+    def _decomposition_smoother(self, kind, run=True, allow_sets=False):
         """The smoother of Dynare's evaluate_smoother(parameter_set, ...) inside shock_decomposition.m and
-        initial_condition_decomposition.m; only parameter_set = 'calibration' is followed."""
+        initial_condition_decomposition.m; parameter_set = 'calibration', and with ``allow_sets`` also the posterior mean,
+        median and mode and the ML mode of the last estimation.  The parameter set used is left in ``self._sd_ps``."""
         from .smoother import smooth, SmootherError
         R = _R()
+        ps = self._sd_resolve_ps(kind, allow_sets)
+        kw = {}
         if not isinstance(self.oo_.get("SmoothedVariables"), Struct):
-            raise R.ResultsError(f"{kind}: no smoothed variables: run estimation(smoother) or calib_smoother first")
-        ps = self.opt("parameter_set", None)
-        if ps is None:
-            if any(k in self.oo_ for k in ("posterior_mean", "mle_mode", "posterior")):
-                raise R.ResultsError(f"{kind}: the default parameter set (posterior mean or mode) is not supported by "
-                                     "pydyn.dynare(): give parameter_set=calibration")
-            msg = "shock_decomposition: option parameter_set is not specified and posterior mode is not available"
-            raise R.ResultsError(f"{kind}: {msg}", matlab_message=msg)
-        if ps != "calibration":
-            raise R.ResultsError(f"{kind}: parameter_set={ps} is not supported by pydyn.dynare() (only calibration)")
+            df = self.opt("datafile", None)
+            if not (allow_sets and isinstance(df, str) and df):
+                raise R.ResultsError(f"{kind}: no smoothed variables: run estimation(smoother) or calib_smoother first")
+            kw["datafile"] = df             # evaluate_smoother runs dynare_estimation_init on the live options
+            for key in ("first_obs", "nobs"):
+                v = self.opt(key, None)
+                if isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)) and np.isfinite(v) and v > 0:
+                    kw[key] = int(v)
+        sets = ("calibration", "posterior_mean", "posterior_median", "posterior_mode", "mle_mode") if allow_sets else ("calibration",)
+        if ps not in sets:
+            raise R.ResultsError(f"{kind}: parameter_set={ps} is not supported by pydyn.dynare() (only "
+                                 + ", ".join(sets) + ")")
+        self._sd_ps = ps
         self._refuse_unfaithful_smoother()
         self.pull()
+        if ps != "calibration":
+            ctx = getattr(self, "_est_ctx", None)
+            if ctx is None:
+                raise R.ResultsError(f"{kind}: parameter_set={ps} needs an estimation before the statement")
+            if (ps in ("posterior_mean", "posterior_median") and ctx["mc"] is None) or \
+                    (ps in ("posterior_mode", "mle_mode") and ctx["mode"] is None):
+                raise R.ResultsError(f"{kind}: parameter_set={ps} is not available from the last estimation")
+            kw.update(estimation=ctx["est"], parameter_set=ps, mode=ctx["mode"], mcmc=ctx["mc"])
         if not run:
             return None
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                return smooth(self.model)
+                return smooth(self.model, **kw)
         except (SmootherError, NotImplementedError) as exc:
             raise R.ResultsError(f"{kind}: {exc}") from None
 
@@ -814,22 +850,28 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         R = _R()
         self._refresh_options(st)
         kind = "shock_decomposition"
-        if self.opt("shock_decomp.forecast_type", None):
-            raise R.ResultsError(f"{kind}: forecast_type is not supported by pydyn.dynare()")
+        ft = self.opt("shock_decomp.forecast_type", None)
+        ft = ft if isinstance(ft, str) and ft else None
         if self.opt_flag("shock_decomp.with_epilogue"):
             raise R.ResultsError(f"{kind}: with_epilogue is not supported by pydyn.dynare()")
         plot = not self.opt_flag("no_graph.shock_decomposition")
         if plot and (self.opt("plot_shock_decomp.init2shocks", None) or self.opt_flag("plot_shock_decomp.realtime")):
             raise R.ResultsError(f"{kind}: plot_shock_decomposition with init2shocks or realtime writes more to oo_ "
                                  "than pydyn.dynare() follows")
-        res = self._decomposition_smoother(kind)
+        if ft is not None:
+            self._sd_forecast_inputs(ft)           # the checks that precede the smoother in shock_decomposition.m
+        res = self._decomposition_smoother(kind, allow_sets=True)
+        ps = self._sd_ps
         self._sd_initial_date = self._decomp_initial_date(res)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            sd = shock_decomposition(self.model, res, init_state=int(self.opt("shock_decomp.init_state", 0) or 0))
-        self.set_oo("shock_decomposition", R.mat(sd.z))
-        self.unrefuse("oo_", ["shock_decomposition"])
-        self._decomp_info("parameter_set", "calibration")
+        if ft is not None:
+            self._sd_forecast(st, res, ft, ps)
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sd = shock_decomposition(self.model, res, init_state=int(self.opt("shock_decomp.init_state", 0) or 0))
+            self.set_oo("shock_decomposition", R.mat(sd.z))
+            self.unrefuse("oo_", ["shock_decomposition"])
+            self._decomp_info("parameter_set", ps)
         if plot:
             # plot_shock_decomposition.m (called unless nograph) records the plotted variables in oo_
             from .matlab import BUILTINS
@@ -842,7 +884,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             if "i_var" in info:
                 i_var = np.unique(np.concatenate([i_var.ravel(), np.asarray(farr(info["i_var"]), float).ravel()])).reshape(-1, 1)
             self.set_oo("plot_shock_decomposition_info", R.struct_set(info, "i_var", R.mat(i_var)))
-            self.fig_shock_decomposition(i_var.ravel())
+            self.fig_shock_decomposition(i_var.ravel(), forecast_type=ft)
         self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_shock_decomposition", np.bool_(True)))
 
     def st_plot_shock_decomposition(self, st):

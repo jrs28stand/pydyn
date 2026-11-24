@@ -172,7 +172,7 @@ class PacEstimateMixin:
                       int(farr(o["gradient_method"]).ravel()[0]), float(farr(o["gradient_epsilon"]).ravel()[0]))
             except (KeyError, TypeError, IndexError, AttributeError):
                 pass
-            x1, SSR = _pe.minimise(ssr_fun, r_fun, x0, optimizer, bounds, opt, cs)
+            x1, SSR = _pe.minimise(ssr_fun, r_fun, x0, optimizer, bounds, opt, cs, rng=self.rng)
             r, C, student = _pe.nls_statistics(r_fun, x1, SSR)
         except _pe.PacEstimateError as exc:
             raise MatlabError(str(exc)) from None
