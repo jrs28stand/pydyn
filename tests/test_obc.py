@@ -309,3 +309,25 @@ def test_p_matrix_recursion_matches_minors():
         assert r == _is_p_minors(A)
         seen.add(r)
     assert seen == {True, False}
+
+
+# ------------------------------------------------------------------------------- single-spell fast path
+def test_single_spell_fast_path_equals_general_solver(zlb):
+    from pydyn.obc_lk import LKNews
+    m, ob = zlb
+    S = np.random.default_rng(1).normal(0, 0.02, (500, 1))
+    a = ob.simulate(S, periods=520)
+    b = NewsOBC(ob, horizon=40, check_ahead=40).simulate(S, periods=520)
+    lk = LKNews(ob, horizon=40, check_ahead=40)
+    c = lk.simulate(S, periods=520)
+    np.testing.assert_allclose(c.piecewise, b.piecewise, atol=1e-12)
+    np.testing.assert_allclose(c.piecewise, a.piecewise, atol=1e-11)
+    assert c.regime_history == a.regime_history
+    st = c.news["stats"]
+    assert st["general"] == 0 and st["built"] < 40 and st["shifted"] + st["cached"] > 100
+
+
+def test_single_spell_fast_path_one_constraint_only(zlb2):
+    from pydyn.obc_lk import LKNews
+    with pytest.raises(ValueError, match="one constraint"):
+        LKNews(zlb2[1])
