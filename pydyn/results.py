@@ -49,6 +49,7 @@ from .results_oo import CommandsMixin
 from .results_est import EstimationMixin
 from .results_bwd import BackwardMixin
 from .results_ep import ExtendedPathMixin
+from .results_var import VarModelMixin
 
 __all__ = ["dynare", "Results", "ResultsError"]
 
@@ -375,6 +376,12 @@ class LiveInterp(Interpreter):
         if name in sc.funcs or name in self.dir_files():
             return None
         return self.res.functions.get(name)
+
+    def package_function(self, path, sc):
+        f = self.res.functions.get(path)
+        if f is None:
+            f = self.res.var_refusal(path)
+        return f
 
     def call_node(self, name, argnodes, nargout, sc):
         if self._live(name, sc) is not None:
@@ -853,7 +860,7 @@ class _Core(CommandsMixin):
 
 
 _MISSING = object()
-_NOOP_NAMES = set(_ml.PLOT_FUNCS) | {"hold", "drawnow", "pause", "close", "clf", "figure", "fclose", "dyn_figure"}
+_NOOP_NAMES = set(_ml.PLOT_FUNCS) | {"hold", "drawnow", "pause", "close", "clf", "figure", "fclose", "dyn_figure", "search"}
 _NOOP_NAMES -= {"set", "get", "line", "text", "fill", "area", "bar", "hist", "histogram", "contour", "print", "type"}
 
 
@@ -953,6 +960,7 @@ class _FunctionsMixin:
             "evaluate_steady_state": self.fn_evaluate_steady_state,
             "save": self.fn_save,
             **self._functions_backward(),
+            **self._functions_var(),
         }
 
     def fn_command(self, kind):
@@ -1158,7 +1166,7 @@ class _FunctionsMixin:
 
 
 
-class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin):
+class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

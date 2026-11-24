@@ -52,6 +52,8 @@ def as_date(v):
     inner = getattr(v, "first_date", None)
     if inner is not None:
         return inner()
+    if getattr(v, "obj_kind", None) == "dates" and getattr(v, "ndat", 0) == 1:       # matlab.DatesV: a dates object of one date
+        return v._dates()[0]
     if isinstance(v, (int, float, np.floating)) and float(v) == int(v):
         return Date(1, int(v))                       # a number is a year (annual date)
     _fail("dseries: the first date must be a date")

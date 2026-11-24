@@ -299,8 +299,9 @@ class BackwardMixin:
             if a.get("type") == 1:
                 lag_of[a["orig_index"] - 1] = abs(a["orig_lead_lag"])
         exo_lag_of = {a["orig_index"] - 1: abs(a["orig_lead_lag"] - 1) for a in aux if a.get("type") == 3}
+        aux_names = {m.endo_names[x["endo_index"] - 1] for x in aux if x.get("type") != 6}
         for i in sorted(lag_of):
-            if m.endo_names[i] not in ds.names:
+            if m.endo_names[i] not in ds.names and m.endo_names[i] not in aux_names:     # checkdatabase adds the auxiliary variables
                 raise MatlabError(f"You have to initialize the following endogenous variables: {m.endo_names[i]}\n"
                                   "Please fix the dseries object used for setting the initial conditions!")
         for i in sorted(exo_lag_of):
@@ -310,12 +311,6 @@ class BackwardMixin:
         maxlag = max(list(lag_of.values()) + list(exo_lag_of.values()), default=0)
         if maxlag > ds.nobs:
             raise MatlabError(f"The dseries object provided as first input argument should at least have {maxlag} periods!")
-        for names_, lags_, pool in ((m.endo_names, lag_of, "endogenous"), (m.exo_names, exo_lag_of, "exogenous")):
-            for i, lg in lags_.items():
-                col = ds.data[:, ds.names.index(names_[i])]
-                if np.any(np.isnan(col[ds.nobs - lg:])):
-                    raise MatlabError(f"Variable {names_[i]} should not have a NaN value in period "
-                                      f"{ds.init + (ds.nobs - 1)}.\nPlease fix the dseries object used for setting the initial conditions!")
         endo0 = np.full((n, ds.nobs), np.nan)
         exo0 = np.full((ds.nobs, nx), np.nan)
         for i, nm in enumerate(m.endo_names):
@@ -332,6 +327,11 @@ class BackwardMixin:
             for a in aux:
                 if a.get("type") != 6 and m.endo_names[a["endo_index"] - 1] not in ds.names:
                     endo0[a["endo_index"] - 1] = filled[a["endo_index"] - 1]
+        for names_, lags_, rows in ((m.endo_names, lag_of, endo0), (m.exo_names, exo_lag_of, exo0.T)):
+            for i, lg in lags_.items():
+                if np.any(np.isnan(rows[i][ds.nobs - lg:])):
+                    raise MatlabError(f"Variable {names_[i]} should not have a NaN value in period "
+                                      f"{ds.init + (ds.nobs - 1)}.\nPlease fix the dseries object used for setting the initial conditions!")
         return endo0, exo0, ds.init, ds.nobs
 
     def _initial_from_histval(self, name):

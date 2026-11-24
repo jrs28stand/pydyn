@@ -4422,6 +4422,11 @@ def _feval(I, a, nout):
     if isinstance(a[0], Handle):
         return I.call_handle(a[0], list(a[1:]), nout)
     name = _str(a[0], "feval")
+    if re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)+", name):
+        f = I.package_function(name, I.scope_stack[-1])      # feval('<model>.trend_component_ar_a0', ...)
+        if f is not None:
+            r = f(list(a[1:]), nout)
+            return r if type(r) is list else ([] if r is None else [r])
     if not re.fullmatch(r"[A-Za-z_]\w*", name):
         raise Unsupported(f"feval of {name!r}", "function")
     return I.call(name, list(a[1:]), nout, I.scope_stack[-1])
@@ -4928,8 +4933,35 @@ class Interpreter:
                 self.end_stack.pop()
         return out
 
+    def package_function(self, path, sc):
+        """The host's function for the dotted name ``path`` (``pac.update.expectation``) or None."""
+        return None
+
+    def package_call(self, n, sc, nargout):
+        """``pkg.fn(args)`` where ``pkg`` is not a variable and the host has a function of that dotted name:
+        the list of its outputs, else None."""
+        path = _dotted(n.base)
+        if path is None or "." not in path or self.getvar(sc, path.split(".")[0]) is not _MISSING:
+            return None
+        f = self.package_function(path, sc)
+        if f is None:
+            return None
+        args = [":" if type(a) is ColonAll else self.ev(a, sc) for a in n.args]
+        self.scope_stack.append(sc)
+        try:
+            r = f(args, nargout)
+        finally:
+            self.scope_stack.pop()
+        return r if type(r) is list else ([] if r is None else [r])
+
     def _index(self, n, sc):
         base = n.base
+        if type(base) is Field and not n.brace:
+            r = self.package_call(n, sc, 1)
+            if r is not None:
+                if not r:
+                    raise MatlabError(f"'{_dotted(base)}' returns no value")
+                return r[0]
         if type(base) is Id:
             v = self.getvar(sc, base.name)
             if v is _MISSING:
@@ -5003,6 +5035,10 @@ class Interpreter:
             base = n.base
             if type(base) is Id and self.getvar(sc, base.name) is _MISSING:
                 return self.call_node(base.name, n.args, nargout, sc)
+            if type(base) is Field:
+                r = self.package_call(n, sc, nargout)
+                if r is not None:
+                    return r
             if type(base) is not Id or isinstance(self.getvar(sc, base.name), Handle):
                 v = self.ev(base, sc)
                 if isinstance(v, Handle):
