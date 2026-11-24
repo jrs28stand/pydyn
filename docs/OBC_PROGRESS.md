@@ -204,3 +204,27 @@ Python loops; not optimised, not the target).
 
 Not done: order 3; several regions and clustering; second-order conditional covariance; linearisation around the
 risky steady state; wiring into `obc_method` options; the tied-wedge class; any comparison with DynareOBC.
+
+## Real DynareOBC under Octave: validation of orders 1-2 and cubature (24 Nov)
+
+DynareOBC itself now runs here (Octave 8.4, Dynare 4.5.4, four small patches; recipe, patches and reference
+output in `reference/dynareobc_octave/`). `tests/test_obc_dynareobc.py` compares `HigherOrderNews` with it on a
+small NK model with a lower bound (300 periods, 83 at the bound):
+
+| check | max abs difference |
+|---|---|
+| M matrix | 9e-16 |
+| simulation, order 1 and order 2 | 2e-16 |
+| conditional covariance of the gap path (taper, 1% pruning) | 5e-19 |
+| order-2 cubature, DynareOBC's root and Sobol points | 4e-16 |
+| order-2 cubature, pydyn's own (SciPy) Sobol points | 1.5e-6 (cubature effect: 4.8e-5) |
+
+Changes to `obc_ho.py` from the comparison: cubature points are now DynareOBC's rule (2^(level+1)-1 unscrambled
+Sobol points, exactly mean zero) instead of scrambled ones; the covariance root is pruned as in DynareOBC
+(`pruning_cutoff=0.01`, `max_cubature_dimension`).
+
+Findings: (1) with one region, cubature equals no cubature whenever the bound binds today (every point is
+relevant, their mean is the expected path); it only acts when the bound binds in expectation later.
+(2) Under Octave DynareOBC's root truncation dropped the largest eigenvalue (unordered `schur`); patched.
+(3) Dynare's Sobol direction numbers differ from SciPy's beyond dimension 2, so exact agreement needs the
+points exported. Not yet compared: several regions (needs DynareOBC's clustering), order 3, CATCH rules.

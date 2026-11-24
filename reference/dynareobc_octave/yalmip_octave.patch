@@ -1,0 +1,17 @@
+diff --git a/solvers/definesolvers.m b/solvers/definesolvers.m
+index fc25eb8..4eed0a8 100644
+--- a/solvers/definesolvers.m
++++ b/solvers/definesolvers.m
+@@ -74,8 +74,12 @@ emptysolver.powercone = 0;
+ emptysolver.uncertain  = 0;
+ emptysolver.global = 0;
+ 
++if exist('OCTAVE_VERSION','builtin')
++    MATLAB_lexversion = '2015a'; % Octave: version('-release') is empty
++else
+ MATLAB_lexversion = version('-release');
+ MATLAB_lexversion = MATLAB_lexversion(1:5); %Prune possible hotfix?
++end
+ MATLAB_lexversion = strrep(strrep(MATLAB_lexversion,'a','.1'),'b','.2');
+ 
+ % **************************************

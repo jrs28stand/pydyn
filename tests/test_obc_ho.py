@@ -88,7 +88,8 @@ def test_cubature_limits_and_covariance(nkm):
     c = HigherOrderNews(m, order=2, cubature=True, Sigma_e=tiny, qmc_level=5).simulate(S[:100])
     b = HigherOrderNews(m, order=2, Sigma_e=tiny).simulate(S[:100])
     np.testing.assert_allclose(c["with_bound"], b["with_bound"], atol=1e-9)
-    h = HigherOrderNews(m, order=1, cubature=True, taper=False, periods_of_uncertainty=16, qmc_level=5)
+    h = HigherOrderNews(m, order=1, cubature=True, taper=False, periods_of_uncertainty=16, qmc_level=5,
+                        pruning_cutoff=None)
     Gq, N = h.news.Qm[:, m.n_endo:], h.news.N
     cov = np.zeros((N, N))                                         # exact covariance of the gap path
     for i in range(1, 17):

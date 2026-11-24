@@ -27,6 +27,8 @@ One complementary pair per constraint (the class NewsOBC handles), one constrain
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from .obc import NewsOBC, OBCError, solve_active_set, solve_news
@@ -37,7 +39,8 @@ __all__ = ["HigherOrderNews"]
 
 class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
-                 cubature=False, periods_of_uncertainty=16, qmc_level=10, regions=1, taper=True, seed=0):
+                 cubature=False, periods_of_uncertainty=16, qmc_level=10, regions=1, taper=True, seed=0, pruning_cutoff=0.01,
+                 max_cubature_dimension=128):
         from .korder import k_order
         self.model = model
         self.order = int(order)
@@ -64,6 +67,7 @@ class HigherOrderNews:
         n, nx = self.n, ob.n_exo
         self.aC, self.aB, self.aA, self.aJ, self.a0 = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx], a[-1]
         self.cubature = bool(cubature)
+        self.pruning_cutoff, self.max_cubature_dimension = pruning_cutoff, int(max_cubature_dimension)
         self.pou, self.qmc_level, self.regions, self.taper, self.seed = (int(periods_of_uncertainty), int(qmc_level),
                                                                          regions, bool(taper), seed)
         if self.cubature:
@@ -119,13 +123,28 @@ class HigherOrderNews:
             if i < N:
                 B[i:] = np.sqrt(wi) * (Gq[:N - i] @ L)
             blocks.append(B)
-        return np.hstack(blocks) if blocks else np.zeros((N, 0))
+        R = np.hstack(blocks) if blocks else np.zeros((N, 0))
+        if R.shape[1] == 0 or self.pruning_cutoff is None:
+            return R
+        # DynareOBC's ObtainRootConditionalCovariance: drop directions with variance below the cut-off share
+        # of the largest, keep at most max_cubature_dimension of them.
+        ev, U = np.linalg.eigh(R @ R.T)
+        ev[ev < self.pruning_cutoff * ev.max()] = 0.0
+        ev[:max(0, len(ev) - self.max_cubature_dimension)] = 0.0
+        k = np.sqrt(np.maximum(ev, 0.0)) > np.sqrt(np.finfo(float).eps)
+        return U[:, k] * np.sqrt(ev[k])
 
     def _points(self, dim):
+        """DynareOBC's rule: the first 2^(level+1) - 1 Sobol points after the origin, unscrambled, mapped to
+        normals. The set is symmetric, so its mean is exactly zero (with one region and every point relevant,
+        cubature then equals no cubature, as in DynareOBC). Dynare's direction numbers differ from SciPy's
+        beyond the second dimension, so individual points are not DynareOBC's."""
         from scipy.stats import norm, qmc
         m = self.qmc_level + 1
-        u = qmc.Sobol(d=dim, scramble=True, seed=self.seed).random_base2(m)
-        return norm.ppf(np.clip(u, 1e-12, 1 - 1e-12)).T          # (dim, 2^m)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            u = qmc.Sobol(d=dim, scramble=False).random_base2(m)[1:]
+        return norm.ppf(u).T                                     # (dim, 2^m - 1)
 
     def _solve(self, q):
         nb, T = self.news, self.T

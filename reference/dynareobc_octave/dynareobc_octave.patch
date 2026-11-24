@@ -1,0 +1,109 @@
+diff --git a/Core/MODProcessing/ProcessModFileText.m b/Core/MODProcessing/ProcessModFileText.m
+index c3cd73d..8203a6b 100644
+--- a/Core/MODProcessing/ProcessModFileText.m
++++ b/Core/MODProcessing/ProcessModFileText.m
+@@ -13,7 +13,7 @@ function FileText = ProcessModFileText( FileText )
+     FileText = regexprep( FileText, '\s+', ' ' );
+     FileText = regexprep( FileText, '[ ]*;+[ ]*', ';\n' );
+     % remove some unnecessary space
+-    FileText = regexprep( FileText, '[ ]*([\(\)\+\-\*\/\^\>\<\=\!\,\[\]\#]+)[ ]*', '$1' );
++    FileText = regexprep( FileText, '[ ]*([()+\-*/^><=!,\[\]#]+)[ ]*', '$1' ); % Octave reads \< and \> as word anchors, even in a class
+     FileText = regexprep( FileText, '^ | $', '', 'lineanchors' );
+     FileText = regexprep( FileText, '[\n\r]+', '\n' );
+     FileText = regexprep( FileText, '(^\s+|\s+$)', '' );
+diff --git a/Core/MODProcessing/ProcessStochSimulCommand.m b/Core/MODProcessing/ProcessStochSimulCommand.m
+index 66d2bd0..7c8ca35 100644
+--- a/Core/MODProcessing/ProcessStochSimulCommand.m
++++ b/Core/MODProcessing/ProcessStochSimulCommand.m
+@@ -1,50 +1,50 @@
+ function [ LogLinear, dynareOBC ] = ProcessStochSimulCommand( StochSimulCommand, dynareOBC )
+ 
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)irf\=))\d+', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.IRFPeriods = str2double( StochSimulCommand( startindex:endindex ) );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)irf\=(\d+)', 'tokens', 'once' ); % Octave: no variable-length lookbehind
++    if ~isempty( Token )
++        dynareOBC.IRFPeriods = str2double( Token{1} );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)periods\=))\d+', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.SimulationPeriods = str2double( StochSimulCommand( startindex:endindex ) );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)periods\=(\d+)', 'tokens', 'once' ); % Octave: no variable-length lookbehind
++    if ~isempty( Token )
++        dynareOBC.SimulationPeriods = str2double( Token{1} );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)drop\=))\d+', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.SimulationDrop = str2double( StochSimulCommand( startindex:endindex ) );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)drop\=(\d+)', 'tokens', 'once' ); % Octave: no variable-length lookbehind
++    if ~isempty( Token )
++        dynareOBC.SimulationDrop = str2double( Token{1} );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)order\=))\d+', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.Order = str2double( StochSimulCommand( startindex:endindex ) );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)order\=(\d+)', 'tokens', 'once' ); % Octave: no variable-length lookbehind
++    if ~isempty( Token )
++        dynareOBC.Order = str2double( Token{1} );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)replic\=))\d+', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.Replications = str2double( StochSimulCommand( startindex:endindex ) );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)replic\=(\d+)', 'tokens', 'once' ); % Octave: no variable-length lookbehind
++    if ~isempty( Token )
++        dynareOBC.Replications = str2double( Token{1} );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=((\(|\(.*\W)irf_shocks\=\())\s*\w+(\s*\,?\s*\w+)*\s*(?=\))', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.IRFShocks = StringSplit( StochSimulCommand( startindex:endindex ), { ' ', ',' } );
++    Token = regexp( StochSimulCommand, '\(.*?(?<=\W)irf_shocks\=\((\s*\w+(?:\s*\,?\s*\w+)*\s*)\)', 'tokens', 'once' );
++    if ~isempty( Token )
++        dynareOBC.IRFShocks = StringSplit( Token{1}, { ' ', ',' } );
+     end
+-    [ startindex, endindex ] = regexp( StochSimulCommand, '(?<=(^\w*(\(.*\))?\s*))(\w+(\s|\,|\;)+)*$', 'once' );
+-    if ~isempty( startindex )
+-        dynareOBC.VarList = StringSplit( StochSimulCommand( startindex:endindex ), { ' ', ',', ';' } );
++    Token = regexp( StochSimulCommand, '^\w*(?:\(.*\))?\s*((?:\w+(?:\s|\,|\;)+)*)$', 'tokens', 'once' );
++    if ~isempty( Token ) && ~isempty( Token{1} )
++        dynareOBC.VarList = StringSplit( Token{1}, { ' ', ',', ';' } );
+     end
+-    startindex = regexp( StochSimulCommand, '(?<=(\(|\(.*\W))nograph', 'once' );
++    startindex = regexp( StochSimulCommand, '\(.*?(?<=\W)nograph', 'once' );
+     if ~isempty( startindex )
+         dynareOBC.NoGraph = 1;
+     end
+-    startindex = regexp( StochSimulCommand, '(?<=(\(|\(.*\W))nodisplay', 'once' );
++    startindex = regexp( StochSimulCommand, '\(.*?(?<=\W)nodisplay', 'once' );
+     if ~isempty( startindex )
+         dynareOBC.NoDisplay = 1;
+     end
+-    startindex = regexp( StochSimulCommand, '(?<=(\(|\(.*\W))nomoments', 'once' );
++    startindex = regexp( StochSimulCommand, '\(.*?(?<=\W)nomoments', 'once' );
+     if ~isempty( startindex )
+         dynareOBC.NoMoments = 1;
+     end
+-    startindex = regexp( StochSimulCommand, '(?<=(\(|\(.*\W))nocorr', 'once' );
++    startindex = regexp( StochSimulCommand, '\(.*?(?<=\W)nocorr', 'once' );
+     if ~isempty( startindex )
+         dynareOBC.NoCorr = 1;
+     end
+-    startindex = regexp( StochSimulCommand, '(?<=(\(|\(.*\W))loglinear', 'once' );
++    startindex = regexp( StochSimulCommand, '\(.*?(?<=\W)loglinear', 'once' );
+     LogLinear = ~isempty( startindex );
+     
+ end
+diff --git a/Core/Utils/ObtainRootConditionalCovariance.m b/Core/Utils/ObtainRootConditionalCovariance.m
+index 9767d05..5a40fe5 100644
+--- a/Core/Utils/ObtainRootConditionalCovariance.m
++++ b/Core/Utils/ObtainRootConditionalCovariance.m
+@@ -1,7 +1,9 @@
+ function RootConditionalCovariance = ObtainRootConditionalCovariance( ConditionalCovariance, PruningCutOff, MaxDimension )
+     [U,D] = schur( ConditionalCovariance, 'complex' );
+     % assert( isreal( U ) );
+-    diagD = diag( D );
++    diagD = real( diag( D ) );
++    [ diagD, SortIdx ] = sort( diagD ); % Octave's schur does not order the eigenvalues; the truncation below needs ascending order
++    U = U( :, SortIdx );
+     % assert( isreal( diagD ) );
+     max_diagD = max( diagD );
+     diagD( diagD < PruningCutOff * max_diagD ) = 0;
