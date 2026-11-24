@@ -31,7 +31,7 @@ from scipy.linalg.lapack import dgesv as _dgesv
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 
 from .expr import NAMESPACE, Translator, tokenize
-from .occbin import Occbin, OccbinResult, _split_comparison
+from .occbin import OBC_SELECTIONS, Occbin, OccbinResult, _split_comparison
 
 __all__ = ["OBCError", "OBCClassError", "ConstraintObject", "NewsOBC", "RegimeOBC", "constraint_objects", "solve_news",
            "solve_active_set", "m_diagnostics", "verify_lcp"]
@@ -492,6 +492,33 @@ def _regime_history(y, T, n_c):
 
 
 # ------------------------------------------------------------------------------------------------- the model
+SELECTIONS = OBC_SELECTIONS
+
+
+def check_selection(selection, n_c=1):
+    """Validate an ``obc_selection`` value (and that a non-default one is used with one constraint only)."""
+    if not isinstance(selection, str) or selection not in SELECTIONS:
+        raise ValueError(f"unknown obc_selection {selection!r}: use one of {', '.join(map(repr, SELECTIONS))}")
+    if selection != "occbin" and n_c != 1:
+        raise ValueError(f"obc_selection={selection!r} is implemented for models with one constraint only (this model has "
+                         f"{n_c}); use obc_selection='occbin', which returns the solution that the guess-and-verify "
+                         "iteration reaches")
+    return selection
+
+
+def pick_spell(cands, selection):
+    """The candidate ``(l, k, w)`` (spell start, number of binding periods, wedges) chosen by ``selection``: the fewest
+    binding periods (``'shortest'``), the most (``'longest'``) or the smallest sum of squared wedges
+    (``'min_wedge'``); ties go to the earliest start."""
+    if selection == "shortest":
+        key = lambda c: (c[1], c[0])                      # noqa: E731
+    elif selection == "longest":
+        key = lambda c: (-c[1], c[0])                     # noqa: E731
+    else:
+        key = lambda c: (float(np.sum(np.square(c[2]))), c[0], c[1])    # noqa: E731
+    return min(cands, key=key)
+
+
 class NewsOBC:
     """News-shock solution of a model with an ``occbin_constraints`` block.
 
@@ -633,9 +660,51 @@ class NewsOBC:
         return self._gap_of(sol[:N + 1], const=False)[self._order]
 
     # ------------------------------------------------------------------------------------------- solving
-    def _wedges(self, q, method, omega, tol, start=None):
+    spell_l_max = 8      # latest start (period index) of a single spell that ``single_spells`` looks for
+
+    def single_spells(self, q, l_max=None, tol=1e-8):
+        """All solutions of the complementarity problem with one binding spell {l, ..., l+k-1}, l <= l_max (one constraint):
+        a list of (l, k, y) with y the wedges (length n_s).  On the spell the wedges solve the square system
+        ``M[S, S] y = -q[S]`` and must be positive; the gap must be non-negative on every row, check-ahead rows
+        included.  More than one entry means that the state has several solutions."""
+        if self.n_c != 1:
+            raise ValueError("single_spells needs a model with one constraint")
+        T = self.T
+        scale = max(1.0, float(np.abs(q).max()))
+        out = []
+        for l in range(min(self.spell_l_max if l_max is None else l_max, T - 1) + 1):
+            for k in range(1, T - l + 1):
+                sl = slice(l, l + k)
+                try:
+                    yk = np.linalg.solve(self.Mo[sl, sl], -q[sl])
+                except np.linalg.LinAlgError:
+                    continue
+                if yk.min() <= tol * scale:               # a spell of exactly k periods needs positive wedges
+                    continue
+                if (q + self.Mo[:, sl] @ yk).min() < -tol * scale:
+                    continue
+                y = np.zeros(T)
+                y[sl] = yk
+                out.append((l, k, y))
+        return out
+
+    def _select(self, q, y, selection, info, tol):
+        """Replace the default solution ``y`` (which binds somewhere) by the single-spell solution chosen by
+        ``selection``; the default stands, flagged, if there is none.  Fills ``info``."""
+        cands = self.single_spells(q, tol=tol)
+        info["n_single_spell"] = len(cands)
+        if not cands:
+            info["selection_fallback"] = True
+            return y
+        l, k, ys = pick_spell(cands, selection)
+        info["spell"] = (l, k)
+        return ys
+
+    def _wedges(self, q, method, omega, tol, start=None, selection="occbin"):
         """Wedges for the gaps q (complementarity rows first): (y, info).  ``start``: boolean guess of the
-        binding set for the active-set iteration (tried first; the standard start follows if it fails)."""
+        binding set for the active-set iteration (tried first; the standard start follows if it fails).
+        ``selection``: which solution to return when there are several (see ``pick_spell``); the default is the
+        one the iteration reaches, the others look for single-spell solutions wherever something binds."""
         n_s = self.n_c * self.T
         info = dict(used="none")
         qmin = q.min()
@@ -663,16 +732,18 @@ class NewsOBC:
                                    "horizon_too_short")
                 raise OBCError("no solution returns to the reference regime within the news horizon",
                                "no_solution")
+        if selection != "occbin" and y.any():
+            y = self._select(q, y, selection, info, tol)
         return y, info
 
-    def _step(self, init, shock, method="news", omega=1000.0, tol=1e-8, start=None):
+    def _step(self, init, shock, method="news", omega=1000.0, tol=1e-8, start=None, selection="occbin"):
         """One shock period without the path: (y, next state (deviations), info).  The path is only needed
         in the last shock period of a simulation (see ``_path``)."""
         init = np.asarray(init, float)
         shock = np.asarray(shock, float)
         x = np.concatenate([init[self._st], shock])
         q = self.q0 + self._Qx @ x
-        y, info = self._wedges(q, method, omega, tol, start)
+        y, info = self._wedges(q, method, omega, tol, start, selection)
         nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
         if y.any():
             nxt = nxt + self._V0 @ y
@@ -691,15 +762,23 @@ class NewsOBC:
         return y, self._path(init, shock, y), info
 
     def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, omega=1000.0,
-                 warm_start=False) -> OccbinResult:
+                 warm_start=False, selection="occbin") -> OccbinResult:
         """Simulation under a sequence of unanticipated shocks, with OccBin's timing: every shock period is
         solved with no future shocks expected; after the last shock the perfect-foresight path is followed.
+
+        ``selection`` (``obc_selection``): ``'occbin'`` (default) returns the solution that the active-set iteration
+        reaches from the no-binding guess; ``'shortest'``, ``'longest'`` and ``'min_wedge'`` choose, in every period in
+        which something binds, among the single-spell solutions at the state (``single_spells``): the fewest
+        binding periods, the most, the smallest sum of squared wedges.  If none exists the default solution stands
+        and the period is flagged in ``res.news['selection_fallback']``; ``res.news['n_single_spell']`` holds the
+        number found per shock period (-1: not looked for).  One constraint only.
 
         ``warm_start``: start each active-set iteration from the previous period's binding set moved forward
         by one period (exact when no new shock arrives); the standard start is the fallback.  Off by default:
         with a fresh shock every period it needed more iterations than the standard start (docs/OBC_PERF.md),
         and where M is not a P-matrix the two starts could in principle end in different solutions."""
         ob, n, T = self.ob, self.ob.n, self.T
+        check_selection(selection, self.n_c)
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
             exo_idx = tuple(range(ob.n_exo))
@@ -717,16 +796,18 @@ class NewsOBC:
         init_orig = y0.copy()
         piecewise = np.zeros((n_periods, n))
         history, wedges, used = [], np.zeros((S, self.n_c * T)), []
+        n_spell, fallback = np.full(S, -1), np.zeros(S, bool)
         path, start = None, None
         for sp in range(S):
             y_prev = y0
             try:
-                y, y0, info = self._step(y_prev, sh[sp], method=method, omega=omega, start=start)
+                y, y0, info = self._step(y_prev, sh[sp], method=method, omega=omega, start=start, selection=selection)
             except OBCError as err:
                 err.period = sp + 1
                 raise
             wedges[sp] = y
             used.append(info["used"])
+            n_spell[sp], fallback[sp] = info.get("n_single_spell", -1), info.get("selection_fallback", False)
             if warm_start:
                 start = np.zeros(self.n_c * T, bool)
                 if y.any():
@@ -740,7 +821,8 @@ class NewsOBC:
         linear = _linear_path(ob, self._st, init_orig, sh, n_periods)
         res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
                            regime_history=history, ys=ob.ys, exo_pos=exo_idx)
-        res.news = dict(method=method, wedges=wedges, solver=used, horizon=T)
+        res.news = dict(method=method, wedges=wedges, solver=used, horizon=T, selection=selection,
+                        n_single_spell=n_spell, selection_fallback=fallback)
         return res
 
     def diagnostics(self, max_exact=16):
@@ -1129,10 +1211,10 @@ class RegimeOBC:
         return _wedge_path(ob.P, self._G, self._FE, ob.P @ np.asarray(init, float) + ob.Q @ np.asarray(shock, float),
                            w, self.T, self.N if upto is None else upto)
 
-    def solve_period(self, init, shock, maxit=60, method="news"):
+    def solve_period(self, init, shock, maxit=60, method="news", selection="occbin"):
         """Regime indicators (N, n_c), wedges and path (N+1, n; deviations) for one shock period."""
         init, shock = np.asarray(init, float), np.asarray(shock, float)
-        z, w, _nxt, info = self._step(init, shock, maxit=maxit, method=method)
+        z, w, _nxt, info = self._step(init, shock, maxit=maxit, method=method, selection=selection)
         return z, w, self._path(init, shock, w), info
 
     def _iterate(self, z, Ycv, a, maxit):
@@ -1158,9 +1240,33 @@ class RegimeOBC:
             z = (z & ~vr) | vb
         return False, False, z, None, maxit
 
-    def _step(self, init, shock, maxit=60, method="news", z0=None):
+    spell_l_max = 8      # latest start (period index) of a single spell that ``spells`` looks for
+
+    def spells(self, Ycv, a, l_max=None):
+        """Regime sequences with one alternative-regime spell {l, ..., l+k-1}, l <= l_max, that pass OccBin's test (one
+        constraint): a list of (l, k, w) with w the wedges.  Each is a solution of the piecewise-linear model; more
+        than one entry means that the state has several."""
+        if self.n_c != 1:
+            raise ValueError("spells needs a model with one constraint")
+        T, N, k_cv = self.T, self.N, len(self._cv)
+        out = []
+        for l in range(min(self.spell_l_max if l_max is None else l_max, T - 1) + 1):
+            for k in range(1, T - l + 1):
+                z = np.zeros((N, 1), bool)
+                z[l:l + k, 0] = True
+                try:
+                    w = self._wedges(z, a)
+                except np.linalg.LinAlgError:
+                    continue
+                vb, vr = self._violations(z, Ycv + (self._Wcv @ w).reshape(N, k_cv))
+                if not vb.any() and not vr.any():
+                    out.append((l, k, w))
+        return out
+
+    def _step(self, init, shock, maxit=60, method="news", z0=None, selection="occbin"):
         """Regime indicators, wedges, next state and info for one shock period (no full path).  ``z0``: a
-        starting guess (N, n_c) tried before the reference regime everywhere."""
+        starting guess (N, n_c) tried before the reference regime everywhere.  ``selection``: as in
+        ``NewsOBC.simulate``; the single-spell solutions are those of ``spells``."""
         T, N, k = self.T, self.N, len(self._cv)
         init, shock = np.asarray(init, float), np.asarray(shock, float)
         xs = np.concatenate([init[self._st], shock])
@@ -1190,7 +1296,9 @@ class RegimeOBC:
                 vb, vr = self._violations(z, path)
                 if not vb.any() and not vr.any():
                     info["used"] = "lcp"
-                    return z, w, path[0], info
+                    if selection == "occbin" or not w.any():
+                        return z, w, path[0], info
+                    ok = True                                  # the chosen solution is looked for below
         if not ok:
             Y = self.base_path(init, shock)
             try:
@@ -1210,6 +1318,16 @@ class RegimeOBC:
             if vb.any() or vr.any():
                 raise OBCError("the regime sequence found by the integer programme (linearised conditions) fails "
                                "OccBin's test on the conditions in levels", "not_converged")
+        if selection != "occbin" and w.any():
+            cands = self.spells(Ycv, a)
+            info["n_single_spell"] = len(cands)
+            if cands:
+                l, ks, w = pick_spell(cands, selection)
+                z = np.zeros((N, self.n_c), bool)
+                z[l:l + ks, 0] = True
+                info["spell"] = (l, ks)
+            else:
+                info["selection_fallback"] = True
         nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
         if w.any():
             nxt = nxt + self._V0 @ w
@@ -1276,10 +1394,13 @@ class RegimeOBC:
         z[:T] = (res.x[nw:] > 0.5).reshape(nc, T).T
         return z
 
-    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, warm_start=False) -> OccbinResult:
-        """As ``NewsOBC.simulate``.  ``warm_start``: start the guess-and-verify iteration from the previous period's
-        regime indicators moved forward by one period (the reference regime everywhere is the fallback)."""
+    def simulate(self, shocks, periods=100, init=None, method="news", exo_pos=None, warm_start=False,
+                 selection="occbin") -> OccbinResult:
+        """As ``NewsOBC.simulate`` (including ``selection``).  ``warm_start``: start the guess-and-verify iteration from
+        the previous period's regime indicators moved forward by one period (the reference regime everywhere is the
+        fallback)."""
         ob, n, T = self.ob, self.ob.n, self.T
+        check_selection(selection, self.n_c)
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
             exo_idx = tuple(range(ob.n_exo))
@@ -1296,11 +1417,12 @@ class RegimeOBC:
         init_orig = y0.copy()
         piecewise = np.zeros((n_periods, n))
         history, used, wedges = [], [], np.zeros((S, len(self.cols) * T))
+        n_spell, fallback = np.full(S, -1), np.zeros(S, bool)
         path, z0 = None, None
         for sp in range(S):
             y_prev = y0
             try:
-                z, w, y0, info = self._step(y_prev, sh[sp], method=method, z0=z0)
+                z, w, y0, info = self._step(y_prev, sh[sp], method=method, z0=z0, selection=selection)
             except OBCError as err:
                 err.period = sp + 1
                 raise
@@ -1309,6 +1431,7 @@ class RegimeOBC:
                 z0[:-1] = z[1:]
             wedges[sp] = w
             used.append(info["used"])
+            n_spell[sp], fallback[sp] = info.get("n_single_spell", -1), info.get("selection_fallback", False)
             history.append([_map_regime(z[:, j].astype(np.int64)) for j in range(self.n_c)])
             piecewise[sp] = y0
             if sp == S - 1:                      # the path is only needed once, after the last shock period
@@ -1318,5 +1441,5 @@ class RegimeOBC:
         res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
                            regime_history=history, ys=ob.ys, exo_pos=exo_idx)
         res.news = dict(method=method, formulation="regime", wedges=wedges, solver=used, horizon=T,
-                        blocks=list(self.cols))
+                        blocks=list(self.cols), selection=selection, n_single_spell=n_spell, selection_fallback=fallback)
         return res

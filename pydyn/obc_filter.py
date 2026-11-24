@@ -47,7 +47,8 @@ class NewsFilterSolver(_Solver):
 
     def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None):
         super().__init__(ob)
-        self.selection = selection
+        from .obc import check_selection
+        self.selection = check_selection(selection, len(ob.names))
         if milp_time_limit is not None:
             self.milp_time_limit = float(milp_time_limit)
         self._maps = {}
@@ -138,6 +139,8 @@ class LCPFilterSolver(NewsFilterSolver):
                 return self._fail(313)
             if self.fallbacks > f0:
                 self.rescued += 1                        # the integer programme found what the cheap checks did not
+            if self.selection != "occbin" and y.any():
+                y = nb._select(q, y, self.selection, {}, self._tol)
             on = y > 1e-9 * max(1.0, float(np.abs(y).max()))
             S, s0, regime = self._map(on)
         return self._finish(S, s0, regime, x)
@@ -175,7 +178,7 @@ class RegimeFilterSolver(NewsFilterSolver):
         self.calls += 1
         u, x = self._x(shocks, init, exo_pos)
         try:
-            z, w, _nxt, info = rb._step(x[:self.ob.n], u)
+            z, w, _nxt, info = rb._step(x[:self.ob.n], u, selection=self.selection)
         except OBCError as err:
             self.fallbacks += 1
             if err.status == "not_converged":          # the integer programme hit its time limit

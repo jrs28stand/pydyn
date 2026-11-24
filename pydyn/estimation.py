@@ -1211,9 +1211,11 @@ class Estimation:
         self.user_lb, self.user_ub = lb, ub
         if self.prior.is_bayesian:
             plb, pub = self.prior.bounds(self.options["prior_trunc"])
-            self.lb, self.ub = np.maximum(plb, lb), np.minimum(pub, ub)
+            # empty bounds in estimated_params are NaN: fmax/fmin keep the prior's bound there (np.maximum would
+            # propagate the NaN and make every comparison with the bounds false, so the sampler rejected everything)
+            self.lb, self.ub = np.fmax(plb, lb), np.fmin(pub, ub)
         else:
-            self.lb, self.ub = lb, ub
+            self.lb, self.ub = np.where(np.isnan(lb), -np.inf, lb), np.where(np.isnan(ub), np.inf, ub)
         self.n = len(self.names)
         # calibrated covariance structure, as Dynare's set_all_parameters uses it: Sigma_e is rebuilt
         # from the standard deviations and M_.Correlation_matrix (set by 'corr' statements only); when

@@ -254,7 +254,7 @@ class Occbin:
                  periodic_solution_strict=True, init_regime=None, init_binding_indicator=None,
                  max_check_ahead_periods=np.inf, reset_check_ahead_periods_in_new_period=False,
                  reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1,
-                 obc_method="occbin", obc_horizon=40) -> OccbinResult:
+                 obc_method="occbin", obc_horizon=40, obc_selection="occbin") -> OccbinResult:
         """Piecewise-linear simulation under a sequence of unanticipated shocks (Dynare's
         ``occbin.solver`` with the ``simul`` options, defaults as in ``set_default_options.m``).
 
@@ -274,9 +274,17 @@ class Occbin:
         (news shocks: a linear complementarity problem, ``pydyn.obc.NewsOBC``, when every constraint is one
         complementary pair, otherwise the general regime formulation ``pydyn.obc.RegimeOBC``; ``obc_horizon``
         is the number of periods in which wedges may be non-zero and ``check_ahead_periods`` the further
-        periods checked, capped at 400).  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
+        periods checked, capped at 400).  ``obc_selection`` (with ``'news'`` only): which solution to return when a
+        state has several (a one-constraint model): ``'occbin'`` (default: the one the guess-and-verify / active-set
+        iteration reaches), ``'shortest'``, ``'longest'`` (fewest, most binding periods among the single-spell
+        solutions) or ``'min_wedge'`` (smallest sum of squared wedges); see ``NewsOBC.simulate``.  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
         ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
         """
+        if obc_selection not in OBC_SELECTIONS:
+            raise ValueError(f"unknown obc_selection {obc_selection!r}: use one of {', '.join(map(repr, OBC_SELECTIONS))}")
+        if obc_method == "occbin" and obc_selection != "occbin":
+            raise ValueError(f"obc_selection={obc_selection!r} needs obc_method='news': OccBin's own solver returns "
+                             "the solution that its guess-and-verify iteration reaches")
         if obc_method != "occbin":
             if obc_method == "minnorm":
                 raise NotImplementedError("obc_method='minnorm' is not implemented in pydyn yet")
@@ -293,7 +301,7 @@ class Occbin:
                 # one complementary pair per constraint: Holden's LCP; otherwise the general regime formulation
                 lcp = all(c.cls == "complementarity" for c in constraint_objects(self))
                 cache[key] = (NewsOBC if lcp else RegimeOBC)(self, horizon=key[0], check_ahead=key[1])
-            return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos)
+            return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos, selection=obc_selection)
         k, n, n_exo, m = self.k, self.n, self.n_exo, self.model
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
@@ -504,7 +512,7 @@ class Occbin:
             if key in o:
                 v = o[key]
                 out[kw] = (str(v).lower() == "true") if typ is bool and isinstance(v, str) else typ(v)
-        # options_.occbin.obc_method = '...'; and options_.occbin.obc_horizon = n; (native lines of the .mod file:
+        # options_.occbin.obc_method = '...'; obc_horizon = n; obc_selection = '...'; (native lines of the .mod file:
         # the preprocessor rejects unknown options of occbin_setup / occbin_solver)
         mo = getattr(self.model, "matlab_options", None) or {}
         occ = mo.get("occbin", {}) if hasattr(mo, "get") else {}
@@ -513,6 +521,8 @@ class Occbin:
                 out["obc_method"] = str(occ["obc_method"])
             if occ.get("obc_horizon") is not None:
                 out["obc_horizon"] = int(np.ravel(occ["obc_horizon"])[0])
+            if occ.get("obc_selection") is not None:
+                out["obc_selection"] = str(occ["obc_selection"])
         return out
 
     def run(self, **overrides) -> OccbinResult:
