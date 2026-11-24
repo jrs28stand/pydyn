@@ -33,7 +33,7 @@ class NewsFilterSolver(_Solver):
         self.news = NewsOBC(ob, horizon=horizon, check_ahead=check_ahead)
         nb = self.news
         self._S0 = np.hstack([ob.P, ob.Q])
-        self._Yw0 = nb.Yw[0]
+        self._Yw0 = nb._V0                                # effect of each wedge on the next state
         self._maps = {}
         self._tol = 1e-8
         self.calls = self.fallbacks = self.proved_infeasible = 0
