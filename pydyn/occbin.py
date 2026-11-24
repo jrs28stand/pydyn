@@ -249,7 +249,8 @@ class Occbin:
                  curb_retrench=False, *, periodic_solution=False, periodic_solution_threshold=1,
                  periodic_solution_strict=True, init_regime=None, init_binding_indicator=None,
                  max_check_ahead_periods=np.inf, reset_check_ahead_periods_in_new_period=False,
-                 reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1) -> OccbinResult:
+                 reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1,
+                 obc_method="occbin", obc_horizon=40) -> OccbinResult:
         """Piecewise-linear simulation under a sequence of unanticipated shocks (Dynare's
         ``occbin.solver`` with the ``simul`` options, defaults as in ``set_default_options.m``).
 
@@ -264,7 +265,28 @@ class Occbin:
         0/1 array: the initial guess for the first shock period.
 
         Failures raise OccbinError whose ``error_flag`` is Dynare's (310-313); see OccbinError.
+
+        ``obc_method`` selects the solution method: ``'occbin'`` (default, everything above) or ``'news'``
+        (news shocks and a linear complementarity problem, ``pydyn.obc.NewsOBC``; ``obc_horizon`` is the
+        number of periods in which wedges may be non-zero and ``check_ahead_periods`` the further periods
+        checked).  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
+        ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
         """
+        if obc_method != "occbin":
+            if obc_method == "minnorm":
+                raise NotImplementedError("obc_method='minnorm' is not implemented in pydyn yet")
+            if obc_method != "news":
+                raise ValueError(f"unknown obc_method {obc_method!r}: use 'occbin' or 'news'")
+            if (init_regime is not None or init_binding_indicator is not None or periodic_solution
+                    or curb_retrench or reset_regime_in_new_period):
+                raise ValueError("init_regime, init_binding_indicator, periodic_solution, curb_retrench and "
+                                 "reset_regime_in_new_period are OccBin options and do not apply to obc_method='news'")
+            from .obc import NewsOBC
+            key = (int(obc_horizon), int(min(check_ahead_periods, 400)))
+            cache = self.__dict__.setdefault("_news", {})
+            if key not in cache:
+                cache[key] = NewsOBC(self, horizon=key[0], check_ahead=key[1])
+            return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos)
         k, n, n_exo, m = self.k, self.n, self.n_exo, self.model
         shocks_in = np.atleast_2d(np.asarray(shocks, float))
         if exo_pos is None:
@@ -475,6 +497,15 @@ class Occbin:
             if key in o:
                 v = o[key]
                 out[kw] = (str(v).lower() == "true") if typ is bool and isinstance(v, str) else typ(v)
+        # options_.occbin.obc_method = '...'; and options_.occbin.obc_horizon = n; (native lines of the .mod file:
+        # the preprocessor rejects unknown options of occbin_setup / occbin_solver)
+        mo = getattr(self.model, "matlab_options", None) or {}
+        occ = mo.get("occbin", {}) if hasattr(mo, "get") else {}
+        if hasattr(occ, "get"):
+            if occ.get("obc_method") is not None:
+                out["obc_method"] = str(occ["obc_method"])
+            if occ.get("obc_horizon") is not None:
+                out["obc_horizon"] = int(np.ravel(occ["obc_horizon"])[0])
         return out
 
     def run(self, **overrides) -> OccbinResult:
