@@ -124,7 +124,8 @@ def stage_mode(case, ests, X, tag, x0, log):
         traces[meth] = A
         res[meth] = dict(x=r.x, log_posterior=r.log_posterior, success=r.success, message=r.message, nfev_optimizer=r.nfev,
                          evaluations=len(tr.rows), wall_s=wall, std=r.std, laplace=r.laplace,
-                         hessian_pd=bool(r.inv_hessian is not None and np.all(np.isfinite(r.inv_hessian))),
+                         hessian_pd=bool(r.hessian is not None and np.all(np.isfinite(r.hessian))
+                                         and np.all(np.linalg.eigvalsh((r.hessian + r.hessian.T) / 2) > 0)),
                          failed_evaluations=int(np.sum(~np.isfinite(A["lp"]))), trial_failures=dict(FLAGS),
                          hessian=r.hessian, inv_hessian=r.inv_hessian)
         log(f"[{case} {tag}] mode {meth}: lp {r.log_posterior:.6f} evals {len(tr.rows)} wall {wall:.1f}s {r.message}")
@@ -156,9 +157,11 @@ def stage_mode(case, ests, X, tag, x0, log):
     if diffs:
         i = diffs[0][0]
         cmp["first_difference_explained"] = regime_diff(en.model, A["theta"][i], ests)
-    cmp["per_evaluation_seconds_interleaved"] = dict(occbin_min=min(tocc), occbin_median=float(np.median(tocc)),
-                                                     news_min=min(tnews), news_median=float(np.median(tnews)),
-                                                     ratio_of_medians=float(np.median(tocc) / np.median(tnews)))
+    ok = np.isfinite(A["lp"]) & (np.array(tocc) > 0.05)           # evaluations that ran the filter (not rejected early)
+    cmp["per_evaluation_seconds_interleaved"] = dict(occbin_min=min(np.array(tocc)[ok]), occbin_median=float(np.median(np.array(tocc)[ok])),
+                                                     news_min=min(np.array(tnews)[ok]), news_median=float(np.median(np.array(tnews)[ok])),
+                                                     ratio_of_medians=float(np.median(np.array(tocc)[ok]) / np.median(np.array(tnews)[ok])),
+                                                     n_timed=int(ok.sum()))
     res["comparison"] = cmp
     return res
 
@@ -288,6 +291,8 @@ def main():
     ap.add_argument("--chains", type=int, default=2)
     ap.add_argument("--seed", type=int, default=20261124)
     ap.add_argument("--start", default="prior", help="mode search start: prior (the initial values) or stored (first stored vector)")
+    ap.add_argument("--mh-center", default=None, help="start tag whose OccBin mode centres the chains (default: --start)")
+    ap.add_argument("--cov", default="hessian", help="jumping covariance: hessian (inverse Hessian at OccBin's mode) or prior_variance")
     a = ap.parse_args()
     OUT.mkdir(exist_ok=True)
     _count_flags()
@@ -303,6 +308,8 @@ def main():
     tag = a.start
     stages = a.stages.split(",")
     fm = OUT / f"est_{a.case}_{tag}_mode.json"
+    if "mh" in stages and "mode" not in stages and not fm.exists():
+        fm = OUT / f"est_{a.case}_{a.mh_center or tag}_mode.json"
     if "mode" in stages:
         res = stage_mode(a.case, ests, X, tag, x0, log)
         fm.write_text(json.dumps(jl(res), indent=1))
@@ -311,12 +318,18 @@ def main():
         h = stage_hessian(a.case, ests, res_mode, log)
         (OUT / f"est_{a.case}_{tag}_hessian.json").write_text(json.dumps(jl(h), indent=1))
     if "mh" in stages:
-        hs = json.loads((OUT / f"est_{a.case}_{tag}_hessian.json").read_text())
-        xm = np.array(res_mode["occbin"]["x"])
-        cov = np.array(hs["occbin"]["inv_hessian"])
+        ctag = a.mh_center or tag
+        hs = json.loads((OUT / f"est_{a.case}_{ctag}_hessian.json").read_text())
+        xm = np.array(json.loads((OUT / f"est_{a.case}_{ctag}_mode.json").read_text())["occbin"]["x"])
         from pydyn import posterior as _post
+        covname = a.cov
+        if covname == "hessian" and not hs["occbin"]["positive_definite"]:
+            covname = "prior_variance"
+            log(f"[{a.case}] the Hessian at OccBin's mode is not positive definite: jumping covariance = prior variance")
+        cov = np.array(hs["occbin"]["inv_hessian"]) if covname == "hessian" else np.asarray(_post.jumping_covariance(est, "prior_variance", None))
+        grid = (0.25, 0.4, 0.6, 0.9, 1.3, 1.8, 2.4, 3.2) if covname == "hessian" else (0.02, 0.04, 0.07, 0.1, 0.15, 0.25, 0.4, 0.6)
         # same proposal for both: the inverse Hessian at OccBin's mode, scale tuned (news solver, fast) to about 1/3 acceptance
-        tuned, pilot = pilot_jscale(ests["news"], xm, cov, a.seed, log, a.case)
+        tuned, pilot = pilot_jscale(ests["news"], xm, cov, a.seed, log, a.case, grid=grid)
         d = np.linalg.cholesky(cov).T
         lb, ub = est.prior.bounds(est.options["prior_trunc"])
         rng = np.random.default_rng([a.seed, 99])
@@ -327,8 +340,9 @@ def main():
                 starts.append(cand)
         mh = stage_mh(a.case, ests, xm, cov, tuned, a.chains, a.replic, a.seed, log, starts)
         mh["settings"] = dict(replic=a.replic, chains=a.chains, seed=a.seed, jscale=tuned, pilot=pilot, starts=starts,
-                              cov="inverse Hessian at OccBin's mode")
-        (OUT / f"est_{a.case}_{tag}_mh.json").write_text(json.dumps(jl(mh), indent=1))
+                              cov=("inverse Hessian at OccBin's mode" if covname == "hessian" else "prior variance (the Hessian at the mode is not positive definite)"),
+                              centre=ctag, centre_x=xm)
+        (OUT / f"est_{a.case}_{ctag}_mh.json").write_text(json.dumps(jl(mh), indent=1))
         log("mh done")
 
 
