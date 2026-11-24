@@ -635,6 +635,205 @@ class RegimeOBC:
             Am[b * T, :n] += aC
             Am[b * T, n:] += aJ
         self.R, self.Am, self.a0 = R, Am, a0
+        self._tie = self._find_tie()
+
+    # ------------------------------------------------------------------ reduction to an LCP (tied wedges)
+    def _find_tie(self):
+        """Structure that lets a one-constraint, several-equation model be written as an LCP.
+
+        If all but one of the switched equations respond to the wedges only in the same period and with
+        constant coefficients (``alt_i(t) = sum_b C[i, b] w_b(t) + (terms the wedges do not move)``), then in an
+        alternative-regime period those equations tie the other wedges to the wedge of the remaining
+        ("primary") equation.  Returns None when the structure is absent."""
+        nb, T = len(self.cols), self.T
+        if self.n_c != 1 or nb < 2:
+            return None
+        Rb = self.R.reshape(nb, T, nb, T)
+        eye = np.eye(T, dtype=bool)
+        C = np.zeros((nb, nb))
+        diagonal = np.zeros(nb, bool)
+        scale = max(np.abs(self.R).max(), 1e-300)
+        for i in range(nb):
+            ok = True
+            for b in range(nb):
+                blk = Rb[i, :, b, :]
+                c = float(np.mean(np.diag(blk)))
+                if np.abs(blk[~eye]).max(initial=0.0) > 1e-9 * scale or np.abs(np.diag(blk) - c).max() > 1e-9 * scale:
+                    ok = False
+                    break
+                C[i, b] = c
+            diagonal[i] = ok
+        if diagonal.sum() != nb - 1:
+            return None
+        pb = int(np.nonzero(~diagonal)[0][0])
+        sec = [i for i in range(nb) if i != pb]
+        Co = C[np.ix_(sec, sec)]
+        if abs(np.linalg.det(Co)) < 1e-12:
+            return None
+        d = np.zeros(nb)                                    # wedge direction per unit of the primary wedge
+        d[pb] = 1.0
+        d[sec] = -np.linalg.solve(Co, C[sec, pb])
+        Coi = np.linalg.inv(Co)                             # offsets: w_sec(t) = -Coi a_sec(t) (+ d_sec y)
+        # composite responses over all N periods
+        Yc = sum(d[b] * self.Yw[:, :, b * T:(b + 1) * T] for b in range(nb))          # (N+1, n, T)
+        n, nx, N = self.ob.n, self.ob.n_exo, self.N
+        a = self.alt_rows[pb]
+        aC, aB, aA, aJ = a[:n], a[n:2 * n], a[2 * n:3 * n], a[3 * n:3 * n + nx]
+
+        def apply(Y):
+            out = np.zeros((N,) + Y.shape[2:])
+            for t in range(N):
+                v = aB @ Y[t] + aA @ Y[t + 1]
+                if t > 0:
+                    v = v + aC @ Y[t - 1]
+                out[t] = v
+            return out
+
+        Mblocks = [apply(self.Yw[:, :, b * T:(b + 1) * T]) for b in range(nb)]   # alt_p response per wedge block
+        Mraw = sum(d[b] * Mblocks[b] for b in range(nb))    # ... and to the composite (tied) wedge
+        Qraw = apply(self.Yb)
+        Qraw[0, :n] += aC
+        Qraw[0, n:] += aJ
+        tie = dict(primary=pb, secondary=sec, d=d, Coi=Coi, Mblocks=Mblocks, Mraw=Mraw, Qraw=Qraw,
+                   q0raw=float(a[-1]), mirror=False, s_g=1.0, s_y=1.0)
+        # conditions as mirror images of the primary equation, tested on the affine functions themselves
+        ref_all = np.column_stack(self.ob.regime_matrices(tuple([False] * self.ob.k)))
+        refs = [ref_all[row] for _j, row in self.cols]
+        d_b, d_r = self._cond[0]
+        Xb = np.column_stack([a] + refs)                                    # bind: k1 alt_p + reference residuals
+        cb, *_ = np.linalg.lstsq(Xb, d_b, rcond=None)
+        Xr = np.column_stack([refs[pb]] + list(self.alt_rows))              # relax: c ref_p + alternative residuals
+        cr, *_ = np.linalg.lstsq(Xr, d_r, rcond=None)
+        okb = np.linalg.norm(Xb @ cb - d_b) <= 1e-8 * np.linalg.norm(d_b) and abs(cb[0]) > 1e-10
+        okr = np.linalg.norm(Xr @ cr - d_r) <= 1e-8 * np.linalg.norm(d_r) and abs(cr[0]) > 1e-10
+        if okb and okr:
+            tie["s_g"], tie["s_y"] = float(np.sign(cb[0])), -float(np.sign(cr[0]))
+            tie["mirror"] = bool(tie["s_g"] * tie["q0raw"] > 0)
+        return tie
+
+    def lcp(self, init, shock, tol=1e-8):
+        """(M, q, G, info) of the equivalent complementarity problem for this state, or None when the model does
+        not have the structure.
+
+        With y_t >= 0 the (normalised) wedge on the primary equation and z_t = 1 in alternative-regime periods,
+        the primary gap is ``g = q + M y + G z`` and a solution has ``g >= 0, y >= 0, y'g = 0, y_t > 0 only if
+        z_t = 1, g_t = 0 if z_t = 1``.  G collects the state-dependent offsets of the tied wedges; when it is
+        zero this is a standard LCP in (M, q) and Holden's results on M apply.  The structure requires
+        (i) the tie (``_find_tie``), (ii) the bind condition to equal a multiple of the primary alternative
+        equation plus reference residuals, and (iii) the relax condition to equal a multiple of the primary
+        reference residual plus alternative residuals.  The full wedge vector is ``info['D'] @ y + offsets``."""
+        tie = self._tie
+        if tie is None:
+            return None
+        T, N, nb = self.T, self.N, len(self.cols)
+        x = np.r_[np.asarray(init, float), np.asarray(shock, float)]
+        a = self.a0 + self.Am @ x
+        base = tie["q0raw"] + tie["Qraw"] @ x               # alt_p on the no-wedge path, N periods
+        s_g, s_y = tie["s_g"], tie["s_y"]
+        M = s_g * s_y * tie["Mraw"]
+        q = s_g * base
+        G = np.zeros((N, T))
+        asec = np.array([a[i * T:(i + 1) * T] for i in tie["secondary"]])      # (n_sec, T)
+        f = -tie["Coi"] @ asec                                                  # offsets of the tied wedges
+        for o, blk in enumerate(tie["secondary"]):
+            G += s_g * tie["Mblocks"][blk] * f[o][None, :]
+        if np.abs(G).max() <= tol * max(np.abs(q).max(), 1e-300):
+            G = None
+        return M, q, G, dict(a=a, x=x)
+
+    def diagnostics(self, max_exact=16):
+        """Existence/uniqueness diagnostics on the M of the equivalent LCP (see ``m_diagnostics``). They are
+        Holden's conditions when the offsets G vanish (e.g. no shock enters the tied equations); None when the
+        structure is absent."""
+        if self._tie is None or not self._tie.get("mirror"):
+            return None
+        return m_diagnostics((self._tie["s_g"] * self._tie["s_y"] * self._tie["Mraw"])[:self.T], n_c=1,
+                             max_exact=max_exact)
+
+    def single_spell_solutions(self, init, shock, l_max=8, tol=1e-7):
+        """All solutions with one binding spell {l..l+k-1}, l <= l_max, as (l, k) pairs. More than one entry
+        means multiple equilibria at this state."""
+        T, out = self.T, []
+        got = self.lcp(init, shock) if (self._tie is not None and self._tie.get("mirror")) else None
+        if got is not None:
+            M, q, G, _info = got
+            for l in range(min(l_max, T - 1) + 1):
+                for k in range(1, T - l + 1):
+                    idx = np.arange(l, l + k)
+                    qq = q if G is None else q + G[:, idx].sum(axis=1)
+                    y = np.zeros(T)
+                    try:
+                        y[idx] = np.linalg.solve(M[np.ix_(idx, idx)], -qq[idx])
+                    except np.linalg.LinAlgError:
+                        continue
+                    if verify_lcp(M, qq, y, T, tol):
+                        out.append((l, k))
+            return out
+        x = np.r_[np.asarray(init, float), np.asarray(shock, float)]
+        Y = np.tensordot(self.Yb, x, axes=(2, 0))
+        a = self.a0 + self.Am @ x
+        for l in range(min(l_max, T - 1) + 1):
+            for k in range(1, T - l + 1):
+                z = np.zeros((self.N, self.n_c), bool)
+                z[l:l + k, 0] = True
+                try:
+                    w = self._wedges(z, a)
+                except np.linalg.LinAlgError:
+                    continue
+                vb, vr = self._violations(z, Y + self.Yw @ w)
+                if not vb.any() and not vr.any():
+                    out.append((l, k))
+        return out
+
+    def _solve_lcp(self, init, shock):
+        """Solve through the equivalent complementarity problem. Returns (z, w, path) or None if the structure is
+        absent; raises OBCError('no_solution') -- with a proof when the linear relaxation is infeasible."""
+        if self._tie is None or not self._tie.get("mirror"):
+            return None
+        M, q, G, info = self.lcp(init, shock)
+        T, N = self.T, self.N
+        proof = ("no solution exists that returns to the reference regime within the news horizon: the constraint "
+                 "cannot be kept satisfied in every period by any non-negative wedges (linear programme infeasible)")
+        zsol = None
+        if G is None:
+            y = solve_active_set(M, q, T)
+            if y is None:
+                y, _status = solve_news(M, q, T, horizons=sorted({max(1, T // 4), max(1, T // 2), T}))
+            if y is None:
+                feas = linprog(np.zeros(T), A_ub=-M, b_ub=q, bounds=[(0, None)] * T)
+                raise OBCError(proof if feas.status == 2 else
+                               "no solution within the news horizon (the linear complementarity problem has none)",
+                               "no_solution")
+            zsol = y > 1e-9 * max(1.0, float(np.abs(y).max()))
+        else:
+            # relaxation without bounds: y >= 0, 0 <= z <= 1, q + M y + G z >= 0
+            feas = linprog(np.zeros(2 * T), A_ub=-np.hstack([M, G]), b_ub=q,
+                           bounds=[(0, None)] * T + [(0, 1)] * T)
+            if feas.status == 2:
+                raise OBCError(proof, "no_solution")
+            sc = max(np.abs(q).max(), 1e-12)
+            dg = np.abs(np.diag(M[:T]))
+            U = 1e3 * sc / max(float(dg[dg > 0].min()) if (dg > 0).any() else 1.0, 1e-12)
+            Om = 1e3 * sc
+            I, Z = np.eye(T), np.zeros((T, T))
+            cons = [LinearConstraint(np.hstack([I, -U * I]), -np.inf, 0.0),                    # y <= U z
+                    LinearConstraint(np.hstack([M, G]), -q, np.inf),                           # g >= 0
+                    LinearConstraint(np.hstack([M[:T], G[:T] + Om * I]), -np.inf, Om - q[:T])]  # g <= Om (1 - z)
+            res = milp(np.r_[np.zeros(T), np.ones(T)], constraints=cons,
+                       integrality=np.r_[np.zeros(T), np.ones(T)],
+                       bounds=Bounds(np.zeros(2 * T), np.r_[np.full(T, U), np.ones(T)]),
+                       options=dict(time_limit=self.milp_time_limit))
+            if res.x is None:
+                raise OBCError("no solution found within the news horizon by the integer programme (the linear "
+                               "relaxation is feasible, so this is not a proof)" if res.status != 1 else
+                               f"the integer programme did not finish in {self.milp_time_limit:g} s",
+                               "no_solution" if res.status != 1 else "not_converged")
+            zsol = res.x[T:] > 0.5
+        z = np.zeros((N, 1), bool)
+        z[:T, 0] = zsol
+        w = self._wedges(z, info["a"])
+        Y = np.tensordot(self.Yb, info["x"], axes=(2, 0))
+        return z, w, Y + self.Yw @ w
 
     # -------------------------------------------------------------------------------------------- pieces
     def _index(self, z):
@@ -686,6 +885,14 @@ class RegimeOBC:
             raise OBCError("a constraint still binds after the news horizon: increase obc_horizon", "horizon_too_short")
         if not ok and method == "guess_verify":
             raise OBCError("the guess-and-verify iteration cycles", "not_converged")
+        if not ok and method != "milp":
+            got = self._solve_lcp(init, shock)               # raises with a proof when no solution exists
+            if got is not None:
+                z, w, path = got
+                vb, vr = self._violations(z, path)
+                if not vb.any() and not vr.any():
+                    info["used"] = "lcp"
+                    return z, w, path, info
         if not ok:
             try:
                 z = self._milp(Y, a)

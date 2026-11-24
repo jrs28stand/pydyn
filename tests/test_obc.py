@@ -331,3 +331,80 @@ def test_single_spell_fast_path_one_constraint_only(zlb2):
     from pydyn.obc_lk import LKNews
     with pytest.raises(ValueError, match="one constraint"):
         LKNews(zlb2[1])
+
+
+# ------------------------------------------- several equations per constraint written as a complementarity problem
+@pytest.fixture(scope="module")
+def sw(tmp_path_factory):
+    m = _load(tmp_path_factory.mktemp("obc_sw"), "obc_sw_zlb.mod")
+    return m, pydyn.Occbin(m)
+
+
+def test_sw_tie_and_diagnostics(sw):
+    """Smets-Wouters with a lower bound whose rule also switches its lag term: the second wedge is tied to the
+    first, and the M of the equivalent LCP is neither an S- nor a P-matrix (no solution for some states,
+    several for others)."""
+    m, ob = sw
+    rb = RegimeOBC(ob, horizon=40, check_ahead=60)
+    tie = rb._tie
+    assert tie is not None and tie["mirror"] and len(tie["secondary"]) == 1
+    np.testing.assert_allclose(tie["d"], [1.0, -1.0], atol=1e-10)
+    d = rb.diagnostics(max_exact=12)
+    assert d["is_s"] is False and d["is_p"] is False and d["largest_p"] == 10
+
+
+def test_sw_multiple_equilibria_and_occbin_choice(sw):
+    m, ob = sw
+    rb = RegimeOBC(ob, horizon=40, check_ahead=60)
+    S = np.zeros(m.n_exo)
+    S[m._ix["eb"]] = -4.0
+    sols = rb.single_spell_solutions(np.zeros(m.n_endo), S)
+    assert sols == [(0, 9), (0, 13)]
+    # each is a solution by OccBin's own test, and they are far apart
+    paths = []
+    x = np.r_[np.zeros(m.n_endo), S]
+    Y, a = np.tensordot(rb.Yb, x, axes=(2, 0)), rb.a0 + rb.Am @ x
+    for l, k in sols:
+        z = np.zeros((rb.N, 1), bool)
+        z[l:l + k] = True
+        path = Y + rb.Yw @ rb._wedges(z, a)
+        vb, vr = rb._violations(z, path)
+        assert not vb.any() and not vr.any()
+        paths.append(path)
+    assert np.abs(paths[0] - paths[1]).max() > 1.0
+    # OccBin and the news method both return the shorter spell
+    a_occ = ob.simulate(S[None, :], periods=60, check_ahead_periods=100)
+    b = ob.simulate(S[None, :], periods=60, check_ahead_periods=60, obc_method="news")
+    assert a_occ.regime_history[0] == [([1, 0], [1, 10])] == b.regime_history[0]
+    np.testing.assert_allclose(b.piecewise, a_occ.piecewise, atol=1e-9)
+
+
+def test_sw_no_solution_is_proved(sw):
+    """A larger shock: OccBin cycles (error 313); the news method reports that no solution exists, by an
+    infeasible linear programme, in a fraction of a second."""
+    m, ob = sw
+    S = np.zeros((1, m.n_exo))
+    S[0, m._ix["eb"]] = -6.0
+    with pytest.raises(pydyn.OccbinError) as e_occ:
+        ob.simulate(S, periods=60, check_ahead_periods=100)
+    assert e_occ.value.error_flag == 313
+    with pytest.raises(OBCError) as err:
+        ob.simulate(S, periods=60, check_ahead_periods=60, obc_method="news")
+    assert err.value.status == "no_solution" and "linear programme infeasible" in str(err.value)
+    assert RegimeOBC(ob, horizon=40, check_ahead=60).single_spell_solutions(np.zeros(m.n_endo), S[0]) == []
+
+
+def test_sw_offsets_when_the_policy_shock_is_active(sw):
+    """With the monetary shock non-zero the tied wedge needs a state-dependent offset (G != 0); solutions found
+    through the complementarity problem pass OccBin's test."""
+    m, ob = sw
+    rb = RegimeOBC(ob, horizon=40, check_ahead=60)
+    S = np.zeros(m.n_exo)
+    S[m._ix["eb"]], S[m._ix["em"]] = -3.0, 0.5
+    M, q, G, info = rb.lcp(np.zeros(m.n_endo), S)
+    assert G is not None
+    sols = rb.single_spell_solutions(np.zeros(m.n_endo), S)
+    assert len(sols) >= 1
+    z, w, path = rb._solve_lcp(np.zeros(m.n_endo), S)
+    vb, vr = rb._violations(z, path)
+    assert not vb.any() and not vr.any()
