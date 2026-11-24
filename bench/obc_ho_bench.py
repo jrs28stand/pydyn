@@ -39,8 +39,8 @@ REF = Path(os.environ.get("PYDYN_REF", str(REPO / "reference")))
 CASES = {
     "o1": dict(order=1),
     "o2": dict(order=2),
-    "cub9": dict(order=2, cubature=True, qmc_level=9),
-    "cubD": dict(order=2, cubature=True),
+    "cub9": dict(order=2, cubature=True, qmc_level=9, regions=1),
+    "cubD": dict(order=2, cubature=True, qmc_level=10, regions=1),
 }
 # regions cases: (kwargs, number of periods used). level 12 has 8191 points, so fewer periods.
 RCASES = {}

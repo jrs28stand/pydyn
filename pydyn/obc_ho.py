@@ -27,22 +27,60 @@ One complementary pair per constraint (the class NewsOBC handles), one constrain
 """
 from __future__ import annotations
 
+import hashlib
+import time
 import warnings
 
 import numpy as np
+from scipy.optimize import linprog
 
-from .obc import NewsOBC, OBCError, solve_active_set, solve_active_set_batch, solve_news
+from .obc import NewsOBC, OBCError, m_diagnostics, solve_active_set, solve_active_set_batch, solve_news
 from .occbin import Occbin
 
-__all__ = ["HigherOrderNews"]
+__all__ = ["HigherOrderNews", "CubatureFailure"]
 
+_DIAG_CACHE: dict = {}                                           # (digest of M, n_c, level) -> M diagnostics (per parameter set)
 _SOBOL_CACHE: dict = {}                                          # (dim, level) -> read-only (dim, 2^(level+1)-1) normals
+
+
+class CubatureFailure(OBCError):
+    """A perturbed (cubature) path without a usable solution, raised by ``HigherOrderNews.news_shocks``.
+
+    Attributes: ``period`` (1-based, set by ``simulate``), ``n_failed`` (points failed, in units of cubature points: a failed
+    region counts all its points), ``lower_bound`` (True when the search stopped at the first failure / when the tolerance was
+    exceeded, so ``n_failed`` is only a lower bound), ``n_relevant``, ``n_points``, ``counts`` = {'a','b','c'} (see
+    ``HigherOrderNews._classify``), ``n_active_set_failed`` (points on which the active-set iteration failed: an upper
+    bound on the failures when the whole batch was examined, else None), ``tolerance``, ``advice``."""
+
+    def __init__(self, status, n_failed, lower_bound, n_relevant, n_points, counts, n_active_set_failed, tolerance, limit):
+        a, b, c = counts["a"], counts["b"], counts["c"]
+        advice = []
+        if b:
+            advice.append("(b): the check-ahead rows cannot be met with wedges inside the news horizon; try a longer `horizon` "
+                          "(not proved to help)")
+        if a:
+            advice.append("(a): proved no solution at this horizon (M is not an S-matrix or the path is outside its reach): "
+                          "the model has reachable states without an equilibrium; set cubature_failure_tolerance > 0 only to "
+                          "drop such points knowingly")
+        if c:
+            advice.append(f"(c): undecided at the MILP time limit ({limit:g} s); raise `cubature_milp_time_limit`")
+        msg = (f"cubature: {'at least ' if lower_bound else ''}{n_failed} of {n_relevant} relevant perturbed points "
+               f"({n_points} in total) have no usable solution: a={a} b={b} c={c}"
+               + (f"; tolerance {tolerance:g}" if tolerance else "") + ". " + " ".join(advice))
+        super().__init__(msg, status)
+        self.n_failed, self.lower_bound, self.n_relevant, self.n_points = n_failed, lower_bound, n_relevant, n_points
+        self.counts, self.n_active_set_failed, self.tolerance, self.advice = dict(counts), n_active_set_failed, tolerance, advice
 
 
 class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
-                 cubature=False, periods_of_uncertainty=16, qmc_level=10, regions=1, taper=True, seed=0, pruning_cutoff=0.01,
-                 max_cubature_dimension=128):
+                 cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
+                 max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic="s"):
+        """Defaults when ``cubature`` is on: the full quasi-Monte Carlo average (``regions="all"``) over 2^(qmc_level+1) - 1 = 4,095
+        points (``qmc_level=11``); ``regions=1`` (DynareOBC's default; its single mean point does not price tail risk) and
+        ``regions=k`` remain options. See docs/OBC_HO_PERF.md, "Cubature defaults and failure handling", for the failure semantics:
+        ``cubature_milp_time_limit`` (s per point, MILP proof step), ``cubature_failure_tolerance`` (0 = raise on any failed point),
+        ``m_diagnostic`` ("s": S-matrix test of M, "full": also the P-matrix tests, False: skip)."""
         from .korder import k_order
         self.model = model
         self.order = int(order)
@@ -77,9 +115,20 @@ class HigherOrderNews:
         self.pruning_cutoff, self.max_cubature_dimension = pruning_cutoff, int(max_cubature_dimension)
         self.pou, self.qmc_level, self.regions, self.taper, self.seed = (int(periods_of_uncertainty), int(qmc_level),
                                                                          regions, bool(taper), seed)
+        self.milp_time_limit = float(cubature_milp_time_limit)
+        self.failure_tolerance = float(cubature_failure_tolerance)
+        if not 0.0 <= self.failure_tolerance < 1.0:
+            raise ValueError("cubature_failure_tolerance must be in [0, 1)")
+        self.m_diag = None
         if self.cubature:
             self.R = self.conditional_root()
             self.xi = self._points(self.R.shape[1])
+            if m_diagnostic:
+                self.m_diag = self._m_diagnostics(full=(m_diagnostic == "full"))
+                if not self.m_diag["is_s"]:
+                    warnings.warn("M is not an S-matrix: some paths can have no solution; cubature points may fail "
+                                  "(see HigherOrderNews.m_diag)", UserWarning, stacklevel=2)
+        self._dropped_last = self._relevant_last = 0
         self._fac_cache = {}
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
 
@@ -274,26 +323,100 @@ class HigherOrderNews:
             raise OBCError("no solution within the news horizon", "no_solution")
         return y
 
-    def _solve_all(self, P):
-        """Sum over the columns of P of the scalar solution ``_solve(P[:, j])``, computed in batch: columns that need no
-        wedge are skipped as in ``_solve``; the rest go through ``solve_active_set_batch`` (the scalar iteration run in
-        lockstep, factorisations shared by guessed binding set and cached across periods); columns on which that iteration
-        fails take the scalar route (``_solve``, i.e. the MILP fallback)."""
-        nb, T = self.news, self.T
-        k = P.shape[1]
-        self.stats["lcp"] += k
+    def _m_diagnostics(self, full=False):
+        """``m_diagnostics`` of the complementarity block of M, cached per parameter set (key: digest of M). Level "s" (default) runs
+        only the S-matrix LP and one leading P-block (2-6 ms at horizon 20-60); "full" adds the exact P-matrix tests (0.2-0.3 s at
+        T = 32). Returns the dict of ``m_diagnostics`` plus ``seconds`` and ``level``."""
+        nb = self.news
+        key = (hashlib.sha1(np.ascontiguousarray(nb.Ms).tobytes()).hexdigest(), nb.n_c, bool(full))
+        d = _DIAG_CACHE.get(key)
+        if d is None:
+            t = time.perf_counter()
+            d = m_diagnostics(nb.Ms, n_c=nb.n_c, **({} if full else dict(max_exact=nb.n_c)))
+            d["level"] = "full" if full else "s"
+            if not full:
+                d["is_p"] = None                                     # not decided at this level
+            d["seconds"] = time.perf_counter() - t
+            if len(_DIAG_CACHE) > 32:
+                _DIAG_CACHE.clear()
+            _DIAG_CACHE[key] = d
+        return d
+
+    # ------------------------------------------------------------------------------------- failure classification
+    def _lp_gap(self, p, rows):
+        """min s  s.t.  y >= 0, p[rows] + M[rows] y + s >= 0, s >= 0 (one LP). s* = 0 iff y >= 0 with p + M y >= 0 on ``rows`` exists."""
+        M = self.news.Mo[rows]
+        m, k = M.shape
+        res = linprog(np.r_[np.zeros(k), 1.0], A_ub=np.hstack([-M, -np.ones((m, 1))]), b_ub=p[rows],
+                      bounds=[(0, None)] * (k + 1), method="highs")
+        return float(res.fun) if res.status == 0 else None
+
+    def _classify(self, p):
+        """A point on which the active-set iteration failed: (y, None) if the MILP finds a solution, else (None, cls).
+
+        cls 'a': proved no solution at this horizon. Either the LP {y >= 0, p + M y >= 0 on all N rows} (a necessary condition
+        of any LCP solution, complementarity dropped) is infeasible by more than 1e-6 max(1, |p|), and so is the same LP on the
+        first n_s rows only; or the MILP (horizons T/4, T/2, T) terminated with alpha = 0 at every horizon.
+        cls 'b': the LP on all N rows is infeasible (or the MILP finds no solution) but the check-ahead rows are the cause:
+        the LP on the first n_s rows alone is feasible (resp. the MILP on the first n_s rows finds a solution). This is the
+        diagnosis NewsOBC reports as 'horizon_too_short'. It does NOT establish that a longer horizon has a solution (that needs
+        M and the gap path for a longer horizon, which are not built for perturbed points), nor, in the LP case, that the
+        complementarity conditions can be met on the first n_s rows (LP feasibility is necessary, not sufficient).
+        cls 'c': undecided: the MILP hit its time limit (``cubature_milp_time_limit``, shared by all MILP calls for this point).
+        The LP is tried first (about 1-2 ms); the MILP is reached only for points whose LP is feasible."""
+        nb, T, n_s = self.news, self.T, self.nws
+        N = nb.Mo.shape[0]
+        scale = max(1.0, float(np.abs(p).max()))
+        tol = 1e-6 * scale
+        s_full = self._lp_gap(p, slice(0, N))
+        if s_full is not None and s_full > tol:
+            s_head = self._lp_gap(p, slice(0, n_s))
+            return None, ("b" if (s_head is not None and s_head <= tol) else "a")
+        hz = sorted({max(1, T // 4), max(1, T // 2), T})
+        t_end = time.perf_counter() + self.milp_time_limit
+        undecided = False
+        for h in hz:
+            left = t_end - time.perf_counter()
+            if left <= 0:
+                undecided = True
+                break
+            self.stats["milp"] = self.stats.get("milp", 0) + 1
+            y, st = solve_news(nb.Mo, p, n_s, horizons=[h], n_c=self.n_c, time_limit=left)
+            if y is not None:
+                return y, None
+            undecided = undecided or st == "time_limit"
+        if undecided:
+            return None, "c"
+        left = max(t_end - time.perf_counter(), 1e-3)
+        y2, st2 = solve_news(nb.Mo[:n_s], p[:n_s], n_s, horizons=[T], n_c=self.n_c, time_limit=left)
+        return None, ("b" if y2 is not None else "a")
+
+    def _solve_unit(self, p):
+        """(y, cls) for one cubature unit (a point or a region mean point): zeros if nothing to do, the scalar active set,
+        else ``_classify``. cls is None when solved."""
+        self.stats["lcp"] += 1
+        if np.all(p >= -1e-8 * max(1.0, np.abs(p).max())):
+            return np.zeros(self.nws), None
+        y = solve_active_set(self.news.Mo, p, self.nws)
+        if y is not None:
+            return y, None
+        return self._classify(p)
+
+    def _batch_columns(self, P):
+        """Sum of the solutions of the columns of P that the batch active-set solver solves, and the indices of the columns it
+        does not solve (those need ``_classify``). Columns needing no wedge contribute zero. Returns (sum, failed, n_failed_as)."""
+        nb = self.news
+        self.stats["lcp"] += P.shape[1]
         need = ~np.all(P >= -1e-8 * np.maximum(1.0, np.abs(P).max(axis=0)), axis=0)
         if not need.any():
-            return np.zeros(self.nws)
-        Pn = P[:, need]
+            return np.zeros(self.nws), np.empty(0, np.intp)
+        cols = np.flatnonzero(need)
+        Pn = P[:, cols]
         Y, ok = solve_active_set_batch(nb.Mo, Pn, self.nws, scale=nb._mscale, cache=self._fac_cache, info=self.stats)
-        acc = Y[:, ok].sum(axis=1)
         nfail = int((~ok).sum())
         self.stats["batch_fail"] = self.stats.get("batch_fail", 0) + nfail
-        self.stats["lcp"] -= nfail                                 # _solve counts them again
-        for j in np.nonzero(~ok)[0]:
-            acc += self._solve(Pn[:, j])
-        return acc
+        self.stats["lcp"] -= nfail                                  # counted again if the MILP is reached
+        return Y[:, ok].sum(axis=1), cols[~ok]
 
     def _cub_prep(self):
         """Quantities for the exact skipping rules, tied to the current (R, xi) objects."""
@@ -340,31 +463,72 @@ class HigherOrderNews:
         return idx if cnt == 0 else np.sort(idx)
 
     def news_shocks(self, q):
-        """Solution at q, or its average over the perturbed paths when cubature is on."""
+        """Solution at q; with cubature, the average over the perturbed paths q + R xi_j (see docs/OBC_HO_PERF.md, "Cubature
+        defaults and failure handling"). With P points, F failed points (no usable solution), the result is
+        (sum over solved relevant units of size * y) / (P - F): non-relevant points contribute y = 0, failed points are removed from
+        the sample. F = 0 gives the plain average sum / P. F > 0 is only allowed when ``cubature_failure_tolerance`` > 0 and
+        F <= tolerance * (number of relevant points); otherwise ``CubatureFailure`` is raised."""
+        self._dropped_last = self._relevant_last = 0
         if not self.cubature or self.R.shape[1] == 0:
             return self._solve(q)
         npts = self.xi.shape[1]
         idx = self._relevant_points(q)
         self.stats["cubature_points"] += npts
         self.stats["relevant_points"] += idx.size
+        self._relevant_last = idx.size
         if idx.size == 0:
             return np.zeros(self.nws)
-        if self.regions == 1:                                      # DynareOBC's default: one region, its mean point
-            # mean of q + R xi_j over the relevant j  =  q + R mean(xi_j): an (r)-vector instead of an N x k array
-            return (idx.size / npts) * self._solve(q + self.R @ self.xi[:, idx].mean(axis=1))
-        pr = q[:, None] + self.R @ self.xi[:, idx]                 # perturbed paths of the relevant points only
-        if self.regions == "all":                                  # plain quasi-Monte Carlo average
-            return self._solve_all(pr) / npts
-        k = int(self.regions)                                      # DynareOBC's CubatureRegions > 1
-        if idx.size <= k:
-            groups = [np.array([j]) for j in range(idx.size)]
-        else:
-            groups = self._split_regions(pr, k)
-        xr = self.xi[:, idx]
+        nrel, tol = idx.size, self.failure_tolerance
+        counts = dict(a=0, b=0, c=0)
+        nfail = 0                                                    # failed points so far (region: all its points)
+        n_as = None                                                  # active-set failures among all units, when known
+        limit_fail = tol * nrel                                      # failures allowed (0 = none)
         acc = np.zeros(self.nws)
-        for g in groups:                                           # region mean point = q + R (mean of its xi)
-            acc += (g.size / npts) * self._solve(q + self.R @ xr[:, g].mean(axis=1))
-        return acc
+
+        def failed(cls, size):
+            nonlocal nfail
+            counts[cls] += size
+            nfail += size
+            return nfail > limit_fail                                # True: stop (raise)
+
+        unexamined = 0                                               # units not looked at when the search stopped early
+        if self.regions == "all":                                    # plain quasi-Monte Carlo average
+            pr = q[:, None] + self.R @ self.xi[:, idx]
+            acc, bad = self._batch_columns(pr)
+            n_as = int(bad.size)
+            for i, j in enumerate(bad):
+                y, cls = self._classify(pr[:, j])
+                if cls is None:
+                    acc += y
+                elif failed(cls, 1):
+                    unexamined = bad.size - i - 1
+                    break
+        else:
+            xr = self.xi[:, idx]
+            if self.regions == 1:                                    # DynareOBC's default: one region, its mean point
+                groups = [np.arange(nrel)]
+            else:                                                    # DynareOBC's CubatureRegions > 1
+                k = int(self.regions)
+                if nrel <= k:
+                    groups = [np.array([j]) for j in range(nrel)]
+                else:
+                    groups = self._split_regions(q[:, None] + self.R @ xr, k)
+            for i, g in enumerate(groups):                           # region mean point = q + R (mean of its xi)
+                y, cls = self._solve_unit(q + self.R @ xr[:, g].mean(axis=1))
+                if cls is None:
+                    acc += g.size * y
+                elif failed(cls, g.size):
+                    unexamined = len(groups) - i - 1
+                    break
+        if nfail > limit_fail:
+            self.stats["no_solution"] = self.stats.get("no_solution", 0) + 1
+            status = "no_solution" if counts["a"] else ("horizon_too_short" if counts["b"] else "not_converged")
+            raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, n_as, tol, self.milp_time_limit)
+        if nfail:
+            self._dropped_last = nfail
+            self.stats["dropped_points"] = self.stats.get("dropped_points", 0) + nfail
+            self.stats["dropped_periods"] = self.stats.get("dropped_periods", 0) + 1
+        return acc / (npts - nfail)
 
     def _split_regions(self, pr, k):
         """DynareOBC's region rule (PerformCubature.m, CubatureClusteringEffort = 0): describe each relevant path
@@ -420,7 +584,8 @@ class HigherOrderNews:
     # ----------------------------------------------------------------------------------------- simulation
     def simulate(self, shocks, init=None):
         """Simulate under unanticipated shocks. Returns a dict with levels (T, n) in declaration order:
-        ``with_bound``, ``without_bound`` (the pruned simulation), and the news shocks per period."""
+        ``with_bound``, ``without_bound`` (the pruned simulation), the news shocks per period (``wedges``), and per period the
+        number of relevant cubature points (``relevant``) and of failed points dropped under ``cubature_failure_tolerance`` (``dropped``)."""
         ob, n = self.ob, self.n
         shocks = np.atleast_2d(np.asarray(shocks, float))
         S = shocks.shape[0]
@@ -434,6 +599,7 @@ class HigherOrderNews:
         prev_total[self.ov] = y1 + y2
         prev_total += o
         with_b, without_b, wedges = np.empty((S, n)), np.empty((S, n)), np.zeros((S, self.nws))
+        dropped, relevant = np.zeros(S, int), np.zeros(S, int)
         for t in range(S):
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
@@ -456,4 +622,9 @@ class HigherOrderNews:
             with_b[t] = ys + base + o
             prev_total = base + o
             wedges[t] = y
-        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges)
+            dropped[t], relevant[t] = self._dropped_last, self._relevant_last
+        if dropped.any():
+            warnings.warn(f"cubature_failure_tolerance={self.failure_tolerance:g}: {dropped.sum()} of {relevant.sum()} relevant perturbed "
+                          f"points ({100 * dropped.sum() / relevant.sum():.1f}%) were dropped in {int((dropped > 0).sum())} of {S} periods; "
+                          f"the remaining points are reweighted by 1/(points - dropped)", UserWarning, stacklevel=2)
+        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges, dropped=dropped, relevant=relevant)

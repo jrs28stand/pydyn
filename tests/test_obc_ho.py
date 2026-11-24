@@ -104,7 +104,7 @@ def test_cubature_limits_and_covariance(nkm):
 def test_cubature_makes_agents_react_before_the_bound(nkm):
     m, S = nkm
     a = HigherOrderNews(m, order=2).simulate(S)
-    c = HigherOrderNews(m, order=2, cubature=True, qmc_level=7).simulate(S)
+    c = HigherOrderNews(m, order=2, cubature=True, qmc_level=7, regions=1).simulate(S)
     assert (c["wedges"].max(axis=1) > 1e-10).sum() > 3 * (a["wedges"].max(axis=1) > 1e-10).sum()
 
 

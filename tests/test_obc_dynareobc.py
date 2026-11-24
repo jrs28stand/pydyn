@@ -51,7 +51,7 @@ def test_cubature_matches_dynareobc(nk):
     m, S = nk
     r, E = _ref(m, "ref_o2cub.mat")
     assert np.abs(E - _ref(m, "ref_o2.mat")[1]).max() > 1e-5          # cubature changes the answer
-    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=9)
+    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=9, regions=1)
     Rd = np.real(r["Rcc"])
     np.testing.assert_allclose(h.R @ h.R.T, Rd @ Rd.T, atol=1e-16)    # conditional covariance, pruned
     own = h.simulate(S)["with_bound"]
