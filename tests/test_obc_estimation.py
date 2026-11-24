@@ -210,3 +210,32 @@ def test_failed_trial_point_fails_fast(tmp_path):
     e.obc_milp_time_limit = 5.0
     assert e.log_posterior(X[:, 3]) == lp
     assert e.last_news_solver.skipped == 0 and e.last_news_solver.rescued == 0
+
+
+# ------------------------------------------------------------------------------------------------ selection
+def test_selection_in_the_filter(nkms):
+    """obc_selection reaches the filter's solver.  NKM (small): where a trial state has a second single-spell solution
+    it is a 28-period spell with a wedge of about 1.8 (a deflationary-trap solution of the LCP), so 'shortest' and
+    'min_wedge' equal the default likelihood (to 1e-9) and 'longest' does not: its trial points hop between branches and
+    the inversion filter's root finder fails (info 304)."""
+    m, data, r, X = nkms
+    base = _est(m, data, IVF, obc_method="news")
+    X = X if X.shape[0] == base.n else X.T
+    lps = [base.log_posterior(X[:, k]) for k in range(3)]
+    for sel in ("shortest", "min_wedge"):
+        e = _est(m, data, IVF, obc_method="news", obc_selection=sel)
+        for k in range(3):
+            assert e.log_posterior(X[:, k]) == pytest.approx(lps[k], abs=1e-9)
+        assert e.last_news_solver.selection == sel
+    e = _est(m, data, IVF, obc_method="news", obc_selection="longest")
+    assert e.log_posterior(X[:, 0]) != lps[0]
+    with pytest.raises(EstimationError, match="needs obc_method='news'"):
+        _est(m, data, IVF, obc_selection="shortest").log_posterior(X[:, 0])
+
+
+def test_selection_filter_solver_refuses_two_constraints(tmp_path):
+    m = _model(tmp_path, "obc_zlb2.mod")
+    ob = pydyn.Occbin(m)
+    with pytest.raises(ValueError, match="one constraint only"):
+        NewsFilterSolver(ob, selection="longest")
+    NewsFilterSolver(ob, selection="occbin")

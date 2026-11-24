@@ -140,15 +140,19 @@ def stage_mode(case, ests, X, tag, x0, log):
     # evaluate news at OccBin's thetas (and OccBin at news' thetas where they differ): first likelihood difference
     en = ests["news"]
     eo = ests["occbin"]
-    diffs = []
+    diffs, agree = [], []
     tocc, tnews = [], []
     for i, th in enumerate(A["theta"]):
         t = time.perf_counter(); lb = en.log_posterior(th); tnews.append(time.perf_counter() - t)
         t = time.perf_counter(); la = eo.log_posterior(th); tocc.append(time.perf_counter() - t)
         if not ((np.isinf(la) and np.isinf(lb) and la == lb) or abs(la - lb) <= 1e-9 * max(1.0, abs(la))):
             diffs.append((i, la, lb, la - lb))
+        elif np.isfinite(la):
+            agree.append(abs(la - lb))
     cmp["occbin_trace_points_where_likelihoods_differ"] = [dict(index=i, occbin=a, news=b, diff=d) for i, a, b, d in diffs]
     cmp["n_points_checked"] = len(A["theta"])
+    cmp["max_abs_lp_difference_where_equal"] = float(max(agree)) if agree else None
+    cmp["n_equal"] = len(agree)
     if diffs:
         i = diffs[0][0]
         cmp["first_difference_explained"] = regime_diff(en.model, A["theta"][i], ests)
@@ -256,7 +260,7 @@ def stage_mh(case, ests, mode_x, cov, jscale, nchains, replic, seed, log, starts
     return out
 
 
-def pilot_jscale(e, xm, cov, seed, log, case, grid=(0.15, 0.25, 0.4, 0.6, 0.9, 1.3), draws=300, target=0.30):
+def pilot_jscale(e, xm, cov, seed, log, case, grid=(0.25, 0.4, 0.6, 0.9, 1.3, 1.8, 2.4, 3.2), draws=300, target=0.30):
     """Scale of the jumping distribution: the grid value whose acceptance rate over a 300-draw pilot chain (news solver,
     which is the fast one; started at the mode) is closest to ``target``."""
     d = np.linalg.cholesky(cov).T
