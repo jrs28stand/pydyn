@@ -377,7 +377,7 @@ class InversionFilterResult:
     error_period: int = 0
 
 
-def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None) -> InversionFilterResult:
+def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None, solver=None) -> InversionFilterResult:
     """IVF_core.m: shocks that reproduce ``data`` (T x n_obs, levels, NaN = missing) period by
     period through the piecewise-linear solution. ``obs_idx``: declaration indices of the observed
     variables; ``err_index``: exogenous indices of the shocks mapped to them (Dynare's
@@ -391,7 +391,7 @@ def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None) -> Inve
     err_index = np.asarray(err_index, int)
     n = ob.n
     sim = _sim_kwargs(o, "likelihood")
-    solver = _Solver(ob)
+    solver = _Solver(ob) if solver is None else solver      # e.g. pydyn.obc_filter.NewsFilterSolver(ob)
     tolf, maxit_solve = float(o["solver.solve_tolf"]), int(o["solver.maxit"])
     resids = np.zeros((T, nobs))
     stateval = np.zeros((T, n))

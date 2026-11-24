@@ -408,3 +408,34 @@ def test_sw_offsets_when_the_policy_shock_is_active(sw):
     z, w, path = rb._solve_lcp(np.zeros(m.n_endo), S)
     vb, vr = rb._violations(z, path)
     assert not vb.any() and not vr.any()
+
+
+# ------------------------------------------------------------- inversion-filter likelihood with the news solver
+@pytest.mark.parametrize("case,ks", [("nkm", [0, 1, 2]), ("nkms", [0, 1, 2])])
+def test_inversion_filter_likelihood_with_news_solver(tmp_path, case, ks):
+    """Dynare's NKM OccBin estimation example: the inversion-filter likelihood computed with the news-shock
+    solver equals Dynare's own value (stored in the reference file), with the same regimes and shocks."""
+    import warnings
+
+    from pydyn.occbin_estimation import OccbinEstimation
+    shutil.copy(REF / f"occest_{case}.mod", tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(tmp_path / f"occest_{case}.mod"))
+        r = loadmat(REF / f"occest_{case}_lik.mat", squeeze_me=True)
+        data = np.atleast_2d(r["data"].T).T
+        mk = lambda: OccbinEstimation(m, data={v: data[:, j] for j, v in enumerate(m.varobs)},  # noqa: E731
+                                      nobs=data.shape[0], first_obs=1, occbin={"likelihood_inversion_filter": True})
+        e_occ, e_news = mk(), mk()
+        e_news.obc_method = "news"
+        X = np.atleast_2d(r["X"])
+        X = X if X.shape[0] == e_occ.n else X.T
+        for k in ks:
+            lp = e_news.log_posterior(X[:, k])
+            assert lp == pytest.approx(-r["ivf_fval"][k], rel=1e-11, abs=1e-8)
+            res = e_news.last_result
+            e_occ.log_posterior(X[:, k])
+            assert res.regime_history == e_occ.last_result.regime_history
+            np.testing.assert_allclose(res.filtered_errs, e_occ.last_result.filtered_errs, atol=1e-10)
+            assert sum(reg[0][0][0] for reg in res.regime_history) > 20          # the sample reaches the bound
+            assert e_news.last_news_solver.fallbacks == 0

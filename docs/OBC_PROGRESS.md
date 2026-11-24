@@ -141,3 +141,32 @@ Caveats
   slow general integer programme as the last resort.
 
 Not done: single-spell cache for the tied (several-equation) form; an equilibrium-selection option; `minnorm`.
+
+## 2026-11-24 (fourth entry): Dynare's OccBin estimation examples; likelihood with the news solver
+
+Decisions (Jacob): the test bed for estimation is Dynare's own OccBin estimation examples, not his model; equilibrium
+selection is to be an option whose default is OccBin's choice.
+
+Diagnostics on the examples (1,500 random periods at 1, 2 and 3 standard deviations, horizon 40)
+- `tests/occbin/filter/NKM.mod` (24 variables, complementarity): M is an S-matrix; P undecided beyond 14 periods;
+  no failures; none of the binding states checked (78, 150, 150) has a second single-spell solution.
+- `tests/estimation/slice/bf.mod` (5 variables, two equations switch, tie found): M has a positive definite symmetric
+  part, hence a P-matrix (unique solution); one unproved `no_solution` in 1,500 periods at 2 and at 3 standard
+  deviations (not investigated); no multiplicity.
+So the Smets-Wouters problems (no solution, several solutions) are specific to that model, not to these.
+
+Inversion-filter likelihood with the news solver (`pydyn/obc_filter.py`, `NewsFilterSolver`; prototype switch
+`est.obc_method = 'news'` on `OccbinEstimation`; `inversion_filter(..., solver=)`)
+- NKM (9 parameters, 120 observations, 28-31 binding periods) and its small version (3 parameters): log posterior
+  equal to OccBin's and to Dynare's stored value to 1e-11 at the 7 stored parameter vectors; same regimes; filtered
+  shocks within 1e-12.
+- Time per likelihood evaluation: OccBin 260-390 ms, news 42-47 ms (6 to 8 times faster) at 6 of the 7 points.
+  At one point the root finder tries a shock for which the active-set iteration fails and the linear programme is
+  feasible; the integer programme then runs into its 1 s limit and the evaluation takes 1.1 s against 0.36 s.
+- 40 parameter vectors perturbed by 2% around the first: 23.6 s against 3.9 s; 39 agree to 1e-11; one differs by 0.015
+  in the log posterior: in one period OccBin's condition says the bound binds for one period and the linearised
+  residual says it does not (the paths and shocks agree to 1e-12, but the likelihood's Jacobian term depends on the
+  regime). This is the "approximate" class of this model showing at a knife edge.
+
+Not done: the same for several-equation constraints (`bf`), the piecewise Kalman filter, a proper option in place of
+the attribute switch, mode finding and MCMC runs with the news solver, the selection option.

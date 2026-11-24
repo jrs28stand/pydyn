@@ -212,7 +212,7 @@ def solve_active_set(M, q, n_s, tol=1e-8, maxit=60):
     return None
 
 
-def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1):
+def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_limit=None):
     """Solve ``y >= 0, q + M y >= 0, y'(q + M y)[:n_s] = 0`` as a mixed-integer linear programme.
 
     Homogenised formulation (Holden): maximise alpha subject to ``0 <= yn <= z``, ``alpha q + M yn >= 0`` and
@@ -244,8 +244,10 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1):
         for c in range(n_c):
             ub_y[c * T:c * T + Tss] = 1.0
         bounds = Bounds(np.zeros(nv), np.r_[ub_y, 1e8, ub_y])
-        res = milp(cobj, constraints=cons, integrality=integrality, bounds=bounds,
-                   options=dict(mip_rel_gap=0.0))
+        opts = dict(mip_rel_gap=0.0)
+        if time_limit is not None:
+            opts["time_limit"] = float(time_limit)
+        res = milp(cobj, constraints=cons, integrality=integrality, bounds=bounds, options=opts)
         if res.x is None or not res.success:
             continue
         alpha = res.x[n_s]

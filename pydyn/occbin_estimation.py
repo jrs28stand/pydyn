@@ -137,7 +137,14 @@ class OccbinEstimation(Estimation):
             raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)", 43)
         if self.inversion_filter:
             ob = self.occbin_at(theta)
-            ivf = _of.inversion_filter(ob, self.data, self._obs_decl, self.ivf_mapping, self.occbin_options)
+            solver = None
+            if getattr(self, "obc_method", "occbin") == "news":      # set est.obc_method = 'news' (prototype switch)
+                from .obc_filter import NewsFilterSolver
+                solver = self.last_news_solver = NewsFilterSolver(ob, horizon=int(getattr(self, "obc_horizon", 40)))
+            elif getattr(self, "obc_method", "occbin") != "occbin":
+                raise ValueError(f"unknown obc_method {self.obc_method!r}")
+            ivf = _of.inversion_filter(ob, self.data, self._obs_decl, self.ivf_mapping, self.occbin_options,
+                                       solver=solver)
             ivf.occbin = ob
             if ivf.error_code:
                 raise _Rejected(f"inversion filter failed in period {ivf.error_period} (info {ivf.error_code})",
