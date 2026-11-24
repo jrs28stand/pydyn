@@ -160,3 +160,31 @@ def test_selection_from_mod_file_and_irf(tmp_path, sw):
     ir0 = ob0.irf_occbin(periods=30, shocksize=4.0, exo_names=["eb"], shocksigns=("neg",), obc_method="news",
                          check_ahead_periods=60)
     assert np.abs(ir[("eb", "neg")]["piecewise"] - ir0[("eb", "neg")]["piecewise"]).max() > 1.0
+
+
+def test_minnorm_is_news_with_min_wedge(tmp_path, sw):
+    """``obc_method='minnorm'`` (JDyn's name) is ``'news'`` with ``obc_selection='min_wedge'``: identical results,
+    also from the native mod-file line and in irf_occbin; another explicit selection is refused."""
+    m0, ob0 = sw
+    S = np.zeros((1, m0.n_exo))
+    S[0, m0._ix["eb"]] = -4.0
+    a = ob0.simulate(S, periods=40, check_ahead_periods=60, obc_method="minnorm")
+    b = ob0.simulate(S, periods=40, check_ahead_periods=60, obc_method="news", obc_selection="min_wedge")
+    c = ob0.simulate(S, periods=40, check_ahead_periods=60, obc_method="news")
+    assert np.array_equal(a.piecewise, b.piecewise) and a.regime_history == b.regime_history
+    assert a.news["selection"] == "min_wedge" and _spell_length(a) == 9 == _spell_length(c)
+    ob0.simulate(S, periods=40, check_ahead_periods=60, obc_method="minnorm", obc_selection="min_wedge")
+    with pytest.raises(ValueError, match="minnorm"):
+        ob0.simulate(S, periods=40, obc_method="minnorm", obc_selection="longest")
+    src = (REF / "obc_sw_zlb.mod").read_text()
+    (tmp_path / "obc_sw_mn.mod").write_text(src + "\noptions_.occbin.obc_method = 'minnorm';\n")
+    m = pydyn.Model(pydyn.run_preprocessor(tmp_path / "obc_sw_mn.mod"))
+    kw = pydyn.Occbin(m).mod_options()
+    kw.update(periods=40, check_ahead_periods=60)
+    d = pydyn.Occbin(m).simulate(S, **kw)
+    assert np.array_equal(d.piecewise, a.piecewise) and d.news["selection"] == "min_wedge"
+    ir = ob0.irf_occbin(periods=30, shocksize=4.0, exo_names=["eb"], shocksigns=("neg",), obc_method="minnorm",
+                        check_ahead_periods=60)
+    ir1 = ob0.irf_occbin(periods=30, shocksize=4.0, exo_names=["eb"], shocksigns=("neg",), obc_method="news",
+                         obc_selection="min_wedge", check_ahead_periods=60)
+    assert np.array_equal(ir[("eb", "neg")]["piecewise"], ir1[("eb", "neg")]["piecewise"])

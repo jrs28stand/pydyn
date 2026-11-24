@@ -27,6 +27,18 @@ OBC_METHODS = ("occbin", "news")
 OBC_SELECTIONS = ("occbin", "shortest", "longest", "min_wedge")
 
 
+def canonical_obc(obc_method, obc_selection="occbin"):
+    """``(method, selection)`` with the JDyn alias resolved: ``obc_method='minnorm'`` is ``'news'`` with
+    ``obc_selection='min_wedge'`` (the smallest sum of squared wedges).  ``minnorm`` with another explicit selection
+    (``'occbin'``, the default, counts as not given) is an error."""
+    if obc_method == "minnorm":
+        if obc_selection not in ("occbin", "min_wedge"):
+            raise ValueError(f"obc_method='minnorm' is 'news' with obc_selection='min_wedge'; it cannot be combined "
+                             f"with obc_selection={obc_selection!r}")
+        return "news", "min_wedge"
+    return obc_method, obc_selection
+
+
 class OccbinError(Exception):
     """Failure of the OccBin solver. ``error_flag`` is Dynare's code: 310 (guesses alternate between
     two regimes and ``periodic_solution`` is off), 311 (no convergence within ``maxit``), 312 (a
@@ -341,7 +353,7 @@ class Occbin:
 
         Failures raise OccbinError whose ``error_flag`` is Dynare's (310-313); see OccbinError.
 
-        ``obc_method`` selects the solution method: ``'occbin'`` (default, everything above) or ``'news'``
+        ``obc_method`` selects the solution method: ``'occbin'`` (default, everything above) or ``'news'`` (``'minnorm'``, JDyn's name, is ``'news'`` with ``obc_selection='min_wedge'``)
         (news shocks: a linear complementarity problem, ``pydyn.obc.NewsOBC``, when every constraint is one
         complementary pair, otherwise the general regime formulation ``pydyn.obc.RegimeOBC``; ``obc_horizon``
         is the number of periods in which wedges may be non-zero and ``check_ahead_periods`` the further
@@ -351,14 +363,13 @@ class Occbin:
         solutions) or ``'min_wedge'`` (smallest sum of squared wedges); see ``NewsOBC.simulate``.  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
         ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
         """
+        obc_method, obc_selection = canonical_obc(obc_method, obc_selection)
         if obc_selection not in OBC_SELECTIONS:
             raise ValueError(f"unknown obc_selection {obc_selection!r}: use one of {', '.join(map(repr, OBC_SELECTIONS))}")
         if obc_method == "occbin" and obc_selection != "occbin":
             raise ValueError(f"obc_selection={obc_selection!r} needs obc_method='news': OccBin's own solver returns "
                              "the solution that its guess-and-verify iteration reaches")
         if obc_method != "occbin":
-            if obc_method == "minnorm":
-                raise NotImplementedError("obc_method='minnorm' is not implemented in pydyn yet")
             if obc_method != "news":
                 raise ValueError(f"unknown obc_method {obc_method!r}: use 'occbin' or 'news'")
             if (init_regime is not None or init_binding_indicator is not None or periodic_solution

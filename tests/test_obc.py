@@ -270,8 +270,6 @@ def test_unknown_method_and_occbin_only_options(zlb):
     _, ob = zlb
     with pytest.raises(ValueError, match="unknown obc_method"):
         ob.simulate(np.array([[-0.05]]), obc_method="holden")
-    with pytest.raises(NotImplementedError):
-        ob.simulate(np.array([[-0.05]]), obc_method="minnorm")
     with pytest.raises(ValueError, match="OccBin options"):
         ob.simulate(np.array([[-0.05]]), obc_method="news", periodic_solution=True)
 

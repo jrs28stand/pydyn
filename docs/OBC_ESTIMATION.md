@@ -398,6 +398,12 @@ guess; allocation-free `path`; `tmax` vectorised. Frozen pre-change copy: `bench
 script `bench/occbin_equality.py` (50 parameter sets x 200 periods x 4 models x 2 scales: ALL IDENTICAL). Timing (`bench/obc_bench.py p1`, 1000 periods, median of 5, microseconds per
 period, before -> after; raw `bench/results/occbin_speedup_p1.json`): zlb 552 -> 214, zlb2 675 -> 290, nkm 684 -> 222, sw 370 -> 190.
 
+## `minnorm` alias
+`obc_method='minnorm'` (JDyn's name) is resolved by `pydyn.occbin.canonical_obc` to `obc_method='news'`, `obc_selection='min_wedge'`: `Occbin.simulate` / `run` / `irf_occbin`,
+`OccbinEstimation` (constructor, assignment; `est.obc_method` then reads `'news'`), and the native line `options_.occbin.obc_method = 'minnorm';`. `minnorm` with another explicit
+selection: `ValueError`. With two constraints: the existing `ValueError` of non-default selections. Tests: `test_minnorm_is_news_with_min_wedge` (tests/test_obc_selection.py),
+`test_minnorm_alias_in_the_estimation` (tests/test_obc_estimation.py). This is the alias only: it is NOT MacroModelling.jl's minimum-norm news-shock programme.
+
 ## State / next step
-- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit).
-- Next: task 2 (`minnorm` alias), task 3 (singular-solve guard, Simple1 regression), task 4 (orientation test).
+- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit), task 2 (`minnorm` alias).
+- Next: task 3 (singular-solve guard, Simple1 regression), task 4 (orientation test).

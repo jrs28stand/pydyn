@@ -17,7 +17,7 @@ import numpy as np
 from . import kalman
 from . import occbin_filter as _of
 from .estimation import Estimation, EstimationError, _Rejected
-from .occbin import OBC_SELECTIONS, Occbin, OccbinError
+from .occbin import OBC_SELECTIONS, Occbin, OccbinError, canonical_obc
 from .perturbation import BlanchardKahnError
 from .steady import SteadyStateError
 
@@ -55,7 +55,11 @@ class OccbinEstimation(Estimation):
 
     @obc_method.setter
     def obc_method(self, value):
-        self._obc_method = _check_obc_method(value)
+        value = _check_obc_method(value)
+        if value == "minnorm":                       # JDyn's name for news with obc_selection='min_wedge'
+            self._obc_method, self._obc_selection = canonical_obc(value, getattr(self, "_obc_selection", "occbin"))
+        else:
+            self._obc_method = value
         if self._obc_method == "news" and getattr(self, "inversion_filter", True) is False:
             raise EstimationError(_PKF_NEWS_MSG)
 
@@ -83,9 +87,14 @@ class OccbinEstimation(Estimation):
             raise ValueError("the model has no occbin_constraints block: use pydyn.Estimation")
         native = _native_obc_options(model)          # options_.occbin.obc_* lines of the .mod file
         self._obc_method, self._obc_horizon, self._obc_selection = "occbin", 40, "occbin"
-        self.obc_method = native.get("obc_method", "occbin") if obc_method is None else obc_method
+        method = native.get("obc_method", "occbin") if obc_method is None else obc_method
+        selection = native.get("obc_selection", "occbin") if obc_selection is None else obc_selection
+        _check_obc_method(method)
+        _check_obc_selection(selection)
+        method, selection = canonical_obc(method, selection)       # minnorm = news + min_wedge
+        self.obc_method = method
         self.obc_horizon = native.get("obc_horizon", 40) if obc_horizon is None else obc_horizon
-        self.obc_selection = native.get("obc_selection", "occbin") if obc_selection is None else obc_selection
+        self.obc_selection = selection
         # Estimation's data, prior and parameter handling is reused; the likelihood and smoother are
         # replaced below (handles_occbin tells Estimation not to refuse the model).
         super().__init__(model, data, **options)
@@ -242,8 +251,8 @@ _PKF_NEWS_MSG = ("obc_method='news' is implemented for the inversion filter only
 
 
 def _check_obc_method(v):
-    if not isinstance(v, str) or v not in ("occbin", "news"):
-        raise ValueError(f"unknown obc_method {v!r}: use 'occbin' or 'news'")
+    if not isinstance(v, str) or v not in ("occbin", "news", "minnorm"):
+        raise ValueError(f"unknown obc_method {v!r}: use 'occbin', 'news' or 'minnorm'")
     return v
 
 

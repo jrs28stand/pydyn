@@ -62,7 +62,7 @@ def test_obc_method_option_default_and_errors(nkms):
     assert (e.obc_method, e.obc_horizon, e.obc_selection) == ("occbin", 40, "occbin")
     e.obc_method = "news"                                    # assignment keeps working
     assert e.obc_method == "news"
-    for bad in ("minnorm", "holden", "", None, 3):
+    for bad in ("holden", "", None, 3):
         with pytest.raises(ValueError, match="unknown obc_method"):
             e.obc_method = bad
         if bad is not None:                                  # None in the constructor means "not given"
@@ -75,6 +75,28 @@ def test_obc_method_option_default_and_errors(nkms):
             e.obc_horizon = bad
     e2 = _est(m, data, IVF, obc_method="news", obc_horizon=25)
     assert (e2.obc_method, e2.obc_horizon) == ("news", 25)
+
+
+def test_minnorm_alias_in_the_estimation(tmp_path, nkms):
+    """``minnorm`` (JDyn's name) is news with obc_selection='min_wedge': constructor, assignment, native mod line."""
+    m0, data, r, X = nkms
+    e = _est(m0, data, IVF, obc_method="minnorm")
+    assert (e.obc_method, e.obc_selection) == ("news", "min_wedge")
+    e2 = _est(m0, data, IVF)
+    e2.obc_method = "minnorm"
+    assert (e2.obc_method, e2.obc_selection) == ("news", "min_wedge")
+    ref = _est(m0, data, IVF, obc_method="news", obc_selection="min_wedge")
+    x = X[:, 0] if X.shape[0] == e.n else X[0]
+    assert e.log_posterior(x) == ref.log_posterior(x)
+    with pytest.raises(ValueError, match="minnorm"):
+        _est(m0, data, IVF, obc_method="minnorm", obc_selection="longest")
+    src = (REF / "occest_nkms.mod").read_text()
+    m = _model(tmp_path, "occest_nkms_mn.mod", text="options_.occbin.obc_method = 'minnorm';\n" + src)
+    e3 = _est(m, data, IVF)
+    assert (e3.obc_method, e3.obc_selection) == ("news", "min_wedge")
+    assert e3.log_posterior(x) == ref.log_posterior(x)
+    with pytest.raises(EstimationError, match="inversion filter only"):
+        _est(m, data)
 
 
 def test_obc_option_from_native_mod_lines(tmp_path, nkms):
