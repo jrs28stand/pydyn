@@ -325,45 +325,65 @@ class HigherOrderNews:
             return self._solve_all(pr) / npts
         k = int(self.regions)                                      # DynareOBC's CubatureRegions > 1
         if idx.size <= k:
-            ids, k = np.arange(idx.size), idx.size
+            groups = [np.array([j]) for j in range(idx.size)]
         else:
-            ids = self._split_regions(pr, k)
+            groups = self._split_regions(pr, k)
+        xr = self.xi[:, idx]
         acc = np.zeros(self.T)
-        for i in range(k):
-            sel = ids == i
-            acc += (sel.sum() / npts) * self._solve(pr[:, sel].mean(axis=1))
+        for g in groups:                                           # region mean point = q + R (mean of its xi)
+            acc += (g.size / npts) * self._solve(q + self.R @ xr[:, g].mean(axis=1))
         return acc
 
     def _split_regions(self, pr, k):
         """DynareOBC's region rule (PerformCubature.m, CubatureClusteringEffort = 0): describe each relevant path
         by its direction and the direction of its negative part, reduce by principal components, then split the
         region with the largest within-sum-of-squares along its first principal axis at Otsu's threshold,
-        until there are k regions. Returns region numbers 0..k-1 per column of ``pr``."""
+        until there are k regions. Returns the list of k index arrays (increasing) into the columns of ``pr``.
+
+        Principal components from the eigendecomposition of the small Gram matrix X'X (2N x 2N) instead of the SVD of
+        the tall X (m x 2N); region sums of squares kept per region and updated only for the two regions a split
+        changes. Component signs are arbitrary in both versions and the split is symmetric under a sign change
+        (the centred projection's Otsu criterion is symmetric in j <-> m - j)."""
         X = pr / np.sqrt((pr * pr).sum(axis=0))
         X = np.concatenate([X.T, np.minimum(0.0, X.T)], axis=1)
         X = X - X.mean(axis=0)
-        U, sv, _ = np.linalg.svd(X, full_matrices=False)
-        lat = sv ** 2 / max(1, X.shape[0] - 1)
+        ev, V = np.linalg.eigh(X.T @ X)
+        ev, V = ev[::-1], V[:, ::-1]
+        lat = np.maximum(ev, 0.0) / max(1, X.shape[0] - 1)
         keep = lat >= self.pruning_cutoff * lat[0] if self.pruning_cutoff is not None else np.ones(lat.size, bool)
         keep[self.max_cubature_dimension:] = False
         keep &= lat > np.finfo(float).eps
-        Z = U[:, keep] * sv[keep]                                  # principal-component scores
-        ids = np.zeros(Z.shape[0], dtype=int)
+        Z = X @ V[:, keep]                                         # principal-component scores
+        d = Z.shape[1]
+
+        def sse(ix):
+            Zi = Z[ix]
+            return float(((Zi - Zi.mean(axis=0)) ** 2).sum())
+
+        groups = [np.arange(Z.shape[0])]
+        sses = [sse(groups[0])]
         for n in range(1, k):
+            r = 0 if n == 1 else int(np.argmax(sses))
+            pi_ = groups[r]
             if n == 1:
-                pi_, proj = np.arange(Z.shape[0]), Z[:, 0]
+                proj = Z[:, 0]
             else:
-                sse = [((Z[ids == i] - Z[ids == i].mean(axis=0)) ** 2).sum() for i in range(n)]
-                pi_ = np.nonzero(ids == int(np.argmax(sse)))[0]
-                ev, V = np.linalg.eigh(np.cov(Z[pi_].T).reshape(Z.shape[1], Z.shape[1]))
-                proj = Z[pi_] @ V[:, int(np.argmax(np.abs(ev)))]
+                Zp = Z[pi_]
+                Zc = Zp - Zp.mean(axis=0)
+                C = (Zc.T @ Zc) / max(1, pi_.size - 1)
+                ev2, V2 = np.linalg.eigh(C)
+                proj = Zp @ V2[:, int(np.argmax(np.abs(ev2)))]
             proj = proj - proj.mean()
             srt = np.sort(proj)
             cs = np.cumsum(srt[:-1])
             j = np.arange(1, proj.size)
             cut = srt[int(np.argmax(cs * cs / (j * (proj.size - j))))]
-            ids[pi_[proj > cut]] = n
-        return ids
+            right = proj > cut
+            groups[r], new = pi_[~right], pi_[right]
+            groups.append(new)
+            sses[r] = sse(groups[r])
+            sses.append(sse(new) if new.size else 0.0)
+        return groups
 
     # ----------------------------------------------------------------------------------------- simulation
     def simulate(self, shocks, init=None):
