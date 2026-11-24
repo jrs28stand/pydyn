@@ -82,65 +82,56 @@ class HigherOrderNews:
 
     # ------------------------------------------------------------------------------------ precomputed maps
     def _build_gap_maps(self):
-        """The gap path q is affine in z = (y1, y2, vec(x1 x1'), o_pre) (x1 = y1[ist]): the expected path is linear
+        """The gap path q is affine in z = (y1 + y2, vec(x1 x1'), o_pre) (x1 = y1[ist]): the expected path is linear
         in them (the covariance recursion W_k = F^k W_0 F'^k + S_k with F = ghxs is linear in W_0 and its shock part
-        S_k does not depend on the state), and so is the gap. Computed once per parameter set:
+        S_k does not depend on the state; y1 and y2 enter the path through the same coefficients), and so is the gap.
+        Computed once per parameter set:
 
             q = q0 + Gz @ z,  then  q[0] += aC.prev_total + aJ.u.
 
-        Rows of ``expected_path``/``gap_path`` are contracted with the gap coefficients on the fly, so no
-        (N+1) n x n_s^2 path map is stored."""
+        Only the three gap coefficient vectors (aB, aA, aC) are propagated (adjoint form), never the full
+        (N+1) n x n_s^2 path map: per k a handful of small matmuls."""
         N, n, ist, ov = self.N, self.n, self.ist, self.ov
         ns, two = len(ist), self.order == 2
         F, ghx = self.ghxs, self.ghx
-        aB, aA, aC = self.aB[ov], self.aA[ov], self.aC[ov]            # DR order, for the y-parts
-        oB, oA, oC = self.aB, self.aA, self.aC                        # declaration order, for the o-part
         K = N + 1
-        rB = {}; rA = {}; rC = {}
-        names = ["y1"] + (["y2", "W"] if two else []) + ["o"]
-        for nm in names:
-            rB[nm], rA[nm], rC[nm] = ({} for _ in range(3))
-        cB = {nm: [] for nm in names}; cA = {nm: [] for nm in names}; cC = {nm: [] for nm in names}
-        const = [[], [], []]
-        A1 = np.eye(n)
+        Ay = np.vstack([self.aB[ov], self.aA[ov], self.aC[ov]])      # DR order, for the y-parts   (3, n)
+        Ao = np.vstack([self.aB, self.aA, self.aC])                   # declaration order, for the o-part
+        rY = np.zeros((K, 3, n)); rY[0] = Ay
+        rO = np.empty((K, 3, n)); rO[0] = Ao
+        Vy = Ay @ ghx                                                 # (3, ns): a ghx F^(k-1)
+        P = self.ob.P
         if two:
-            A2, AW, a_k = np.eye(n), np.zeros((n, ns * ns)), np.zeros(n)
-            Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = i-th row of ghxx @ vec(W_j)
+            nn = ns * ns
+            rW = np.zeros((K, 3, nn)); rc = np.zeros((K, 3))
+            Cj = self.ghxx.reshape(n, ns, ns)                         # <Cj_i, W0> = row i of ghxx @ vec(W_j)
+            Z = np.zeros((ns, nn))                                    # state rows of the W0-coefficient of m2_k
+            zc = np.zeros(ns)                                         # state rows of the constant of m2_k
             S = np.zeros((ns, ns))
-        PO = np.eye(n)
-        for k in range(K):
-            if k > 0:
-                if two:
-                    sj = self.ghxx @ S.ravel()                         # state-independent shock part of W_{k-1}
-                    dW = 0.5 * Cj.reshape(n, ns * ns)
-                    dc = 0.5 * sj + self.c2
-                    A2n = ghx @ A2[ist]
-                    AW = ghx @ AW[ist] + dW
-                    a_k = ghx @ a_k[ist] + dc
-                    A2 = A2n
-                    S = F @ S @ F.T + self.SigS
-                    Cj = np.matmul(np.matmul(F.T, Cj), F)
-                A1 = ghx @ A1[ist]
-                PO = self.ob.P @ PO
-            blocks = {"y1": (aB @ A1, aA @ A1, aC @ A1), "o": (oB @ PO, oA @ PO, oC @ PO)}
+            ghxst = (Ay @ ghx)                                        # a ghx, (3, ns)
+        for k in range(1, K):
+            rY[k][:, ist] = Vy
+            rO[k] = rO[k - 1] @ P
             if two:
-                blocks["y2"] = (aB @ A2, aA @ A2, aC @ A2)
-                blocks["W"] = (aB @ AW, aA @ AW, aC @ AW)
-                const[0].append(aB @ a_k); const[1].append(aA @ a_k); const[2].append(aC @ a_k)
-            for nm, (b, a, c) in blocks.items():
-                cB[nm].append(b); cA[nm].append(a); cC[nm].append(c)
-        cols = []
-        for nm in names:
-            B, A, C = (np.array(cB[nm]), np.array(cA[nm]), np.array(cC[nm]))
-            G = B[:N] + A[1:K]
-            G[1:] += C[:N - 1]
-            cols.append(G)
+                Cf = Cj.reshape(n, nn)
+                dc = 0.5 * (self.ghxx @ S.ravel()) + self.c2          # state-independent part of d_{k-1}
+                rW[k] = 0.5 * (Ay @ Cf) + ghxst @ Z                   # a . AW_k = 0.5 a.C_{k-1} + (a ghx) Z_{k-1}
+                rc[k] = Ay @ (ghx @ zc + dc)                          # a . a_k
+                Z = F @ Z + 0.5 * Cf[ist]
+                zc = F @ zc + dc[ist]
+                S = F @ S @ F.T + self.SigS
+                Cj = np.matmul(np.matmul(F.T, Cj), F)
+            Vy = Vy @ F
+        def comb(r):                                                  # q_h <- rB_h + rA_{h+1} + rC_{h-1}
+            G = r[:N, 0] + r[1:K, 1]
+            G[1:] += r[:N - 1, 2]
+            return G
+        cols = [comb(rY)]
         q0 = np.full(N, float(self.a0))
         if two:
-            B, A, C = (np.array(c) for c in const)
-            g = B[:N] + A[1:K]
-            g[1:] += C[:N - 1]
-            q0 += g
+            cols.append(comb(rW))
+            q0 += comb(rc[:, :, None])[:, 0]
+        cols.append(comb(rO))
         self._q0 = q0
         self._Gz = np.ascontiguousarray(np.hstack(cols))
         self._nz = self._Gz.shape[1]
@@ -150,12 +141,13 @@ class HigherOrderNews:
         """q from the precomputed maps; equals ``gap_path(expected_path(...), ...)`` up to rounding."""
         n, ist = self.n, self.ist
         z = self._z
-        z[:n] = y1
         if self.order == 2:
-            z[n:2 * n] = y2
+            np.add(y1, y2, out=z[:n])
             x1 = y1[ist]
             ns = x1.size
-            z[2 * n:2 * n + ns * ns] = np.multiply.outer(x1, x1).ravel()
+            z[n:n + ns * ns] = np.multiply.outer(x1, x1).ravel()
+        else:
+            z[:n] = y1
         z[-n:] = o_pre
         q = self._Gz @ z
         q += self._q0
@@ -256,7 +248,8 @@ class HigherOrderNews:
         xn = np.sqrt((self.xi * self.xi).sum(axis=0))
         order = np.argsort(xn, kind="stable")
         rown = np.sqrt((self.R * self.R).sum(axis=1))
-        self._cc = (self.R, self.xi, xn[order], order, rown, float(xn.max()) if xn.size else 0.0)
+        xa = np.vstack([self.xi, np.ones((1, self.xi.shape[1]))])       # augmented: q + R xi = [R q] @ [xi; 1]
+        self._cc = (self.R, self.xi, xn[order], order, rown, float(xn.max()) if xn.size else 0.0, xa)
         return self._cc
 
     def _relevant_points(self, q):
@@ -264,7 +257,10 @@ class HigherOrderNews:
         ``not all(p >= -1e-8 max(1, max|p|))``. Exact skipping: by Cauchy-Schwarz p_h >= q_h - |R_h| |xi_j|, so
         points with |xi_j| <= min_h q_h/|R_h| (1 - 1e-9) are non-relevant (the margin dwarfs rounding), and
         min_h p_h >= -1e-8 implies non-relevant whatever max|p| is."""
-        _, _, xn_sorted, order, rown, rmax = self._cub_prep()
+        _, _, xn_sorted, order, rown, rmax, xa = self._cub_prep()
+        Ra = np.empty((self.R.shape[0], self.R.shape[1] + 1))
+        Ra[:, :-1] = self.R
+        Ra[:, -1] = q
         npts = self.xi.shape[1]
         cnt = 0
         if q.min() >= 0.0:
@@ -274,7 +270,7 @@ class HigherOrderNews:
                 return np.empty(0, dtype=np.intp)
             cnt = int(np.searchsorted(xn_sorted, rho, side="right"))
         if cnt == 0:
-            pts = q[:, None] + self.R @ self.xi
+            pts = Ra @ xa
             mn = pts.min(axis=0)
             cand = np.nonzero(mn < -1e-8)[0]
             sub, mnc = pts[:, cand], mn[cand]
@@ -282,7 +278,7 @@ class HigherOrderNews:
             return cand[rel]
         else:
             cand = order[cnt:]
-            sub = q[:, None] + self.R @ self.xi[:, cand]
+            sub = Ra @ xa[:, cand]
             keep = sub.min(axis=0) < -1e-8
             cand, sub = cand[keep], sub[:, keep]
         rel = sub.min(axis=0) < -1e-8 * np.maximum(1.0, np.abs(sub).max(axis=0))
