@@ -6,6 +6,7 @@ and pydyn's OccBin solver, which is itself checked against Dynare 7.2 in test_oc
 """
 import os
 import shutil
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -437,3 +438,36 @@ def test_inversion_filter_likelihood_with_news_solver(tmp_path, case, ks):
             np.testing.assert_allclose(res.filtered_errs, e_occ.last_result.filtered_errs, atol=1e-10)
             assert sum(reg[0][0][0] for reg in res.regime_history) > 20          # the sample reaches the bound
             assert e_news.last_news_solver.fallbacks == 0
+
+
+# ------------------------------------------------------------------ singular solves (DynareOBC's Simple1)
+def test_active_set_rejects_numerically_singular_block():
+    """A wedge that moves none of the gaps it should close: M[0, 0] is rounding noise.  The 1x1 'solution' is a
+    1e14 wedge that satisfies the complementarity conditions to rounding; it must be refused, not returned."""
+    M = np.array([[5.55e-17, -0.67, -0.44], [0.0, 5.55e-17, -0.67], [0.0, 0.0, 5.55e-17]])
+    q = np.array([-0.00995, 0.01005, 0.01005])
+    assert solve_active_set(M, q, 3) is None
+    y, status = solve_news(M, q, 3)
+    assert y is None and status == "no_solution"
+    # a well-conditioned problem of the same size still solves
+    M2 = np.array([[1.0, -0.2, -0.1], [0.0, 1.0, -0.2], [0.0, 0.0, 1.0]])
+    assert solve_active_set(M2, q, 3) is not None
+
+
+@pytest.mark.parametrize("selection", ["occbin", "shortest", "longest", "min_wedge"])
+def test_simple1_impossible_problem_raises(tmp_path, selection):
+    """DynareOBC's Simple1 (reference/dynareobc_octave/simple1_max.mod; OccBin form simple1_occ.mod): after a shock
+    that makes r + phi pi negative in period 1 there is no solution (DynareOBC: 'Impossible problem').  The news method
+    used to return a wedge of 1e14 (pi = -1e14); it must raise OBCError('no_solution')."""
+    ref = Path(__file__).resolve().parent.parent / "reference" / "dynareobc_octave" / "simple1_occ.mod"
+    shutil.copy(ref, tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = pydyn.Model(pydyn.run_preprocessor(tmp_path / ref.name))
+    ob = pydyn.Occbin(m)
+    for shock in (-0.02, -0.1):
+        with pytest.raises(OBCError) as err:
+            ob.simulate(np.array([[shock]]), periods=15, obc_method="news", obc_selection=selection, check_ahead_periods=80)
+        assert err.value.status == "no_solution"
+    r = ob.simulate(np.array([[-0.01]]), periods=15, obc_method="news", obc_selection=selection, check_ahead_periods=80)
+    assert np.abs(r.piecewise).max() < 1.0                     # a shock that leaves the constraint slack is fine

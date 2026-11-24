@@ -404,6 +404,17 @@ period, before -> after; raw `bench/results/occbin_speedup_p1.json`): zlb 552 ->
 selection: `ValueError`. With two constraints: the existing `ValueError` of non-default selections. Tests: `test_minnorm_is_news_with_min_wedge` (tests/test_obc_selection.py),
 `test_minnorm_alias_in_the_estimation` (tests/test_obc_estimation.py). This is the alias only: it is NOT MacroModelling.jl's minimum-norm news-shock programme.
 
+## Singular solves (task 3)
+Defect: DynareOBC's `Simple1` (`reference/dynareobc_octave/simple1_max.mod`, OccBin form `simple1_occ.mod`), shock epsilon = -0.02 (r + phi pi < 0 in period 1, no solution; DynareOBC: "Impossible problem"):
+`news` returned pi = -1.2e14. Cause: `M[0,0]` = 5.6e-17 (rounding noise: a period-0 wedge does not move the period-0 gap), the 1x1 active-set solve gave a wedge of 1.8e14, which satisfies
+`verify_lcp` (g = 0 to rounding, y >= 0), and the same happened in the MILP's polish step and in `single_spells`. Fix (`pydyn/obc.py`, `_solve_checked`): every square solve on a guessed binding set
+(`solve_active_set`, the polish in `solve_news`, `NewsOBC.single_spells`, `RegimeOBC._wedges`) rejects a block whose LU has a pivot <= 1e-10 x (largest entry of the whole M); the active set
+then fails, the MILP (which finds alpha ~ 0) and its check-ahead test run, and `OBCError('no_solution')` is raised. Slack shocks (-0.01) still solve. `occbin` on this model raises
+numpy's `LinAlgError` (singular matrix), not changed. Tests: `test_active_set_rejects_numerically_singular_block`, `test_simple1_impossible_problem_raises` (4 selections). Cost on the fast path
+(1000 periods, min of 15, interleaved with the old code, same results bit for bit): NewsOBC zlb 25.4 -> 25.7 us/period, zlb2 33.2 -> 33.8, nkm 33.3 -> 34.0; RegimeOBC zlb 45.0 -> 46.1,
+zlb2 70.2 -> 72.8, nkm 58.2 -> 60.3, sw 34.8 -> 35.2 (1 to 4 %).
+Not guarded: `obc_filter.py` lines solving on a set found by the guarded solvers (linearisation of an accepted solution), `obc_lk.py`, `RegimeOBC.single_spell_solutions`.
+
 ## State / next step
-- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit), task 2 (`minnorm` alias).
-- Next: task 3 (singular-solve guard, Simple1 regression), task 4 (orientation test).
+- Done: task 0 (merge of origin/wip/obc), task 1 (OccBin speed-up verified, bit for bit), task 2 (`minnorm` alias), task 3 (singular-solve guard, Simple1 regression).
+- Next: task 4 (orientation test in the constraint classifier, contract rule 7).

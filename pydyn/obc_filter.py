@@ -119,7 +119,7 @@ class LCPFilterSolver(NewsFilterSolver):
             S, s0 = self._S0, np.zeros(n)
             regime = as_regime([Occbin.map_regime(np.zeros(nb.T, int)) for _ in range(nb.n_c)])
         else:
-            y = solve_active_set(nb.Mo, q, n_s, self._tol)
+            y = solve_active_set(nb.Mo, q, n_s, self._tol, scale=getattr(nb, "_mscale", None))
             if y is None:
                 self.fallbacks += 1
                 # cheap proof of non-existence first (the filter's root finder also tries implausible shocks)

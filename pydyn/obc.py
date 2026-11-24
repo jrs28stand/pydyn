@@ -223,11 +223,30 @@ def verify_lcp(M, q, y, n_s, tol=1e-8):
                 and np.all(np.minimum(np.abs(y), np.abs(g[:n_s])) <= tol * scale))
 
 
-def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None):
+PIVOT_RTOL = 1e-10
+
+
+def _solve_checked(A, b, scale, rtol=PIVOT_RTOL):
+    """Solve ``A x = b`` by LU; None if A is singular or numerically so: a pivot of at most ``rtol * scale``, where
+    ``scale`` is the largest entry of the whole matrix M, not of the block.  Such a block has no usable solution (a wedge
+    that moves none of the gaps it is meant to close): the quotient of rounding noise gives 1e14-sized "wedges" that
+    satisfy the complementarity conditions to rounding, so verify_lcp cannot tell them from a solution."""
+    lu, _piv, x, info = _dgesv(A, b, overwrite_a=True, overwrite_b=True)
+    if info != 0:
+        return None
+    d = lu.diagonal()
+    if abs(d[0]) <= rtol * scale if d.size == 1 else abs(d).min() <= rtol * scale:
+        return None
+    return x
+
+
+def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None, scale=None):
     """Guess-and-verify on the binding set: start from the periods where q < 0 (or from the boolean vector
     ``start``), solve the square system on the guessed set, drop negative wedges, add violated periods.
     Returns y or None (no guarantee of success).  Only the complementarity rows are touched inside the loop; the
-    check-ahead rows enter once, in the final verification."""
+    check-ahead rows enter once, in the final verification.  A block whose LU has a pivot of at most 1e-10 times
+    ``scale`` (default: the largest entry of M, ``np.abs(M).max()``) is treated as singular: the iteration fails
+    (see ``_solve_checked``)."""
     Ms = M[:n_s]
     qs = q[:n_s]
     S = qs < -tol if start is None else np.array(start, bool)
@@ -240,8 +259,10 @@ def solve_active_set(M, q, n_s, tol=1e-8, maxit=60, start=None):
         y = np.zeros(n_s)
         idx = np.flatnonzero(S)
         if idx.size:
-            _lu, _piv, x, info = _dgesv(Ms[idx[:, None], idx], -qs[idx], overwrite_a=True, overwrite_b=True)
-            if info != 0:
+            if scale is None:
+                scale = float(np.abs(M).max())
+            x = _solve_checked(Ms[idx[:, None], idx], -qs[idx], scale)
+            if x is None:
                 return None
             y[idx] = x
         g = qs + Ms @ y
@@ -304,9 +325,11 @@ def solve_news(M, q, n_s, omega=1000.0, tol=1e-8, horizons=None, n_c=1, time_lim
         if z.any():
             try:
                 yp = np.zeros(n_s)
-                yp[z] = np.linalg.solve(M[:n_s][np.ix_(z, z)], -q[:n_s][z])
-                if verify_lcp(M, q, yp, n_s, tol):
-                    y = yp
+                xp = _solve_checked(M[:n_s][np.ix_(z, z)], -q[:n_s][z], msc)
+                if xp is not None:
+                    yp[z] = xp
+                    if verify_lcp(M, q, yp, n_s, tol):
+                        y = yp
             except np.linalg.LinAlgError:
                 pass
         if verify_lcp(M, q, y, n_s, max(tol, 1e-7)):
@@ -560,6 +583,7 @@ class NewsOBC:
         self._rows_tail = np.setdiff1d(np.arange(nc * N), self._rows_s)
         self._order = np.r_[self._rows_s, self._rows_tail]
         self.Mo = self.M[self._order]                   # complementarity rows first, then check-ahead rows
+        self._mscale = float(np.abs(self.Mo).max())     # scale of the pivot test of the active-set solves
         self.Ms = self.Mo[:nc * T]
         # q = q0 + Qs init + Qu shock: the initial state enters through r_{t+1}, the shock through r_t Q, and
         # through the shock term of the residual in the first period
@@ -671,13 +695,13 @@ class NewsOBC:
             raise ValueError("single_spells needs a model with one constraint")
         T = self.T
         scale = max(1.0, float(np.abs(q).max()))
+        mscale = self._mscale
         out = []
         for l in range(min(self.spell_l_max if l_max is None else l_max, T - 1) + 1):
             for k in range(1, T - l + 1):
                 sl = slice(l, l + k)
-                try:
-                    yk = np.linalg.solve(self.Mo[sl, sl], -q[sl])
-                except np.linalg.LinAlgError:
+                yk = _solve_checked(self.Mo[sl, sl].copy(), -q[sl], mscale)
+                if yk is None:
                     continue
                 if yk.min() <= tol * scale:               # a spell of exactly k periods needs positive wedges
                     continue
@@ -713,9 +737,9 @@ class NewsOBC:
         y = None
         if method in ("news", "active_set"):
             if start is not None and start.any():
-                y = solve_active_set(self.Mo, q, n_s, tol, start=start)
+                y = solve_active_set(self.Mo, q, n_s, tol, start=start, scale=self._mscale)
             if y is None:
-                y = solve_active_set(self.Mo, q, n_s, tol)
+                y = solve_active_set(self.Mo, q, n_s, tol, scale=self._mscale)
         info["used"] = "active_set"
         if y is None:
             if method == "active_set":
@@ -1184,8 +1208,10 @@ class RegimeOBC:
         w = np.zeros(len(self.cols) * self.T)
         S = self._index(z)
         if S.size:
-            _lu, _piv, x, info = _dgesv(self.R[S[:, None], S], -a[S], overwrite_a=True, overwrite_b=True)
-            if info != 0:
+            if "_rscale" not in self.__dict__:
+                self._rscale = float(np.abs(self.R).max())
+            x = _solve_checked(self.R[S[:, None], S], -a[S], self._rscale)
+            if x is None:
                 raise np.linalg.LinAlgError("Singular matrix")
             w[S] = x
         return w
