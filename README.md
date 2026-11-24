@@ -8,10 +8,10 @@ This branch holds no code. It records the results of running Dynare 7.2's own te
   - sha256 of the joined file: `e999594e3c811c0be608dc407d2ace5e3ca17bbead8c4c6162fb49330e8757a8`.
   - It unpacks to `accept_ref/`.
   - It holds every test's `.json` and `.log`, and every result file of 5 MB or less.
-- **Not included: 26 result files over 5 MB** (677 MB, mostly long simulations and the heterogeneous-agent models), listed in `heavy_not_included.txt`.
-  - GitHub's per-file limit and repository size make them impractical here, and creating a GitHub release was not permitted from this session.
-  - To regenerate them, run `tools/accept_octave.py --only <test>` (about 2 h of Octave for all 26), or ask for them by another route.
-  - Their `index.csv` rows still give status, elapsed time and sha256, so a regenerated file can be checked.
+- **Result files over 5 MB (26 files) are kept separately.**
+  - 16 of them (393 MB) are on branch `accept-ref-octave-large`, in nine parts. They unpack into the same `accept_ref/` tree.
+  - The other 10 are the heterogeneous-agent models (284 MB). Neither port supports these models, so they are not published; regenerate them with `tools/accept_octave.py --only heterogeneity` if needed.
+  - All 26 are listed in `heavy_not_included.txt`.
 - **`index.csv`.** One row per test file, with these columns:
   - `test`: the path relative to Dynare's `tests/`, or `examples/...`;
   - `status`;
