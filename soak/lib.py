@@ -29,7 +29,7 @@ RES, STATE = SOAK / "results", SOAK / "state"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bench"))
 SEED = 20261124
-PARTS = {"A": 1, "B": 2, "C": 3, "D": 4}
+PARTS = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5, "F": 6}
 MAX_DETAIL = 20                     # detailed anomaly lines kept per kind (counts are exact)
 TESTS = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/ref/dynare-7.2/examples")).parent / "tests"
 REF = ROOT / "reference"

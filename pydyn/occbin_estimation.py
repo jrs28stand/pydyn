@@ -90,6 +90,7 @@ class OccbinEstimation(Estimation):
 
     #: seconds the news solver's integer programme may use at one trial point of the inversion filter (None: its default)
     obc_milp_time_limit = None
+    obc_formulation = "auto"            # 'auto' | 'lcp' | 'regime' | 'hybrid': which news formulation the inversion filter uses (see Occbin.simulate)
     obc_horizon_max = None              # opt-in: retry a trial point that fails with horizon_too_short with the horizon doubled, up to this
     last_failure = None                 # news solver: dict(period, primary, counts, horizon, advice) of the last failed filter run, else None
 
@@ -257,7 +258,8 @@ class OccbinEstimation(Estimation):
             return None
         from .obc_filter import NewsFilterSolver
         self.last_news_solver = NewsFilterSolver(ob, horizon=self._obc_horizon, selection=self._obc_selection,
-                                                 milp_time_limit=self.obc_milp_time_limit, horizon_max=self.obc_horizon_max)
+                                                 milp_time_limit=self.obc_milp_time_limit, horizon_max=self.obc_horizon_max,
+                                                 formulation=self.obc_formulation)
         return self.last_news_solver
 
     def _minus_loglik(self, theta, return_lik=False):

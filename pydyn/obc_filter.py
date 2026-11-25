@@ -17,10 +17,11 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import linprog
 
-from .obc import NewsOBC, OBCError, RegimeOBC, constraint_objects, solve_active_set, solve_news
+from .obc import HybridOBC, NewsOBC, OBCError, RegimeOBC, constraint_objects, solve_active_set, solve_news
 from .occbin import Occbin
 from .occbin_filter import _Solver, as_regime
 
+FORMULATIONS = ("auto", "lcp", "regime", "hybrid")
 __all__ = ["NewsFilterSolver", "LCPFilterSolver", "RegimeFilterSolver"]
 
 
@@ -42,7 +43,13 @@ class NewsFilterSolver(_Solver):
     def __new__(cls, ob: Occbin, *args, **kw):
         if cls is NewsFilterSolver:
             lcp = all(c.cls == "complementarity" for c in constraint_objects(ob))
-            cls = LCPFilterSolver if lcp else RegimeFilterSolver
+            form = kw.get("formulation", "auto")
+            if form not in FORMULATIONS:
+                raise ValueError(f"unknown obc_formulation {form!r}: use one of {', '.join(map(repr, FORMULATIONS))}")
+            if form in ("lcp", "hybrid") and not lcp:
+                raise ValueError(f"obc_formulation={form!r} needs every constraint to be one complementary pair (this model has other classes); "
+                                 "use 'auto' or 'regime'")
+            cls = LCPFilterSolver if (lcp and form in ("auto", "lcp")) else RegimeFilterSolver
         return object.__new__(cls)
 
     # Why a trial point failed (``causes``, cumulative, and ``period_causes``, since ``begin_period``):
@@ -57,8 +64,9 @@ class NewsFilterSolver(_Solver):
     # Dynare's numeric code of a failed trial point stays 313 (311); the cause is extra information.
     CAUSES = ("horizon_too_short", "no_solution", "undecided", "milp_timeout", "numerical")
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None):
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None, formulation="auto"):
         super().__init__(ob)
+        self.formulation = formulation
         from .obc import check_selection
         self.horizon, self.check_ahead = int(horizon), int(check_ahead)
         if horizon_max is not None and int(horizon_max) < self.horizon:
@@ -114,7 +122,7 @@ class NewsFilterSolver(_Solver):
             big = self._big.get(h)
             if big is None:
                 big = self._big[h] = type(self)(self.ob, horizon=h, check_ahead=max(h, self.check_ahead), selection=self.selection,
-                                                milp_time_limit=self.milp_time_limit)
+                                                milp_time_limit=self.milp_time_limit, formulation=self.formulation)
             self.retries += 1
             flag, res = big.solve(shocks, init, sim, **kw)
             if flag == 0:
@@ -148,8 +156,8 @@ class NewsFilterSolver(_Solver):
 class LCPFilterSolver(NewsFilterSolver):
     """One complementary pair per constraint (``NewsOBC``)."""
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None):
-        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit, horizon_max)
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None, formulation="auto"):
+        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit, horizon_max, formulation)
         self.news = NewsOBC(ob, horizon=horizon, check_ahead=check_ahead)
         nb = self.news
         self._S0 = np.hstack([ob.P, ob.Q])
@@ -235,9 +243,9 @@ class RegimeFilterSolver(NewsFilterSolver):
     binding periods are ``w = -R[S,S]^-1 (a0 + Am [state; shock])[S]`` (S: binding positions), so the next state is
     ``[P Q] x + V0[:, S] w``: affine in x, and the first period's rule (T, R, C) is read off and cached per S."""
 
-    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None):
-        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit, horizon_max)
-        self.rb = rb = RegimeOBC(ob, horizon=horizon, check_ahead=check_ahead)
+    def __init__(self, ob: Occbin, horizon=40, check_ahead=40, selection="occbin", milp_time_limit=None, horizon_max=None, formulation="auto"):
+        super().__init__(ob, horizon, check_ahead, selection, milp_time_limit, horizon_max, formulation)
+        self.rb = rb = (HybridOBC if formulation == "hybrid" else RegimeOBC)(ob, horizon=horizon, check_ahead=check_ahead)
         rb.milp_time_limit = self.milp_time_limit        # fail fast: the filter's root finder tries implausible shocks
         self._S0 = np.hstack([ob.P, ob.Q])
 

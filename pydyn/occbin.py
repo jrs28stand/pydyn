@@ -350,7 +350,7 @@ class Occbin:
                  periodic_solution_strict=True, init_regime=None, init_binding_indicator=None,
                  max_check_ahead_periods=np.inf, reset_check_ahead_periods_in_new_period=False,
                  reset_regime_in_new_period=False, exo_pos=None, algo_truncation=1,
-                 obc_method="occbin", obc_horizon=40, obc_selection="occbin") -> OccbinResult:
+                 obc_method="occbin", obc_horizon=40, obc_selection="occbin", obc_formulation="auto") -> OccbinResult:
         """Piecewise-linear simulation under a sequence of unanticipated shocks (Dynare's
         ``occbin.solver`` with the ``simul`` options, defaults as in ``set_default_options.m``).
 
@@ -375,6 +375,13 @@ class Occbin:
         iteration reaches), ``'shortest'``, ``'longest'`` (fewest, most binding periods among the single-spell
         solutions) or ``'min_wedge'`` (smallest sum of squared wedges); see ``NewsOBC.simulate``.  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
         ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
+
+        ``obc_formulation`` (with ``'news'`` only): ``'auto'`` (default: the LCP when every constraint is one complementary pair,
+        otherwise the regime formulation), ``'lcp'`` (refused unless every constraint is one complementary pair), ``'regime'``
+        (``RegimeOBC``: regime sequences accepted by OccBin's own test in levels; any model), ``'hybrid'`` (the LCP, kept only if its regime
+        sequence passes OccBin's test in levels over the whole anticipated path, else ``RegimeOBC`` for that period; one-pair models only).
+        It matters for constraints flagged ``approx`` (the condition and the linearised equation differ by a small term): there the LCP
+        and OccBin can pick different regimes at a knife-edge period (docs/OBC_ESTIMATION.md, 'Approx-class constraints').
         """
         obc_method, obc_selection = canonical_obc(obc_method, obc_selection)
         if obc_selection not in OBC_SELECTIONS:
@@ -390,12 +397,18 @@ class Occbin:
                 raise ValueError("init_regime, init_binding_indicator, periodic_solution, curb_retrench and "
                                  "reset_regime_in_new_period are OccBin options and do not apply to obc_method='news'")
             from .obc import NewsOBC, RegimeOBC, constraint_objects
-            key = (int(obc_horizon), int(min(check_ahead_periods, 400)))
+            from .obc import HybridOBC
+            if obc_formulation not in ("auto", "lcp", "regime", "hybrid"):
+                raise ValueError(f"unknown obc_formulation {obc_formulation!r}: use 'auto', 'lcp', 'regime' or 'hybrid'")
+            key = (int(obc_horizon), int(min(check_ahead_periods, 400))) + (() if obc_formulation == "auto" else (obc_formulation,))
             cache = self.__dict__.setdefault("_news", {})
             if key not in cache:
                 # one complementary pair per constraint: Holden's LCP; otherwise the general regime formulation
                 lcp = all(c.cls == "complementarity" for c in constraint_objects(self))
-                cache[key] = (NewsOBC if lcp else RegimeOBC)(self, horizon=key[0], check_ahead=key[1])
+                if obc_formulation in ("lcp", "hybrid") and not lcp:
+                    raise ValueError(f"obc_formulation={obc_formulation!r} needs every constraint to be one complementary pair; use 'auto' or 'regime'")
+                cls = {"auto": NewsOBC if lcp else RegimeOBC, "lcp": NewsOBC, "regime": RegimeOBC, "hybrid": HybridOBC}[obc_formulation]
+                cache[key] = cls(self, horizon=key[0], check_ahead=key[1])
             return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos, selection=obc_selection)
         k, n, n_exo, m = self.k, self.n, self.n_exo, self.model
         shocks_in = np.atleast_2d(np.asarray(shocks, float))

@@ -33,7 +33,7 @@ from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 from .expr import NAMESPACE, Translator, tokenize
 from .occbin import OBC_SELECTIONS, Occbin, OccbinResult, _split_comparison
 
-__all__ = ["OBCError", "OBCClassError", "ConstraintObject", "NewsOBC", "RegimeOBC", "constraint_objects", "solve_news",
+__all__ = ["OBCError", "OBCClassError", "ConstraintObject", "NewsOBC", "RegimeOBC", "HybridOBC", "constraint_objects", "solve_news",
            "solve_active_set", "m_diagnostics", "verify_lcp"]
 
 
@@ -1642,6 +1642,63 @@ class RegimeOBC:
         linear = _linear_path(ob, self._st, init_orig, sh, n_periods)
         res = OccbinResult(piecewise=piecewise + ob.ys, linear=linear + ob.ys, shocks=shocks_in,
                            regime_history=history, ys=ob.ys, exo_pos=exo_idx)
-        res.news = dict(method=method, formulation="regime", wedges=wedges, solver=used, horizon=T,
+        res.news = dict(method=method, formulation=getattr(self, "formulation", "regime"), wedges=wedges, solver=used, horizon=T,
                         blocks=list(self.cols), selection=selection, n_single_spell=n_spell, selection_fallback=fallback)
         return res
+
+
+class HybridOBC(RegimeOBC):
+    """``obc_formulation='hybrid'``: the fast LCP solve first, accepted only if its regime sequence passes OccBin's own bind/relax test in
+    levels along the whole anticipated path (every period of the horizon + check-ahead rows, exactly what ``RegimeOBC`` verifies for a
+    guess); otherwise the period is solved by ``RegimeOBC`` (guess-and-verify from the reference regime, then the integer programme).
+    Needs a model whose constraints are all one complementary pair (the LCP exists).  For an exact-class model the check is not needed and
+    ``obc_formulation='lcp'`` skips it.  ``hstats``: periods solved by the LCP and accepted / rejected by the levels test, LCP failures."""
+
+    formulation = "hybrid"
+
+    def __init__(self, model_or_occbin, params=None, horizon=40, check_ahead=40):
+        super().__init__(model_or_occbin, params, horizon, check_ahead)
+        self.lcp_obc = NewsOBC(self.ob, horizon=horizon, check_ahead=check_ahead)
+        self.hstats = dict(lcp=0, accepted=0, rejected=0, lcp_failed=0)
+
+    def _step(self, init, shock, maxit=60, method="news", z0=None, selection="occbin"):
+        init, shock = np.asarray(init, float), np.asarray(shock, float)
+        T, N, k = self.T, self.N, len(self._cv)
+        if method == "milp":
+            return super()._step(init, shock, maxit=maxit, method=method, z0=z0, selection=selection)
+        nb, tol = self.lcp_obc, 1e-8
+        q = nb.q0 + nb._Qx @ np.concatenate([init[nb._st], shock])
+        n_s = nb.n_c * nb.T
+        if q.min() >= -tol * max(1.0, float(np.abs(q).max())):
+            y = np.zeros(n_s)
+        else:                       # the active-set iteration only: no integer programme here (RegimeOBC is the fallback)
+            y = solve_active_set(nb.Mo, q, n_s, tol, scale=nb._mscale)
+            if y is None:
+                self.hstats["lcp_failed"] += 1
+                return super()._step(init, shock, maxit=maxit, method=method, z0=z0, selection=selection)
+            if selection != "occbin" and y.any():
+                y = nb._select(q, y, selection, {}, tol)
+        info = dict(used="lcp")
+        self.hstats["lcp"] += 1
+        z = np.zeros((N, self.n_c), bool)
+        if y.any():
+            z[:T] = (y > 1e-9 * max(1.0, float(np.abs(y).max()))).reshape(self.n_c, T).T
+        xs = np.concatenate([init[self._st], shock])
+        Ycv = (self._Bx @ xs).reshape(N, k)
+        a = self.a0 + self._Ax @ xs
+        try:
+            w = self._wedges(z, a)
+            pcv = Ycv + (self._Wcv @ w).reshape(N, k) if w.any() else Ycv
+            vb, vr = self._violations(z, pcv)
+            ok = not vb.any() and not vr.any()
+        except np.linalg.LinAlgError:
+            ok = False
+        if not ok:
+            self.hstats["rejected"] += 1
+            return super()._step(init, shock, maxit=maxit, method=method, z0=z0, selection=selection)
+        self.hstats["accepted"] += 1
+        nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
+        if w.any():
+            nxt = nxt + self._V0 @ w
+        info = dict(info, used="lcp_checked")
+        return z, w, nxt, info
