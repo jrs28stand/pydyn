@@ -185,7 +185,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         st_vars = self._estimation_var_list(st)
         self.vars["var_list_"] = R.cellstr([str(x) for x in (st.get("symbol_list") or [])])      # the driver's var_list_
         for key in ("load_mh_file", "mh_recover", "particle.status",
-                    "mh_posterior_mode_estimation"):
+                    "mh_posterior_mode_estimation", "estimate_initial_states_endogenous_prior"):
             if self.opt_flag(key):
                 raise R.ResultsError(f"estimation option {key} is not supported by pydyn.dynare()")
         self._refuse_unfaithful_smoother()
