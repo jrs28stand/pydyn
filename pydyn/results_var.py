@@ -105,6 +105,7 @@ class VarModelMixin:
              f"{self.name}.varmatrices": self._gen_function("varmatrices"),
              f"{self.name}.trend_component_ar_a0": self._gen_function("trend_component_ar_a0"),
              f"{self.name}.pac_target_coefficients": self._gen_function("pac_target_coefficients"),
+             **{f"{self.name}.{fn}": self._gen_function(fn, lazy=True) for fn in _sub.MODEL_FUNCTIONS},
              "get_ar_ec_matrices": self.fn_get_ar_ec_matrices,
              "simult_": self.fn_simult_,
              "get_companion_matrix_legacy": self.fn_get_companion_matrix_legacy}
@@ -118,6 +119,10 @@ class VarModelMixin:
 
     def var_refusal(self, path):
         """A function that refuses with a clear message for a package function that pydyn does not have, else None."""
+        if path.startswith(f"{self.name}."):                   # +<model>/ functions the preprocessor writes and pydyn does not run
+            def refuse(args, nargout, _p=path):
+                raise Unsupported(f"{_p}: pydyn does not run this function of the model's package", "function")
+            return refuse
         for prefix, why in self._REFUSED:
             if path.startswith(prefix):
                 def refuse(args, nargout, _p=path, _w=why):
@@ -141,9 +146,12 @@ class VarModelMixin:
         d = self.M_.get(kind)
         return isinstance(d, Struct) and name in d
 
-    def _gen_function(self, fname):
-        """The function the preprocessor writes (``<model>.varmatrices`` ...), callable from the .mod file."""
+    def _gen_function(self, fname, lazy=False):
+        """The function the preprocessor writes (``<model>.varmatrices`` ...), callable from the .mod file.  With ``lazy``
+        (the model's own functions ``<model>.dynamic_resid``...) the preprocessor's text is read at the first call."""
         def run(args, nargout):
+            if lazy:
+                self._ensure_submodels(f"{self.name}.{fname}")
             self._need_sub(f"{self.name}.{fname}")
             return self._call_generated(fname, args, nargout)
         return run

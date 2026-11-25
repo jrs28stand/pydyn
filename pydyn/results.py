@@ -54,6 +54,7 @@ from .results_var import VarModelMixin
 from .results_cf import ConditionalForecastMixin
 from .results_nx import NextMixin
 from .results_ident import IdentificationMixin
+from .results_mi import MiMixin
 from .gfx import Gfx as _Gfx
 from .figures import FiguresMixin
 
@@ -553,6 +554,7 @@ class _Core(CommandsMixin):
         self.I.globals["oo_"] = tag_tree(self._initial_oo(), "oo_")
         self._flat = flatten(self.options_)
         self.functions = self._build_functions()
+        self._mi_install()
         self.noops = _NOOP_NAMES
         self._last_ss = None
         self._stmt_keys = {}
@@ -1012,6 +1014,7 @@ class _FunctionsMixin:
             **self._functions_var(),
             **self._functions_nx(),
             **self._functions_ident(),
+            **self._functions_mi(),
         }
 
     def fn_command(self, kind):
@@ -1247,7 +1250,7 @@ class _FunctionsMixin:
 
 
 class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin, FiguresMixin,
-              NextMixin, IdentificationMixin):
+              NextMixin, IdentificationMixin, MiMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into

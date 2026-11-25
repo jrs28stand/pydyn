@@ -126,6 +126,9 @@ class IdentificationMixin:
                 warnings.simplefilter("ignore")
                 # the .mod may empty the global estim_params_ (kim2), which makes Dynare test the current parameters
                 ep = self.I.base.vars.get("estim_params_", None) if hasattr(self.I.base.vars, "get") else None
+                if ep is None:                                  # a global (results_mi): the untouched one is a DynareObject
+                    ep = self.I.globals.get("estim_params_")
+                    ep = None if getattr(ep, "obj_kind", "") == "dynare-object" else ep
                 no_priors = False
                 if ep is not None:
                     if np.size(ep) == 0 and not isinstance(ep, Struct):

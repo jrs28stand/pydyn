@@ -34,7 +34,12 @@ from .matlab import Cell, Struct, Tainted, Unsupported
 from .preprocessor import find_preprocessor
 
 PREFIXES = ("M_.var.", "M_.trend_component.", "M_.var_expectation.", "M_.pac.")
-FUNCTION_FILES = ("varmatrices", "trend_component_ar_a0", "pac_target_coefficients")
+FUNCTION_FILES = ("varmatrices", "trend_component_ar_a0", "pac_target_coefficients",
+                  # the model's own functions, callable from MATLAB code as <model>.<name>(...)
+                  "set_auxiliary_variables", "dynamic_resid", "dynamic_resid_tt", "dynamic_g1", "dynamic_g1_tt",
+                  "static_resid", "static_resid_tt", "static_g1", "static_g1_tt", "epilogue_dynamic", "epilogue_static")
+#: the files among them that are the model's own functions (not the sub-model ones above)
+MODEL_FUNCTIONS = FUNCTION_FILES[3:]
 
 
 class SubModelError(Exception):

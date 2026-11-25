@@ -3277,13 +3277,82 @@ def _norm(I, a, nout):
 
 @bi("chol")
 def _chol(I, a, nout):
-    if nout > 1 or len(a) != 1:
-        raise Unsupported("chol with options or several outputs")
-    x = _square(farr(a[0]), "chol")
+    """chol(A), chol(A, 'lower'|'upper'), [R, p] = chol(A[, opt]): Octave's semantics.  Only the upper (lower) triangle of
+    A is read; where a pivot is not positive, one output is an error and with two outputs p is the index of the pivot and
+    R is the factor of the leading (p-1) x (p-1) block."""
+    if nout > 2 or not 1 <= len(a) <= 3:
+        raise Unsupported("chol with more than two outputs or more than two options")
+    lower = False
+    for o in a[1:]:
+        if not isinstance(o, str) or o.lower() not in ("lower", "upper", "vector"):
+            raise MatlabError('chol: optional argument must be one of "vector", "lower", or "upper"')
+        if o.lower() == "vector":
+            raise Unsupported("chol with the 'vector' option (sparse matrices)")
+        lower = o.lower() == "lower"
+    x = farr(a[0])
+    if x.ndim != 2 or x.shape[0] != x.shape[1]:
+        raise MatlabError("chol: requires square matrix")
+    if not np.all(np.isfinite(x)):
+        raise Unsupported("chol of a matrix with NaN or Inf")
+    n = x.shape[0]
+    sym = np.tril(x) + np.tril(x, -1).T if lower else np.triu(x) + np.triu(x, 1).T      # the triangle read, mirrored
+    p = 0
+    k = n
     try:
-        return ret(np.linalg.cholesky((x + x.T) / 2 if np.allclose(x, x.T) else x).T)
+        L = np.linalg.cholesky(sym)
     except np.linalg.LinAlgError:
-        raise MatlabError("chol: matrix must be positive definite") from None
+        d = np.zeros((n, n))
+        for j in range(n):
+            s_ = sym[j, j] - np.dot(d[j, :j], d[j, :j])
+            if not s_ > 0:
+                p, k = j + 1, j
+                break
+            d[j, j] = np.sqrt(s_)
+            for i in range(j + 1, n):
+                d[i, j] = (sym[i, j] - np.dot(d[i, :j], d[j, :j])) / d[j, j]
+        L = d[:k, :k]
+        if nout < 2:
+            raise MatlabError("chol: input matrix must be positive definite")
+    R = L if lower else L.T
+    return [ret(np.array(R, float)), _F(float(p))][:max(nout, 1)]
+
+
+@bi("sparse")
+def _sparse(I, a, nout):
+    """sparse(A), sparse(m, n), sparse(i, j, sv[, m, n[, nzmax]]) as a full matrix: the interpreter has no sparse type, so
+    ``full``, ``size``, indexing and arithmetic give the values (``issparse``, ``nnz`` and the storage are not modelled);
+    repeated (i, j) pairs add up, as in Octave."""
+    if len(a) == 1:
+        return ret(np.array(farr(a[0]), float))
+    if len(a) == 2:
+        m, n = as_index_int(a[0]), as_index_int(a[1])
+        if m < 0 or n < 0:
+            raise MatlabError("sparse: dimensions M and N must be non-negative")
+        return ret(np.zeros((m, n)))
+    if len(a) not in (3, 5, 6):
+        raise Unsupported("sparse with this number of arguments")
+    ii, jj, sv = farr(a[0]).ravel(order="F"), farr(a[1]).ravel(order="F"), farr(a[2]).ravel(order="F")
+    for nm, v, pos in (("i", ii, "(%s,_)"), ("j", jj, "(_,%s)")):
+        bad = v[(v != np.floor(v)) | (v < 1)]
+        if bad.size:
+            what = f"{bad[0]:g}"
+            raise MatlabError(f"index {pos % what}: subscripts must be either integers 1 to (2^63)-1 or logicals")
+    cnt = max(ii.size, jj.size, sv.size)
+    for v, nm in ((ii, "i"), (jj, "j"), (sv, "sv")):
+        if v.size not in (1, cnt):
+            raise MatlabError("sparse: dimension mismatch")
+    ii, jj, sv = (np.broadcast_to(v, (cnt,)) for v in (ii, jj, sv))
+    if len(a) >= 5:
+        m, n = as_index_int(a[3]), as_index_int(a[4])
+    else:
+        m, n = (int(ii.max()) if cnt else 0), (int(jj.max()) if cnt else 0)
+    if cnt and ii.max() > m:
+        raise MatlabError(f"sparse: row index {int(ii.max())}out of bound {m}")
+    if cnt and jj.max() > n:
+        raise MatlabError(f"sparse: column index {int(jj.max())}out of bound {n}")
+    out = np.zeros((m, n))
+    np.add.at(out, (ii.astype(int) - 1, jj.astype(int) - 1), sv.astype(float))
+    return ret(out)
 
 
 @bi("dot")
@@ -4459,8 +4528,7 @@ def _eval(I, a, nout):
     return I.run_parsed(body, sc, nout)
 
 
-@bi("evalin", "assignin", "evalc", "source", "dynare", "inputname", "builtin", "cellfun", "arrayfun",
-    "structfun", "str2num")
+@bi("evalin", "assignin", "evalc", "source", "dynare", "inputname", "builtin", "structfun", "str2num")
 def _dynamic(I, a, nout):
     raise Unsupported("this function manipulates workspaces or runs code that cannot be analysed", "eval")
 
@@ -4485,6 +4553,86 @@ def _set_shock_stderr_value(I, a, nout):
     _nargs(a, 2, 2, "set_shock_stderr_value")
     I.need_host("set_shock_stderr_value").set_shock_stderr(_str(a[0], "set_shock_stderr_value"), a[1])
     return []
+
+
+def _map_fun(I, a, nout, who):
+    """cellfun / arrayfun with a function handle or function name, the 'UniformOutput' option (an ErrorHandler is refused)."""
+    a = list(a)
+    uniform = True
+    while len(a) >= 3 and isinstance(a[-2], str) and a[-2].lower() in ("uniformoutput", "errorhandler"):
+        if a[-2].lower() == "errorhandler":
+            raise Unsupported(f"{who}: the ErrorHandler option", "function")
+        uniform = bool(truth(a[-1]))
+        a = a[:-2]
+    if len(a) < 2:
+        raise MatlabError(f"Invalid call to {who}")
+    f, ins = a[0], a[1:]
+    if not (isinstance(f, Handle) or (isinstance(f, str) and re.fullmatch(r"[A-Za-z_]\w*", f))):
+        raise MatlabError(f"{who}: argument NAME must be a string or function handle")
+    lists, shape = [], None
+    for k, x in enumerate(ins):
+        if who == "cellfun":
+            if not isinstance(x, Cell):
+                raise MatlabError("cellfun: C must be a cell array")
+            items, sh = x.items, tuple(x.shape)
+        else:
+            if isinstance(x, Cell):
+                items, sh = [Cell([v], (1, 1)) for v in x.items], tuple(x.shape)
+            elif isinstance(x, np.ndarray) and x.ndim == 2:
+                items, sh = list(x.ravel(order="F")), x.shape
+            elif isinstance(x, _SCAL):
+                items, sh = [x], (1, 1)
+            else:
+                raise Unsupported(f"arrayfun over a {type(x).__name__}", "function")
+        if shape is None:
+            shape = sh
+        elif sh != shape:
+            raise MatlabError(f"{who}: all the input arguments must have the same size and shape (arg 1 and arg {k + 1})")
+        lists.append(items)
+    n = len(lists[0])
+    no = max(nout, 1)
+    sc = I.scope_stack[-1]
+    outs = [[] for _ in range(no)]
+    for i in range(n):
+        args = [l[i] for l in lists]
+        r = I.call_handle(f, args, nout if nout > 0 else 0) if isinstance(f, Handle) else I.call(f, args, nout if nout > 0 else 0, sc)
+        if len(r) < no and (nout > 0 or uniform):
+            if nout == 0 and not r:
+                continue
+            raise MatlabError(f"{who}: function returned fewer than nargout values")
+        for j in range(no):
+            outs[j].append(r[j])
+    res = []
+    for j in range(no):
+        vals = outs[j]
+        if not uniform:
+            res.append(Cell(vals, shape))
+            continue
+        if len(vals) != n:
+            return []                                       # a function without output values
+        flat = []
+        for v in vals:
+            if isinstance(v, np.ndarray) and v.size == 1:
+                v = v.reshape(-1)[0]
+            if not isinstance(v, _SCAL):
+                raise MatlabError(f"{who}: all values must be scalars when UniformOutput = true; use the 'UniformOutput', false option")
+            flat.append(v)
+        if flat and all(isinstance(v, (bool, np.bool_)) for v in flat):
+            arrv = np.array(flat, dtype=bool)
+        else:
+            arrv = np.array([float(v) for v in flat], dtype=float)
+        res.append(ret(arrv.reshape(shape, order="F")) if n else np.zeros(shape))
+    return res
+
+
+@bi("cellfun")
+def _cellfun(I, a, nout):
+    return _map_fun(I, a, nout, "cellfun")
+
+
+@bi("arrayfun")
+def _arrayfun(I, a, nout):
+    return _map_fun(I, a, nout, "arrayfun")
 
 
 @bi("send_endogenous_variables_to_workspace", "send_exogenous_variables_to_workspace", "send_irfs_to_workspace")

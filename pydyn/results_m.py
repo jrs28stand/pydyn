@@ -82,6 +82,14 @@ def build_M(model, mod_name: str) -> Struct:
         rows = np.unique(np.asarray(hess[0], int)) + 1 if hess is not None else np.zeros(0, int)
         M["nonzero_hessian_eqs"] = mat(rows.astype(float).reshape(1, -1)) if rows.size else mat(np.zeros((0, 0)))
         M["hessian_eq_zero"] = np.bool_(rows.size == 0)
+    if not model.n_exo_det:
+        # the sparsity pattern of the dynamic Jacobian in compressed-column order, as the preprocessor writes it (the
+        # generated <model>.dynamic_g1 builds sparse(rowval, colval, values, endo_nbr, 3*endo_nbr+exo_nbr) from it)
+        rws, cls = np.asarray(model.jac_rows, int), np.asarray(model.jac_cols, int)
+        order = np.lexsort((rws, cls))
+        M["dynamic_g1_sparse_rowval"] = row(rws[order] + 1.0)
+        M["dynamic_g1_sparse_colval"] = row(cls[order] + 1.0)
+        M["dynamic_g1_sparse_colptr"] = row(1.0 + np.concatenate([[0], np.cumsum(np.bincount(cls, minlength=model.jac_dims[1]))]))
     M["set_auxiliary_variables"] = np.bool_(any(a.get("type") != 6 for a in raw.get("aux_vars", [])))   # no file for Ramsey multipliers
     for k in ("orig_maximum_endo_lag", "orig_maximum_endo_lead", "orig_maximum_exo_lag", "orig_maximum_exo_lead",
               "orig_maximum_exo_det_lag", "orig_maximum_exo_det_lead", "orig_maximum_lag", "orig_maximum_lead",
