@@ -95,7 +95,7 @@ class CommandsMixin:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ys, p = steady_state(m, params=m.params.copy(), exo=xs, solve_algo=int(algo) if command else None)
+                ys, p = steady_state(m, params=m.params.copy(), exo=xs, solve_algo=int(algo))     # Dynare's evaluate_steady_state also runs the solver for resol/estimation (not pydyn's polishing search)
         except SteadyStateError as exc:
             raise R.ResultsError(f"steady: {exc}") from None
         m.params[:] = p
@@ -866,20 +866,30 @@ class CommandsMixin:
         """evaluate_steady_state.m (no steady-state file): the static model solved from ``ys_init`` at the exogenous
         steady state ``exo_ss``, with options_.solve_algo, options_.steady.maxit and options_.solve_tolf (the check flag of the
         fifth argument only matters to steady-state files, which pydyn.dynare() does not combine with this call)."""
-        from .steady import DYNARE_SOLVE_ALGO, DYNARE_TOLF, SteadyStateError, steady_state
         R = _R()
+        from .steady import SteadyStateError
+        try:
+            return self._evaluate_ss(ys_init, exo_ss, check)
+        except SteadyStateError as exc:
+            raise R.ResultsError(f"evaluate_steady_state: {exc}") from None
+
+    def _evaluate_ss(self, ys_init, exo_ss, check=True):
+        from .steady import DYNARE_SOLVE_ALGO, DYNARE_TOLF, steady_state
         m = self.model
         algo = self.opt("solve_algo", DYNARE_SOLVE_ALGO)
         tol = self.opt("solve_tolf", None)
-        try:
-            with warnings.catch_warnings(), np.errstate(all="ignore"):
-                warnings.simplefilter("ignore")
-                ys, p = steady_state(m, m.params.copy(), guess=np.asarray(ys_init, float).ravel(),
-                                     exo=np.asarray(exo_ss, float).ravel(), tol=DYNARE_TOLF if tol is None else float(tol),
-                                     check=bool(check), solve_algo=int(algo), maxit=int(self.opt("steady.maxit", 50)))
-        except SteadyStateError as exc:
-            raise R.ResultsError(f"evaluate_steady_state: {exc}") from None
-        return ys, p
+        with warnings.catch_warnings(), np.errstate(all="ignore"):
+            warnings.simplefilter("ignore")
+            return steady_state(m, m.params.copy(), guess=np.asarray(ys_init, float).ravel(),
+                                exo=np.asarray(exo_ss, float).ravel(), tol=DYNARE_TOLF if tol is None else float(tol),
+                                check=bool(check), solve_algo=int(algo), maxit=int(self.opt("steady.maxit", 50)))
+
+    def _ss_start(self):
+        """The live oo_.steady_state (levels), else the initval values: ys_init of evaluate_steady_state."""
+        m = self.model
+        if "steady_state" in self.oo_ and np.asarray(farr(self.oo_["steady_state"])).size == m.n_endo:
+            return self.oo_steady_levels()
+        return np.array([m._oo.get(v, 0.0) for v in m.endo_names], float)
 
     def _set_simulated_time_series(self, first_date):
         """``[oo_, Simulated_time_series] = perfect_foresight_solver(...)``: construct_simulation_dseries.m (a dseries of

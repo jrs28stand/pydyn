@@ -666,6 +666,7 @@ class _Core(CommandsMixin):
             raise
         self._pull_steady()
         self._pull_options()
+        m._dynare_solve_algo = int(self.opt("solve_algo", 4))
 
     def _pull_steady(self):
         """oo_.steady_state / oo_.exo_steady_state into the model's initval (guess) and its record of oo_."""

@@ -281,6 +281,11 @@ def steady_state(model, params=None, guess=None, tol=None, check=None, exo=None,
         maxit = int(so["steady.maxit"])
     if solve_algo is None and so.get("solve_algo") is not None:
         solve_algo = int(so["solve_algo"])
+    if solve_algo is None and getattr(model, "_dynare_solve_algo", None) is not None:
+        # pydyn.dynare(): every steady-state evaluation (resol, estimation, forecast, smoother, ...) is Dynare's
+        # evaluate_steady_state from the live oo_.steady_state (the guess, via initval) with options_.solve_algo,
+        # so a point that already satisfies tolf is kept, not polished to machine precision
+        solve_algo = int(model._dynare_solve_algo)
     ported = solve_algo is not None and int(solve_algo) in PORTED_SOLVE_ALGOS
     # tolx is used by the ported algorithms, and by the default search when it runs Dynare's
     # solve_algo=4 (structurally singular Jacobian, see _singular_default)

@@ -57,3 +57,31 @@ def test_spectral_density(tmp_path, extra, total, col5):
     d = np.asarray(r.oo_["SpectralDensity"]["density"])
     assert d.shape == (2, 512) and np.asarray(r.oo_["SpectralDensity"]["freqs"])[-1, 0] == pytest.approx(np.pi, abs=0)
     assert d.sum() == pytest.approx(total, rel=1e-10) and d[:, 5].sum() == pytest.approx(col5, rel=1e-8, abs=1e-12)
+
+
+NUMSS = """var y c k a; varexo e u;
+parameters alpha beta delta rho;
+alpha=0.36;beta=0.99;delta=0.025;rho=0.9;
+model;
+c^(-1)=beta*c(+1)^(-1)*(alpha*a(+1)*k^(alpha-1)+1-delta);
+k=a*k(-1)^alpha+(1-delta)*k(-1)-c;
+y=a*k(-1)^alpha;
+log(a)=rho*log(a(-1))+e+u;
+end;
+initval; k=30;c=2.5;a=1;y=3;e=0;u=0;end;
+shocks; var e; stderr 0.01; var u; stderr 0.007; end;
+"""
+
+
+@pytest.mark.parametrize("pre", ["steady;\n", ""])
+def test_decision_rule_steady_state_is_the_live_one(tmp_path, pre):
+    """resol.m evaluate_steady_state starts at oo_.steady_state (initval without `steady`) and dynare_solve returns a point that
+    satisfies tolf unchanged: Dynare 7.2 (Octave) has oo_.dr.ys = [3.70405173 2.7543283 37.98905167 1] with and without
+    `steady` (k 2e-4 from the exact 37.98925354), equal to oo_.steady_state after `steady`; pydyn used to polish it to
+    machine precision in stoch_simul."""
+    (tmp_path / "nss.mod").write_text(NUMSS + pre + "stoch_simul(order=1,irf=0,nograph,noprint);\n")
+    r = pydyn.dynare(tmp_path / "nss.mod", nosave=True)
+    ys = np.ravel(r.oo_["dr"]["ys"])
+    assert ys == pytest.approx([3.70405173, 2.7543283, 37.98905167, 1.0], abs=1e-8)
+    if pre:
+        assert np.ravel(r.oo_["steady_state"]) == pytest.approx(ys, abs=1e-14)
