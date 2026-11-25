@@ -22,7 +22,8 @@ SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
         "pydyn_nd": ("pydyn_nd_cases.txt", "pydyn_nd.mat"),
         "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat"),
         "pydyn_blk1": ("pydyn_blk1_cases.txt", "pydyn_blk1.mat"),
-        "pydyn_fn": ("pydyn_fn_cases.txt", "pydyn_fn.mat")}
+        "pydyn_fn": ("pydyn_fn_cases.txt", "pydyn_fn.mat"),
+        "pydyn_mi": ("pydyn_mi_cases.txt", "pydyn_mi.mat")}
 
 
 def _load(name):

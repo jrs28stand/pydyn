@@ -1,0 +1,107 @@
+A = [4 2; 2 3]; R = chol(A); r = R;
+%%
+A = [4 2; 2 3]; L = chol(A, 'lower'); r = L;
+%%
+A = [4 2; 2 3]; L = chol(A, 'upper'); r = L;
+%%
+A = [4 2; 2 3]; [R, p] = chol(A); r = [R(:); p];
+%%
+A = [1 2; 2 1]; [R, p] = chol(A); r = [R(:); p];
+%%
+A = [4 2 1; 2 3 1; 1 1 -1]; [R, p] = chol(A); r = [numel(R); R(:); p];
+%%
+A = [4 2 1; 2 3 1; 1 1 -1]; [L, p] = chol(A, 'lower'); r = [numel(L); L(:); p];
+%%
+A = [1 2; 2 1]; R = chol(A); r = R;
+%%
+A = [4 9; 2 3]; R = chol(A); r = R;
+%%
+A = [4 2; 7 3]; L = chol(A, 'lower'); r = L;
+%%
+A = [4 9; 2 3]; [R, p] = chol(A); r = [R(:); p];
+%%
+r = chol(4);
+%%
+r = size(chol(zeros(0, 0)));
+%%
+[R, p] = chol([0 1; 1 0]); r = [numel(R); p];
+%%
+A = [4 2; 2 3]; R = chol(A, 'foo'); r = R;
+%%
+A = [4 2 0; 2 3 0]; R = chol(A); r = R;
+%%
+A = [4 2; 2 3]; R = chol(A, 'lower', 'upper'); r = R;
+%%
+A = [2 1; 1 2]; B = chol(A, 'lower') * [1 0; 0 1]; r = B;
+%%
+r = full(sparse([1 2 2], [1 1 3], [1 2 3], 3, 3));
+%%
+r = full(sparse([1 1 2], [1 1 2], [1 2 3], 2, 2));
+%%
+r = full(sparse(2, 3));
+%%
+r = full(sparse([1 2; 0 3]));
+%%
+r = full(sparse([1; 2; 3], [1; 2; 3], [4; 5; 6]));
+%%
+r = full(sparse([1 2], [1 2], 7, 2, 2));
+%%
+r = size(sparse([1 2 3], [1 2 3], [1 1 1]));
+%%
+r = full(sparse([3 1], [1 2], [5 6], 3, 2));
+%%
+r = full(sparse([1 2], [1 2], [1 2], 1, 2));
+%%
+r = full(sparse([1 0 2], [1 1 1], [1 2 3]));
+%%
+r = full(sparse(1:3, 1:3, 1));
+%%
+r = nnz(sparse([1 1], [1 1], [1 -1], 2, 2));
+%%
+r = full(sparse([1 2], [1 2], [1 2], 2, 2, 10));
+%%
+r = full(sparse([1 2 3], [1 1 1], [true false true]));
+%%
+r = full(sparse([1.5 2], [1 2], [1 2]));
+%%
+c = {1, [], 'ab', [1 2 3]}; r = cellfun(@isempty, c);
+%%
+c = {1, [], 'ab', [1 2 3]}; r = cellfun('isempty', c);
+%%
+c = {1, [], 'ab', [1 2 3]}; r = cellfun(@numel, c);
+%%
+c = {1, [], 'ab', [1 2 3]}; r = cellfun('length', c);
+%%
+c = {[1 2; 3 4], [5 6]}; r = cellfun(@(x) sum(x(:)), c);
+%%
+c = {[1 2; 3 4], [5 6]}; r = cellfun(@(x) x * 2, c, 'UniformOutput', false); r = [r{1}(:); r{2}(:)];
+%%
+c = {[1 2 3]; [4 5 6]}; r = cellfun(@(x) x(2), c); r = [size(r) r(:)'];
+%%
+c = {[1 2 3], [4 5]}; [a, b] = cellfun(@max, c); r = [a b];
+%%
+c = {[1 2 3], [4 5]}; r = cellfun(@(x) x, c);
+%%
+c = {1, 2}; d = {3, 4}; r = cellfun(@(x, y) x + y, c, d);
+%%
+c = {1, 2}; d = {3, 4, 5}; r = cellfun(@(x, y) x + y, c, d);
+%%
+c = {}; r = cellfun(@(x) x, c); r = size(r);
+%%
+r = cellfun(@isempty, 5);
+%%
+r = arrayfun(@(x) x^2, [1 2; 3 4]);
+%%
+r = arrayfun(@(x) x * [1 1], [1 2 3], 'UniformOutput', false); r = [r{1} r{3}];
+%%
+r = arrayfun(@(x, y) x - y, [5 6 7], [1 2 3]);
+%%
+r = arrayfun(@(x) [x x], [1 2 3]);
+%%
+[a, b] = arrayfun(@(x) deal(x, 2 * x), [1 2 3]); r = [a b];
+%%
+r = arrayfun(@(x) x > 1, [1 2 3]); r = double(r);
+%%
+r = arrayfun(@(x) x, [1 2 3], [1 2]);
+%%
+r = arrayfun(@(x) x, 7);

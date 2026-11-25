@@ -775,7 +775,7 @@ class CommandsMixin:
         else:
             self.set_oo("endo_simul", R.mat(endo.T))
 
-    def evaluate_steady_state(self, ys_init, exo_ss):
+    def evaluate_steady_state(self, ys_init, exo_ss, check=True):
         """evaluate_steady_state.m (no steady-state file): the static model solved from ``ys_init`` at the exogenous
         steady state ``exo_ss``, with options_.solve_algo, options_.steady.maxit and options_.solve_tolf (the check flag of the
         fifth argument only matters to steady-state files, which pydyn.dynare() does not combine with this call)."""
@@ -789,7 +789,7 @@ class CommandsMixin:
                 warnings.simplefilter("ignore")
                 ys, p = steady_state(m, m.params.copy(), guess=np.asarray(ys_init, float).ravel(),
                                      exo=np.asarray(exo_ss, float).ravel(), tol=DYNARE_TOLF if tol is None else float(tol),
-                                     check=True, solve_algo=int(algo), maxit=int(self.opt("steady.maxit", 50)))
+                                     check=bool(check), solve_algo=int(algo), maxit=int(self.opt("steady.maxit", 50)))
         except SteadyStateError as exc:
             raise R.ResultsError(f"evaluate_steady_state: {exc}") from None
         return ys, p
