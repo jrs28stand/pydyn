@@ -245,6 +245,12 @@ class Occbin:
         rows = np.flatnonzero((indicator[1:] != indicator[:-1]).any(axis=1))
         return int(rows[-1]) + 1 if len(rows) else 0
 
+    # Budget (bytes) of the memoised rules per Occbin object.  The memo is only a cache: when the budget is reached no further rule is
+    # stored and the rest of the recursion is computed as before (bit for bit the same values).  Ordinary runs need at most ~2,600 nodes
+    # (about 15 MB; NKM estimation); 384 MiB is ~27 times that and bounds the pathological case (232,740 nodes, 1.3 GB, at extreme
+    # parameter vectors).  Set to 0 to switch the memo off.
+    rule_memo_bytes = 384 * 2 ** 20
+
     def rules(self, indicator: np.ndarray, Tmax: int | None = None):
         """Time-varying rules y_t = T_t y_{t-1} + R_t u_t + C_t for t = 1..Tmax (list of tuples).
 
@@ -261,6 +267,7 @@ class Occbin:
             self._rule_trie = {}                      # (parent node, regime code) -> node
             self._rule_node = [(self.P, None, np.zeros(self.n))]   # node -> rule; node 0 is the reference rule
             self._rule_weights = 1 << np.arange(k)
+            self._rule_bytes = 0                      # bytes held by the memoised rules (nodes beyond node 0)
         trie, nodes = self._rule_trie, self._rule_node
         codes = (indicator[:Tmax] @ self._rule_weights).tolist()
         # Dynare takes the regime of the last binding period from the guess for two constraints (10, 11, else 01)
@@ -269,15 +276,21 @@ class Occbin:
         out = [None] * Tmax
         node = 0
         for i in range(Tmax - 1, -1, -1):
-            child = trie.get((node, codes[i]))
+            child = trie.get((node, codes[i])) if node is not None else None
             if child is None:
-                T_next, _, C_next = nodes[node]
+                T_next, _, C_next = nodes[node] if node is not None else rule
                 reg = tuple(bool(codes[i] >> j & 1) for j in range(k))
                 C, B, A, J, D = self.regime_matrices(reg)
                 n = self.n
                 sol = -np.linalg.solve(B + A @ T_next, np.column_stack([C, J, A @ C_next + D]))
-                nodes.append((np.ascontiguousarray(sol[:, :n]), np.ascontiguousarray(sol[:, n:n + self.n_exo]), sol[:, -1].copy()))
-                child = trie[(node, codes[i])] = len(nodes) - 1
+                rule = (np.ascontiguousarray(sol[:, :n]), np.ascontiguousarray(sol[:, n:n + self.n_exo]), sol[:, -1].copy())
+                if node is not None and self._rule_bytes + sum(a.nbytes for a in rule) <= self.rule_memo_bytes:
+                    nodes.append(rule)
+                    self._rule_bytes += sum(a.nbytes for a in rule)
+                    child = trie[(node, codes[i])] = len(nodes) - 1
+                else:                                  # budget reached: compute as the code before the memo did, store nothing
+                    node, out[i] = None, rule
+                    continue
             node = child
             out[i] = nodes[node]
         return out
