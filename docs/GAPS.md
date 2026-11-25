@@ -1,6 +1,6 @@
 # pydyn vs Dynare 7.2: what is still missing
 
-Status at the `results-layer` branch, 2026-11-24. This replaces the option-by-option audit of
+Status at `main`, 2026-11-25. This replaces the option-by-option audit of
 2026-11-20, which is in git history: `git show 723a94a:docs/GAPS.md`.
 
 Where to look for the rest:
@@ -28,7 +28,7 @@ by `pydyn.options.HONOURED_MATLAB_OPTIONS` as before.
 | Area | Missing | Notes |
 |---|---|---|
 | Solution | Orders above 3; `k_order_welfare` (welfare above order 2) | Order 3 uses Dynare's C++ k-order library |
-| Solution | Spectral density, `partial_information` | |
+| Solution | `partial_information` | Spectral density (`SpectralDensity.trigger`) works at order 1 |
 | Estimation | Order-3 (particle) estimation; the `gmf` filter | Order 2 supports `sis`, `apf`, `cpf`, `gf` and `nlkf` |
 | Estimation | `mode_compute` 2, 6, 10 and above | 7 is Octave's `fminsearch`, ported; 1, 3 and 9 are scipy equivalents and warn |
 | Estimation | Samplers `dime_mcmc` and `online`; TaRB whole-chain validation | TaRB matches block by block only |
@@ -39,8 +39,8 @@ by `pydyn.options.HONOURED_MATLAB_OPTIONS` as before.
 | Perfect foresight | `varexo_det`; `var(log)` auxiliaries in `initval_file`/`histval_file` | |
 | Extended path | Sparse-tree and hybrid stochastic EP, Stroud cubature, `extended_path_mc` | Order 0 and the full-tree stochastic EP work |
 | Backward models | `model_inversion` with leads; `histval` with `maximum_lag` > 1 | |
-| Semi-structural | `pac.estimate` with `particleswarm` (a MATLAB toolbox function; Dynare fails under Octave), PAC lags other than 1 and non-additive residuals (Dynare fails on both); `equation.evaluate`/cherrypick, calls to model-named functions (`example1.dynamic_resid`) | `pac.estimate.nls`/`iterative_ols` (incl. `annealing`), `var_model`, trend-component models, `var_expectation` and the PAC updates work |
-| Toolboxes | `identification`, `dynare_sensitivity` (GSA), `method_of_moments`, `irf_calibration`/`moment_calibration`, Markov-switching SBVAR, BVAR, heterogeneous-agent models | Not started |
+| Semi-structural | `pac.estimate` with `particleswarm` (a MATLAB toolbox function; Dynare fails under Octave), PAC lags other than 1 and non-additive residuals (Dynare fails on both); the equation-by-equation tools (`dyn_ols`, `sur`, `pooled_ols`, `pooled_fgls`, `olsgibbs`, `surgibbs`), `cherrypick` and `equation.*`: parked by decision (excluded in the acceptance sweep, see `tools/accept_scope_pydyn.json`) | `pac.estimate.nls`/`iterative_ols` (incl. `annealing`), `var_model`, trend-component models, `var_expectation`, the PAC updates and calls to the model's own generated functions (`example1.dynamic_resid`, `set_auxiliary_variables`, ...) work |
+| Toolboxes | `identification` at orders 2–3 (parked by decision; order 1 works, incl. prior Monte Carlo and `advanced`), `dynare_sensitivity` (GSA), `method_of_moments`, `irf_calibration`/`moment_calibration`, Markov-switching SBVAR, BVAR, heterogeneous-agent models | Not started |
 | Output | LaTeX (`write_latex_*`), reporting | These warn |
 | Data | Full `dseries` (transformations, tags, non-MAT formats) | `dseries` covers names, dates, arithmetic, lags/leads, field/brace/paren assignment (Dynare's merge rules) and MAT files |
 
@@ -53,7 +53,7 @@ The interpreter runs the MATLAB code people put in `.mod` and steady-state files
 
 It deliberately refuses these:
 - **Data types and objects:** complex numbers, classes, function handles beyond simple ones, N-d cell and char arrays.
-- **Environment and time:** file I/O other than the sandboxed `save`/`delete`, and clock-dependent code (`tic`/`toc`).
+- **Environment and time:** file I/O other than the sandboxed operations (`save`, `delete`, `copyfile`, `mkdir` in the model folder, read-only `isfile`/`isfolder`/`exist`), shell commands, and clock-dependent code (`tic`/`toc`).
 - **Random numbers:** generators other than Octave's Mersenne Twister. `rand`/`randn`/`randi`/`randperm` are bit-exact with Octave 8.4, not with MATLAB.
 - **Places where Octave and MATLAB disagree or are undocumented:** certain deletions; `sprintf` of negative values with `%u`/`%o`/`%x`; `all(X,dim)` with NaN above the first dimension; `unique` of non-0x0 empties.
 
@@ -73,7 +73,7 @@ These still stop `pydyn.dynare()` (each raises `ResultsError` naming the item):
 
 ## 3. Numerical differences that are expected
 
-- **Steady states.** Dynare stops its Newton iterations at 1e-5; pydyn polishes to about 1e-12 unless told otherwise. Values computed from a numerically solved steady state can therefore differ at the 1e-5 level. Where Dynare's own tolerance is set in the file, pydyn follows it.
+- **Steady states.** Under `pydyn.dynare()` every internal steady-state solve starts from the live `oo_.steady_state` with `options_.solve_algo`, as Dynare's `resol`/`evaluate_steady_state` does, so a point that already satisfies Dynare's tolerance is kept and `oo_.dr.ys` equals `oo_.steady_state`. The plain API polishes to about 1e-12, so it can differ from Dynare at the 1e-5 level on badly scaled models.
 - **Optimisers.** csminwel, newrat and simplex are ported and follow Dynare's path until rounding noise separates them. On flat likelihoods the stopping points can differ, by up to about 0.4 standard errors for ML without priors. The tests state each tolerance and its cause.
 - **Ill-conditioned models.** For example, on `nk_baseline` the decision rules agree to about 2e-9, not 1e-12.
 
