@@ -17,7 +17,7 @@ import pytest
 from scipy.io import loadmat
 
 import pydyn
-from pydyn.obc import RegimeOBC, constraint_objects
+from pydyn.obc import OBCError, RegimeOBC, constraint_objects
 from pydyn.obc_ho import HigherOrderNews
 from pydyn.obc_regime_ho import HigherOrderRegime
 from pydyn.simulate import simulate
@@ -174,3 +174,106 @@ def test_approx_class_regime_equals_occbin_where_lcp_may_not():
     np.testing.assert_allclose(reg, ref.piecewise, rtol=0, atol=1e-8)
     lcp = HigherOrderNews(m, order=1, obc_formulation="lcp").simulate(S)["with_bound"]
     assert np.isfinite(lcp).all()        # (how often the LCP differs is measured in docs/OBC_REGIME_HO.md, not asserted: knife-edge periods change the history)
+
+
+# ------------------------------------------------------------------------------------------------ cubature
+def _lcp(m, **kw):
+    return HigherOrderNews(m, obc_formulation="lcp", **kw)
+
+
+@pytest.mark.parametrize("name,regions,level", [("nk", "all", 7), ("zlb", "all", 7), ("nk", 1, 9), ("zlb2", 1, 9), ("zlb", 4, 9), ("zlb2", 4, 9)])
+def test_cubature_exact_class_equals_lcp(name, regions, level):
+    """Same root, same points, same relevant points, same wedges as the LCP cubature (exact class)."""
+    m, S, hz = model(name), shocks(name, T=60), CFG[name][1]
+    kw = dict(order=2, horizon=hz, check_ahead=hz, cubature=True, qmc_level=level, regions=regions)
+    a, b = HigherOrderRegime(m, **kw), _lcp(m, **kw)
+    np.testing.assert_allclose(a.R, b.R, rtol=0, atol=1e-13)
+    ra, rb_ = a.simulate(S), b.simulate(S)
+    np.testing.assert_array_equal(ra["relevant"], rb_["relevant"])
+    np.testing.assert_allclose(ra["with_bound"], rb_["with_bound"], rtol=0, atol=1e-12)
+    assert ra["relevant"].sum() > 1000
+
+
+def test_cubature_exact_class_failures_and_tolerance_equal_lcp():
+    m, S, hz = model("zlb2"), shocks("zlb2", T=60), 20
+    kw = dict(order=2, horizon=hz, check_ahead=hz, cubature=True, qmc_level=7, regions="all")
+    from pydyn.obc_ho import CubatureFailure
+    for mk in (lambda **k: HigherOrderRegime(m, **k), lambda **k: _lcp(m, **k)):
+        with pytest.raises(CubatureFailure) as ei:
+            mk(**kw).simulate(S)
+        assert ei.value.period == 1 and ei.value.counts["b"] == 1 and ei.value.status == "horizon_too_short"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        a = HigherOrderRegime(m, cubature_failure_tolerance=0.01, **kw).simulate(S)
+        b = _lcp(m, cubature_failure_tolerance=0.01, **kw).simulate(S)
+    np.testing.assert_array_equal(a["dropped"], b["dropped"])
+    assert a["dropped"].sum() >= 1
+    np.testing.assert_allclose(a["with_bound"], b["with_bound"], rtol=0, atol=1e-12)
+
+
+def test_cubature_equals_dynareobc():
+    """DynareOBC's own root and points (reference/dynareobc_octave): one region to 1e-12 and, as in the LCP test, four regions."""
+    m = model("nk")
+    r = loadmat(REF / "dynareobc_octave" / "ref_o2cub.mat", squeeze_me=True)
+    names = [str(n).strip() for n in r["names"]]
+    E = r["endo"][[names.index(n) for n in m.endo_names]].T
+    S = loadmat(REF / "dynareobc_octave" / "shocks.mat", squeeze_me=True)["ShockSequence"].reshape(-1, 1)
+    sob = loadmat(REF / "dynareobc_octave" / "sob_o2cub.mat")["x"]
+    h = HigherOrderRegime(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=9, regions=1)
+    Rd = np.real(r["Rcc"])
+    np.testing.assert_allclose(h.R @ h.R.T, Rd @ Rd.T, atol=1e-16)
+    h.R, h.xi = Rd, sob
+    np.testing.assert_allclose(h.simulate(S)["with_bound"], E, atol=1e-12)
+    r4 = loadmat(REF / "dynareobc_octave" / "ref_o2cub4.mat", squeeze_me=True)
+    E4 = r4["endo"][[[str(n).strip() for n in r4["names"]].index(n) for n in m.endo_names]].T
+    h4 = HigherOrderRegime(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=9, regions=4)
+    h4.R, h4.xi = Rd, sob
+    d = np.abs(h4.simulate(S)["with_bound"] - E4).max(axis=1)
+    assert (d < 1e-12).sum() >= 290 and d.max() < 0.01
+
+
+@pytest.mark.parametrize("name", ["nkm", "bf", "zlb"])
+def test_cubature_vanishing_variance_is_no_cubature(name):
+    m, S, hz = model(name), shocks(name, T=60), CFG[name][1]
+    tiny = np.array(m.Sigma_e) * 1e-12
+    c = HigherOrderRegime(m, order=2, horizon=hz, check_ahead=hz, cubature=True, Sigma_e=tiny, qmc_level=5).simulate(S)
+    b = HigherOrderRegime(m, order=2, horizon=hz, check_ahead=hz, Sigma_e=tiny).simulate(S)
+    np.testing.assert_allclose(c["with_bound"], b["with_bound"], atol=1e-9)
+
+
+def test_cubature_makes_agents_react_before_the_bound_regime():
+    m, S, hz = model("nkm"), shocks("nkm"), 40
+    a = HigherOrderRegime(m, order=2).simulate(S)
+    c = HigherOrderRegime(m, order=2, cubature=True, qmc_level=7, regions=1).simulate(S)
+    assert binds(c) > 3 * binds(a)
+
+
+def test_cubature_batch_equals_point_by_point_search():
+    """The batched guess-and-verify over many perturbed points returns, point by point, what the complete search returns."""
+    m, S, hz = model("nkm"), shocks("nkm", T=80), 40
+    h = HigherOrderRegime(m, order=2, horizon=hz, check_ahead=hz, cubature=True, qmc_level=6, regions="all", cubature_failure_tolerance=0.5)
+    h.trace = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        h.simulate(S)
+    rb, nb, N, T, k = h.rb, h.nb, h.N, h.T, len(h.rb._cv)
+    Ro = h._other_roots()
+    checked = 0
+    for tr in h.trace[:60]:
+        a, Y, A = h.inputs_from_state(tr["y1"], tr["y2"], tr["o_pre"], tr["prev"], tr["u"])
+        pY = (Y.reshape(-1)[:, None] + Ro[nb * N:] @ h.xi).T.reshape(-1, N, k)
+        pA = (A.reshape(-1)[:, None] + Ro[:nb * N] @ h.xi).T.reshape(-1, nb, N)
+        rel = np.flatnonzero(h._relevant(pY))[:40]
+        if not rel.size:
+            continue
+        W, ok = h._guess_verify_many(pA[rel][:, :, :T].reshape(len(rel), -1), pY[rel])
+        for j, i in enumerate(rel):
+            try:
+                z, w, _ = h.solve_inputs(pA[i][:, :T].ravel(), pY[i], pA[i])
+            except OBCError:
+                assert not ok[j]
+                continue
+            if ok[j]:
+                np.testing.assert_allclose(W[j], w, rtol=0, atol=1e-11 * max(1.0, np.abs(w).max()))
+                checked += 1
+    assert checked > 100
