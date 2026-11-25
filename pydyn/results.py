@@ -52,6 +52,7 @@ from .results_ep import ExtendedPathMixin
 from .results_var import VarModelMixin
 from .results_cf import ConditionalForecastMixin
 from .results_nx import NextMixin
+from .results_ident import IdentificationMixin
 from .gfx import Gfx as _Gfx
 from .figures import FiguresMixin
 
@@ -770,6 +771,7 @@ class _Core(CommandsMixin):
             lines = [(_ml.native_dates(st["string"]) if st["statementName"] == "native" else st["string"])
                      .replace("occbin.unpack_simulations", "occbin_unpack_simulations")
                      .replace("occbin.forecast(", "occbin_forecast(")
+                     .replace("identification.get_minimal_state_representation(", "identification_get_minimal_state_representation(")
                      if st["statementName"] in ("native", "verbatim") else ("dyn", k)
                      for k, st in enumerate(sts)]
             try:
@@ -1005,6 +1007,7 @@ class _FunctionsMixin:
             **self._functions_backward(),
             **self._functions_var(),
             **self._functions_nx(),
+            **self._functions_ident(),
         }
 
     def fn_command(self, kind):
@@ -1240,7 +1243,7 @@ class _FunctionsMixin:
 
 
 class Results(_Core, _FunctionsMixin, EstimationMixin, BackwardMixin, ExtendedPathMixin, VarModelMixin, ConditionalForecastMixin, FiguresMixin,
-              NextMixin):
+              NextMixin, IdentificationMixin):
     """The workspace of a .mod file run by :func:`dynare` (see the module docstring).
 
     Dynare's commands are methods acting on the live workspace: keyword arguments are written into
