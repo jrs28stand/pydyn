@@ -13,7 +13,7 @@
    "expect": "orders 2 and 3 are not ported"
   },
   {
-   "feature": "semi-structural model tools: equation-by-equation estimation (dyn_ols, sur, pooled_ols, pooled_fgls, olsgibbs, surgibbs), cherrypick and the equation.* package, which share Dynare's JSON equation parser (matlab/ols, about 1,800 lines, plus cherrypick.m, 525 lines)",
+   "feature": "semi-structural model tools: equation-by-equation estimation (dyn_ols, sur, pooled_ols, pooled_fgls, olsgibbs, surgibbs), cherrypick and the equation.* package, which share Dynare's JSON equation parser (matlab/ols, about 1,800 lines, plus cherrypick.m, 525 lines) (a test counts here also when it first needs a dseries csv reader or the dseries firstdate method, since the equation tools would follow)",
    "reason": "for semi-structural models: parked by decision, not used in the DSGE workflow pydyn targets",
    "ids": [
     "ecb/SUR/*",
@@ -28,7 +28,143 @@
     "pac/trend-component-29/*",
     "pac/var-12/example5"
    ],
-   "expect": "cherrypick|dyn_ols|\\bsur\\b|pooled_ols|pooled_fgls|surgibbs|olsgibbs|equation\\.|write_expectations|equation parser"
+   "expect": "cherrypick|dyn_ols|\\bsur\\b|pooled_ols|pooled_fgls|surgibbs|olsgibbs|equation\\.|write_expectations|equation parser|only MAT-files|method 'firstdate'"
+  },
+  {
+   "feature": "method of moments estimation (Dynare's method_of_moments toolbox: method_of_moments command with matched_moments and matched_irfs blocks; GMM, SMM, IRF matching; estimated_params blocks for it)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "discretionary_policy/dennis_1_estim_MoM",
+    "estimation/method_of_moments/AFVRR/AFVRR_M0",
+    "estimation/method_of_moments/AFVRR/AFVRR_MFB",
+    "estimation/method_of_moments/AFVRR/AFVRR_MFB_RRA",
+    "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams0",
+    "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams1",
+    "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams2",
+    "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams0",
+    "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams1",
+    "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams2",
+    "estimation/method_of_moments/AnScho/AnScho_matched_moments",
+    "estimation/method_of_moments/CET/cet_imh",
+    "estimation/method_of_moments/CET/cet_interface",
+    "estimation/method_of_moments/CET/cet_mh_posterior_mode",
+    "estimation/method_of_moments/CET/cet_mle",
+    "estimation/method_of_moments/CET/cet_slice",
+    "estimation/method_of_moments/CET/cet_tarb",
+    "estimation/method_of_moments/RBC/RBC_MoM_Andreasen",
+    "estimation/method_of_moments/RBC/RBC_MoM_GMM_gradient_optim",
+    "estimation/method_of_moments/RBC/RBC_MoM_SMM_ME",
+    "estimation/method_of_moments/RBC/RBC_MoM_SMM_ME_filter",
+    "estimation/method_of_moments/RBC/RBC_MoM_optimizer",
+    "estimation/method_of_moments/RBC/RBC_MoM_prefilter",
+    "examples/estimation/rbc_irf_matching"
+   ],
+   "expect": "matched_moments|matched_irfs|method_of_moments|non-existent field 'varobs'"
+  },
+  {
+   "feature": "global sensitivity analysis (Dynare's gsa toolbox: dynare_sensitivity command, Morris screening, Monte Carlo filtering, Saltelli/stability mapping)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "gsa/cod_ML_morris/cod_ML_morris",
+    "gsa/ls2003scr",
+    "gsa/morris/nk_est"
+   ],
+   "expect": "<sensitivity>|dynare_sensitivity"
+  },
+  {
+   "feature": "prior/posterior calibration (irf_calibration and moment_calibration blocks, Monte Carlo filtering of prior draws against IRF/moment restrictions, part of the gsa toolbox)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "gsa/ls2003a"
+   ],
+   "expect": "irf_calibration|moment_calibration"
+  },
+  {
+   "feature": "Markov-switching SBVAR and DSGE (ms-sbvar toolbox: svar_identification, ms_estimation, ms_simulation, ms_compute_mdd, ms_irf, ms_forecast, ms_variance_decomposition; markov_switching/ms-dsge)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "ms-dsge/test_ms_dsge",
+    "ms-sbvar/BVAR_contemp_reduced_form",
+    "ms-sbvar/test_exclusions",
+    "ms-sbvar/test_exclusions_nc",
+    "ms-sbvar/test_lower_cholesky",
+    "ms-sbvar/test_lower_cholesky_a",
+    "ms-sbvar/test_lower_cholesky_nc",
+    "ms-sbvar/test_ms_variances",
+    "ms-sbvar/test_ms_variances_repeated_runs",
+    "ms-sbvar/test_upper_cholesky",
+    "ms-sbvar/test_upper_cholesky_nc"
+   ],
+   "expect": "svar_identification|markov_switching|ms_"
+  },
+  {
+   "feature": "Bayesian VAR a la Sims (bvar toolbox: bvar_density, bvar_forecast; bvar_and_dsge is blocked first by its data-file script, then by these commands)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "bvar_a_la_sims/bvar_and_dsge",
+    "bvar_a_la_sims/bvar_standalone"
+   ],
+   "expect": "bvar_density|bvar_forecast|near 'clear'"
+  },
+  {
+   "feature": "recursive estimation and rolling-window forecasts (estimation with vector-valued nobs or first_obs: one estimation per sample end)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "forecast/ls2003_rolling_window_forecast",
+    "recursive/ls2003",
+    "recursive/ls2003_bayesian",
+    "recursive/ls2003_bayesian_csv",
+    "recursive/ls2003_bayesian_xls"
+   ],
+   "expect": "recursive estimation"
+  },
+  {
+   "feature": "partial information solution (stoch_simul(partial_information) and the partial-information dr: Dynare's PCL / dr1_PI solver)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "partial_information/PItest3aHc0PCLsimModPiYrVarobsAll",
+    "partial_information/PItest3aHc0PCLsimModPiYrVarobsCNR",
+    "partial_information/Partial_ramsey",
+    "partial_information/Partial_steady_state_model"
+   ],
+   "expect": "partial_information"
+  },
+  {
+   "feature": "skewed shocks and the skewed Kalman filter (shocks block skewness, set_shock_skew_value, estimated_params skew_exo, skew-normal likelihood in estimation)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "kalman_skewed/ireland2004_bayes",
+    "kalman_skewed/ireland2004_stoch_simul",
+    "kalman_skewed/skew_in_estimated_params",
+    "kalman_skewed/skew_in_shocks_block"
+   ],
+   "expect": "skewness|set_shock_skew_value|skew_exo"
+  },
+  {
+   "feature": "reporting package (Dynare's report class: r = report(...); addPage, addGraph, addTable, addSeries, write, compile; LaTeX output)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "examples/reporting/collard_2001_reporting"
+   ],
+   "expect": "different frequencies|report"
+  },
+  {
+   "feature": "balanced growth path package (bgp.write(M_) and the generated bgpfun, +bgp in matlab/)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "bgp/nk-1/nk",
+    "bgp/ramsey-1/ramsey"
+   ],
+   "expect": "bgp"
+  },
+  {
+   "feature": "contribution plots of an equation (plot_contributions statement, equation package: decomposition of an equation into the contributions of its right-hand side)",
+   "reason": "toolbox not ported (yet)",
+   "ids": [
+    "ecb/contribution-plots/contrib1",
+    "ecb/contribution-plots/contrib2"
+   ],
+   "expect": "cannot parse: unexpected 'ffr'|this kind of index|plot_contributions"
   }
  ]
 }
