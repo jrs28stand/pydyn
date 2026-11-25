@@ -233,6 +233,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         h_fc = int(self.opt("forecast", 0) or 0)
         st_vars = self._estimation_var_list(st)
         self._sel_vars = list(st_vars)
+        self._est_syms = [str(x) for x in (st.get("symbol_list") or [])]      # what the .mod file listed (not the default list)
         self.vars["var_list_"] = R.cellstr([str(x) for x in (st.get("symbol_list") or [])])      # the driver's var_list_
         ord_ = (st.get("options") or {}).get("order")
         ord_ = int(float(ord_[0] if isinstance(ord_, (list, tuple)) else ord_)) if ord_ is not None else 1

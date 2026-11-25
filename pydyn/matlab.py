@@ -300,7 +300,7 @@ def scalar(v, what="value"):
 
 
 def _class(v):
-    if isinstance(v, str):
+    if isinstance(v, str) or getattr(v, "obj_kind", None) == "char matrix":
         return "char"
     if isinstance(v, Cell):
         return "cell"
@@ -324,10 +324,10 @@ def shape_of(v):
         return v.shape
     if isinstance(v, Tainted):
         arr(v)
-    if isinstance(v, _Obj):
-        raise Unsupported(f"size of a {v.obj_kind} object", "function")
     if hasattr(v, "ml_shape"):
         return v.ml_shape()
+    if isinstance(v, _Obj):
+        raise Unsupported(f"size of a {v.obj_kind} object", "function")
     return (1, 1)
 
 
@@ -515,8 +515,8 @@ def transpose(a):
         if a.ndim > 2:
             raise MatlabError("transpose not defined for N-D objects")
         return a.T
-    if isinstance(a, str) and len(a) > 1:
-        raise Unsupported("transpose of a char array")
+    if isinstance(a, str) and len(a) > 1 or getattr(a, "obj_kind", None) == "char matrix":
+        return _mlchar.mk(_mlchar.codes(a).T)
     if isinstance(a, Cell):
         return Cell(a.items, (a.shape[1], a.shape[0])) if 1 in a.shape or not a.items else _unsup("transpose of a cell matrix")
     return a
@@ -693,6 +693,9 @@ def _concat(vals, d):
             raise MatlabError(f"{what} dimensions mismatch ({'x'.join(map(str, grids[0].shape))} vs {'x'.join(map(str, grids[1].shape))})")
         g = np.concatenate(grids, axis=d) if len(grids) > 1 else grids[0]
         return Cell([g[np.unravel_index(k, g.shape, order="F")] for k in range(g.size)], g.shape)
+    if any(getattr(v, "obj_kind", None) == "char matrix" for v in vals) or \
+            (d == 0 and sum(isinstance(v, str) and v != "" for v in vals) > 1):
+        return _mlchar.cat_chars(vals, d)                      # char matrices (pydyn/mlchar.py)
     for v in vals:
         if isinstance(v, Tainted):
             arr(v)
@@ -5498,6 +5501,13 @@ class Interpreter:
                 return BUILTINS["run"](self, [" ".join(args).strip("'\"")], 0)
             finally:
                 self.scope_stack.pop()
+        if name in _mlgfx.COMMANDS:                      # figure, hold on, close all, axis tight, grid on ...
+            self.scope_stack.append(sc)
+            try:
+                BUILTINS[name](self, [a.strip("'\"") for a in args], 0)
+            finally:
+                self.scope_stack.pop()
+            return None
         if name == "disp" or name in LAZY and LAZY[name] is _noop:
             return None
         if name == "rng":
@@ -8297,3 +8307,21 @@ def _pwd(I, a, nout):
     if a or I.dir is None:
         raise Unsupported("pwd without a model folder", "file")
     return os.path.realpath(I.dir)
+
+
+from . import mlchar as _mlchar  # noqa: E402,F401  (char matrices)
+from . import mlgfx as _mlgfx  # noqa: E402,F401  (graphics calls of .mod code: registers its built-ins)
+def _gfx_lazy(name, fallback):
+    """Graphics calls: pydyn.dynare()'s interpreter runs them (pydyn/mlgfx.py); any other keeps its earlier behaviour (the
+    arguments are not evaluated: they are results that do not exist yet)."""
+    def f(I, argnodes, sc, nout):
+        if not getattr(I, "graphics_enabled", False):
+            return fallback(I, argnodes, sc, nout)
+        args = [":" if type(a) is ColonAll else I.ev(a, sc) for a in argnodes]
+        return I.call(name, args, nout, sc)
+    return f
+
+
+for _n in tuple(PLOT_FUNCS) + _mlgfx.COMMANDS:
+    if _n in BUILTINS:
+        LAZY[_n] = _gfx_lazy(_n, LAZY.get(_n) or _plot)

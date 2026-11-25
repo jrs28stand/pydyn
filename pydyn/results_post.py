@@ -119,7 +119,7 @@ class PosteriorAnalysisMixin:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 res = posterior_theoretical_moments(
-                    est, params=params, var_list=list(var_list), ar=int(self.opt("ar", 5)), steps=steps,
+                    est, params=params, var_list=list(var_list) if getattr(self, "_est_syms", None) else [], ar=int(self.opt("ar", 5)), steps=steps,
                     nodecomposition=self.opt_flag("nodecomposition"),
                     contemporaneous_correlation=self.opt_flag("contemporaneous_correlation"),
                     mh_conf_sig=float(self.opt("mh_conf_sig", 0.9)),

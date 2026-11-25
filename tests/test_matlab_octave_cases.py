@@ -23,7 +23,9 @@ SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
         "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat"),
         "pydyn_blk1": ("pydyn_blk1_cases.txt", "pydyn_blk1.mat"),
         "pydyn_fn": ("pydyn_fn_cases.txt", "pydyn_fn.mat"),
-        "pydyn_mi": ("pydyn_mi_cases.txt", "pydyn_mi.mat")}
+        "pydyn_mi": ("pydyn_mi_cases.txt", "pydyn_mi.mat"),
+        "pydyn_gfx": ("pydyn_gfx_cases.txt", "pydyn_gfx.mat"),
+        "pydyn_char": ("pydyn_char_cases.txt", "pydyn_char.mat")}
 
 
 def _load(name):
@@ -54,6 +56,9 @@ def _text(x):
 
 def _same(got, want):
     """Octave's double(r) against pydyn's r (char results compared by character code)."""
+    if getattr(got, "obj_kind", None) == "char matrix":          # pydyn.mlchar.CharMat: by character code, with its shape
+        w = np.atleast_2d(np.asarray(want, float))
+        return got.a.shape == w.shape and bool(np.all(got.a == w)), f"{got.a!r} vs Octave {want!r}"
     gt = _text(got)
     if gt is not None:              # char results: by character code (pydyn's '' does not say 0x0 or 1x0)
         codes = [float(ord(c)) for c in gt]

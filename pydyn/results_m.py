@@ -18,7 +18,7 @@ from .results import cellstr, col, empty, mat, row
 
 #: fields of Dynare's M_ that pydyn does not fill: reading one is refused (it is not "non-existent")
 KNOWN_UNSUPPORTED = {
-    "bvar", "xref1", "xref2", "osr", "instr_id", "endo_partitions", "param_partitions", "heterogeneity_aggregates",
+    "bvar", "xref1", "xref2", "osr", "instr_id", "heterogeneity_aggregates",
     "database", "histval_dseries", "surprise_shocks", "learnt_shocks", "learnt_endval", "shock_paths", "heteroskedastic_shocks",
     "matched_irfs", "matched_irfs_weights", "perfect_foresight_controlled_paths", "ramsey_orig_eq_nbr",
     "ramsey_orig_endo_nbr", "epilogue_names", "epilogue_var_list_", "mapping", "block_structure", "endo_trends",
