@@ -60,14 +60,19 @@ def test_default_failure_keeps_code_and_adds_cause(nkm_est):
 def test_horizon_max_gives_occbin_value(nkm_est):
     e, X = nkm_est
     try:
-        e.obc_horizon_max = 80
-        lp = e.log_posterior(TH)
-        assert e.last_code == 0 and e.last_failure is None
-        assert lp == pytest.approx(OCCBIN_LP, abs=1e-6)
-        s = e.last_news_solver
-        assert s.retried_ok == s.retries > 0 and sum(s.causes.values()) == 0 and set(s._big) == {80}
+        # the LCP needs horizon 80 here; the regime formulation ('auto' for this approx-class model) needs 160
+        for form, hmax, big in (("lcp", 80, {80}), ("auto", 160, {80, 160})):
+            e.obc_formulation, e.obc_horizon_max = form, hmax
+            lp = e.log_posterior(TH)
+            assert e.last_code == 0 and e.last_failure is None
+            assert lp == pytest.approx(OCCBIN_LP, abs=1e-6)
+            s = e.last_news_solver
+            assert s.retries >= s.retried_ok > 0 and sum(s.causes.values()) == 0 and set(s._big) == big
+        e.obc_formulation, e.obc_horizon_max = "auto", 80
+        assert e.log_posterior(TH) == -np.inf and e.last_failure["primary"] == "horizon_too_short"
     finally:
         e.obc_horizon_max = None
+        e.obc_formulation = "auto"
 
 
 def test_horizon_max_changes_nothing_where_the_default_succeeds(nkm_est):

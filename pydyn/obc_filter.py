@@ -42,14 +42,16 @@ class NewsFilterSolver(_Solver):
 
     def __new__(cls, ob: Occbin, *args, **kw):
         if cls is NewsFilterSolver:
-            lcp = all(c.cls == "complementarity" for c in constraint_objects(ob))
-            form = kw.get("formulation", "auto")
+            cos = constraint_objects(ob)
+            lcp = all(c.cls == "complementarity" for c in cos)
+            exact = lcp and all(c.approx == 0.0 for c in cos)   # 'auto' sends approximate pairs to the regime formulation,
+            form = kw.get("formulation", "auto")                # which accepts solutions by OccBin's own test (docs/OBC_ESTIMATION.md)
             if form not in FORMULATIONS:
                 raise ValueError(f"unknown obc_formulation {form!r}: use one of {', '.join(map(repr, FORMULATIONS))}")
             if form in ("lcp", "hybrid") and not lcp:
                 raise ValueError(f"obc_formulation={form!r} needs every constraint to be one complementary pair (this model has other classes); "
                                  "use 'auto' or 'regime'")
-            cls = LCPFilterSolver if (lcp and form in ("auto", "lcp")) else RegimeFilterSolver
+            cls = LCPFilterSolver if ((exact and form == "auto") or (lcp and form == "lcp")) else RegimeFilterSolver
         return object.__new__(cls)
 
     # Why a trial point failed (``causes``, cumulative, and ``period_causes``, since ``begin_period``):

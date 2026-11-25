@@ -376,8 +376,8 @@ class Occbin:
         solutions) or ``'min_wedge'`` (smallest sum of squared wedges); see ``NewsOBC.simulate``.  The OccBin-specific options (regime guesses, periodic solutions, ``maxit``,
         ``curb_retrench``) do not apply to ``'news'`` and are refused if set.
 
-        ``obc_formulation`` (with ``'news'`` only): ``'auto'`` (default: the LCP when every constraint is one complementary pair,
-        otherwise the regime formulation), ``'lcp'`` (refused unless every constraint is one complementary pair), ``'regime'``
+        ``obc_formulation`` (with ``'news'`` only): ``'auto'`` (default: the LCP when every constraint is one exactly complementary pair,
+        otherwise, including pairs that are only approximately complementary, the regime formulation), ``'lcp'`` (refused unless every constraint is one complementary pair), ``'regime'``
         (``RegimeOBC``: regime sequences accepted by OccBin's own test in levels; any model), ``'hybrid'`` (the LCP, kept only if its regime
         sequence passes OccBin's test in levels over the whole anticipated path, else ``RegimeOBC`` for that period; one-pair models only).
         It matters for constraints flagged ``approx`` (the condition and the linearised equation differ by a small term): there the LCP
@@ -404,10 +404,12 @@ class Occbin:
             cache = self.__dict__.setdefault("_news", {})
             if key not in cache:
                 # one complementary pair per constraint: Holden's LCP; otherwise the general regime formulation
-                lcp = all(c.cls == "complementarity" for c in constraint_objects(self))
+                cos = constraint_objects(self)
+                lcp = all(c.cls == "complementarity" for c in cos)
+                exact = lcp and all(c.approx == 0.0 for c in cos)      # 'auto': approximate pairs go to the regime formulation
                 if obc_formulation in ("lcp", "hybrid") and not lcp:
                     raise ValueError(f"obc_formulation={obc_formulation!r} needs every constraint to be one complementary pair; use 'auto' or 'regime'")
-                cls = {"auto": NewsOBC if lcp else RegimeOBC, "lcp": NewsOBC, "regime": RegimeOBC, "hybrid": HybridOBC}[obc_formulation]
+                cls = {"auto": NewsOBC if exact else RegimeOBC, "lcp": NewsOBC, "regime": RegimeOBC, "hybrid": HybridOBC}[obc_formulation]
                 cache[key] = cls(self, horizon=key[0], check_ahead=key[1])
             return cache[key].simulate(shocks, periods=periods, init=init, exo_pos=exo_pos, selection=obc_selection)
         k, n, n_exo, m = self.k, self.n, self.n_exo, self.model

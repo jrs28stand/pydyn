@@ -141,8 +141,14 @@ def test_default_results_unchanged(nkms):
 def test_news_solver_class_choice(nkms):
     m, data, r, X = nkms
     e = _est(m, data, IVF, obc_method="news")
-    e.log_posterior(X[:, 0] if X.shape[0] == e.n else X[0])
-    assert isinstance(e.last_news_solver, LCPFilterSolver) and isinstance(e.last_news_solver, NewsFilterSolver)
+    x = X[:, 0] if X.shape[0] == e.n else X[0]
+    # NKM's constraint is only approximately complementary (0.57%): 'auto' takes the regime formulation, which
+    # agrees with OccBin at knife-edge periods where the LCP does not (docs/OBC_ESTIMATION.md, approx-class study)
+    lp = e.log_posterior(x)
+    assert isinstance(e.last_news_solver, RegimeFilterSolver) and isinstance(e.last_news_solver, NewsFilterSolver)
+    e.obc_formulation = "lcp"
+    assert e.log_posterior(x) == pytest.approx(lp, rel=1e-11)
+    assert isinstance(e.last_news_solver, LCPFilterSolver)
 
 
 # ------------------------------------------------------------------------------ several equations (bf, bf_ppf)
@@ -221,6 +227,7 @@ def test_failed_trial_point_fails_fast(tmp_path):
     r = loadmat(REF / "occest_nkm_lik.mat", squeeze_me=True)
     data = np.atleast_2d(r["data"].T).T
     e = _est(m, data, IVF, obc_method="news")
+    e.obc_formulation = "lcp"                      # the counts below are the LCP solver's
     X = np.atleast_2d(r["X"])
     X = X if X.shape[0] == e.n else X.T
     lp = e.log_posterior(X[:, 3])

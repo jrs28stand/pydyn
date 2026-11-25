@@ -513,3 +513,17 @@ OccBin path matters at the 1e-5 level, at 3-4x cost. Do not make `hybrid` the de
 d in (0.0075, 0.05) and a non-zlb structure; constraints of the `multi_equation` classes (only regime applies) not studied; the multiplicity explanation rests on one
 replayed example, not on enumerating solutions; "current-period-only" levels test for the hybrid was not measured (the whole path was used); exact-class timing is from one machine, 5 repeats;
 whether OccBin's non-convergence at those points means the regime formulation's finiteness is the same event for every cause (the failure sets are identical, causes not tabulated).
+
+## Decision (25 Nov): `obc_formulation='auto'` sends approximate-class models to the regime formulation
+
+Following the approx-class study above (Jacob's decision): under `'auto'` the LCP solver is used only when every
+constraint is one exactly complementary pair (`ConstraintObject.approx == 0`); any approximately complementary
+pair, like any multi-equation constraint, goes to the regime formulation, in simulation and in estimation. Exact
+models are unchanged bit for bit. `'lcp'` remains available on approx-class models for speed.
+
+Consequences seen when the default changed:
+- NKM under `obc_method='news'` now uses `RegimeFilterSolver`; values at the stored vectors are unchanged to 1e-11.
+- The regime formulation can need a longer horizon than the LCP: at the extreme vector of
+  `tests/test_obc_horizon_cause.py` the LCP recovers OccBin's value with horizon 80, the regime formulation needs
+  160 (it fails with `horizon_too_short` at period 92 with 80). `obc_horizon_max=160` covers both.
+- Higher order and cubature (`HigherOrderNews`) still use the LCP for approx-class models.
