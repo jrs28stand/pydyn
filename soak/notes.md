@@ -3,6 +3,11 @@
 Brute-force soak test of the occasionally-binding-constraint estimation and simulation code, to find bugs that appear only over many
 parameter vectors or long runs. Library code is not changed; anomalies are catalogued with reproducers (`soak/repro/`).
 
+## Fixes made after the soak (branch obc-soak, commits after 0454d5f)
+1. `pydyn/occbin.py`: `Occbin.rule_memo_bytes` (default 384 MiB per Occbin object) bounds the rule memo; beyond it rules are computed as before without being stored (bit for bit the same). Tests: `tests/test_occbin_memo_cap.py`; `tests/test_occbin_bitwise.py` and `bench/occbin_equality.py` unchanged and passing.
+2. `pydyn/obc_filter.py`, `occbin_filter.py`, `occbin_estimation.py`: failure causes of news trial points (`solver.causes`, `failure_info()`), `est.last_failure`, extra text in `est.last_info` (code stays 304/313), opt-in `est.obc_horizon_max`. Tests: `tests/test_obc_horizon_cause.py`.
+3. docs/OBC_ESTIMATION.md 2d: size of knife-edge differences. 4. `driver_or_unexpected:TypeError ... 'part'` was a driver bug (`record_warnings` passed `part` twice), fixed.
+
 ## State / how to resume
 
 Everything lives under `soak/` of branch `obc-soak` (pushed to `wip/obc-soak`): `soak/run.py` (driver), `soak/lib.py`, `soak/part_a.py` (parts A and B),

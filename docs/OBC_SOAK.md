@@ -3,6 +3,11 @@
 Brute-force soak test of the occasionally-binding-constraint estimation and simulation code, to find bugs that appear only over many
 parameter vectors or long runs. Library code is not changed; anomalies are catalogued with reproducers (`soak/repro/`).
 
+## Fixes made after the soak (branch obc-soak, commits after 0454d5f)
+1. `pydyn/occbin.py`: `Occbin.rule_memo_bytes` (default 384 MiB per Occbin object) bounds the rule memo; beyond it rules are computed as before without being stored (bit for bit the same). Tests: `tests/test_occbin_memo_cap.py`; `tests/test_occbin_bitwise.py` and `bench/occbin_equality.py` unchanged and passing.
+2. `pydyn/obc_filter.py`, `occbin_filter.py`, `occbin_estimation.py`: failure causes of news trial points (`solver.causes`, `failure_info()`), `est.last_failure`, extra text in `est.last_info` (code stays 304/313), opt-in `est.obc_horizon_max`. Tests: `tests/test_obc_horizon_cause.py`.
+3. docs/OBC_ESTIMATION.md 2d: size of knife-edge differences. 4. `driver_or_unexpected:TypeError ... 'part'` was a driver bug (`record_warnings` passed `part` twice), fixed.
+
 ## State / how to resume
 
 Everything lives under `soak/` of branch `obc-soak` (pushed to `wip/obc-soak`): `soak/run.py` (driver), `soak/lib.py`, `soak/part_a.py` (parts A and B),
@@ -34,48 +39,49 @@ Known limitations of the checks: wedge sign is checked only for LCP (one-equatio
 
 | part | run time (h) | tasks | what |
 |---|---|---|---|
-| A | 0.76 | 1964 | evaluations of the log posterior (all configurations): bf 9380, nkm 9922, nkms 9627; tasks by kind: bf/bound 163, bf/line 163, bf/perturb 164, bf/prior 164, nkm/bound 163, nkm/line 164, nkm/perturb 164, nkm/prior 164, nkms/bound 163, nkms/line 164, nkms/perturb 164, nkms/prior 164 |
-| B | 0.90 | 356 | 44550 MCMC draws (news) in 7 finished chains + the running one (chain 7, draw 2550, replays under occbin of this chain: 255); 58 mode searches (9 skipped: start not finite, 1 timeouts) |
-| C | 0.82 | 455 | simulated periods per model (both methods each): bf 429000 (57 runs, 16301 binding), borrcon 627000 (57 runs, 133947 binding), borrcon_d 671000 (57 runs, 88677 binding), nkm 596000 (57 runs, 70399 binding), nkm_est 504000 (56 runs, 46430 binding), sw 314000 (57 runs, 1154 binding), zlb 602000 (57 runs, 216944 binding), zlb2 446000 (57 runs, 175419 binding) |
+| A | 1.11 | 2791 | evaluations of the log posterior (all configurations): bf 13347, nkm 14098, nkms 13626; tasks by kind: bf/bound 232, bf/line 232, bf/perturb 233, bf/prior 233, nkm/bound 232, nkm/line 233, nkm/perturb 233, nkm/prior 233, nkms/bound 232, nkms/line 232, nkms/perturb 233, nkms/prior 233 |
+| B | 1.04 | 408 | 51000 MCMC draws (news) in 8 finished chains + the running one (chain 8, draw 3000, replays under occbin of this chain: 300); 67 mode searches (10 skipped: start not finite, 2 timeouts) |
+| C | 0.96 | 533 | simulated periods per model (both methods each): bf 490000 (67 runs, 17572 binding), borrcon 734000 (66 runs, 138235 binding), borrcon_d 808000 (67 runs, 114745 binding), nkm 676000 (67 runs, 81963 binding), nkm_est 583000 (66 runs, 57417 binding), sw 329000 (66 runs, 1442 binding), zlb 703000 (67 runs, 249909 binding), zlb2 576000 (67 runs, 232139 binding) |
 | D | 0.73 | 14794 | runs per model (ok/total): borrcon 1213/2113, nk 2049/2114, nkm 1104/2113, nkm_est 1083/2114, sw_cp 707/2113, zlb 1998/2113, zlb2 1975/2114 |
 
 LCP solutions checked with `verify_lcp` (tolerance 1e-6) at the `solve_active_set` / `solve_news` boundary, all parts: {'verify|solve_active_set': 567484, 'verify|solve_news': 55}.
 
-Determinism checks (same call repeated): A same-process 422 (+96 in a fresh estimation object), C 72, D 2746.
+Determinism checks (same call repeated): A same-process 598 (+134 in a fresh estimation object), C 83, D 2746.
 
 ## Anomaly catalogue
 
 | kind | part | count | severity | first reproducer(s) | judgement |
 |---|---|---|---|---|---|
 | `nonbitwise_ulp:higher_order` | D | 674 | cosmetic | soak/results/anomalies.jsonl (task 0, task 36, task 48) | two constructions of HigherOrderNews on identical inputs in one process give results differing at 1e-16..1e-18, not bitwise (rounding order, probably BLAS alignment / threading-free kernels); all differences < 1e-9. No nondeterminism of the order-1 or the filter calls (see determinism counts) |
-| `path_disagree:nkm` | C | 119 | cosmetic (known cause) | soak/results/anomalies.jsonl (task 66, task 66, task 82) | the 'approx' constraint class: paths differ by 1e-5 relative in a long run once a knife-edge period flips (shock scale >= 2 x sd, 1000-period segments); regimes differ in that period |
-| `path_disagree:nkm_est` | C | 87 | cosmetic (known cause) | soak/results/anomalies.jsonl (task 127, task 127, task 127) | same as nkm (occest_nkm.mod) |
-| `variant_fails_where_news_ok:news-longest` | A | 52 | cosmetic | soak/results/anomalies.jsonl (task 12, task 24, task 96) | obc_selection='longest' (and 'shortest') can fail the filter (304) where the default selection succeeds: a different (longer) spell makes the root search fail; not a bug as such |
-| `slow_failure` | C | 39 | perf | soak/repro/occbin_rule_trie_memory.py (task 14, task 43, task 43) | evaluations/simulations that fail after > 5 s (A) or > 10 s (C): OccBin inversion-filter failures with huge regime-guess tries (see memory_jump), the opt-in MILP configuration, and RegimeOBC's 30 s integer-programme limit (sw model: 30 s for one failing period) |
-| `lp_disagree_large:nkm:regime_count_differs` | A | 37 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 6, task 6, task 162) | knife edge of the 'approx' class: one binding period starts/ends one period apart (regime count differs by 1, or same count with shifted sequence). Size 0.15-0.4, i.e. larger than the documented ~0.12. Period 21 of the sample at line t=0.1 (A#6) differs; filtered shock differs by 0.04. |
-| `finite_vs_inf:news_finite_occbin_code304` | A | 14 | wrong-result (occbin refuses a point news evaluates) | soak/results/anomalies.jsonl (task 30, task 193, task 285) | OccBin's failure codes (304 via 310/311/313) at points where the news filter finds a solution; the counterpart of the previous kind; expected at cycling/periodic guess-and-verify failures |
-| `path_disagree:bf` | C | 14 | probably not a bug (multiplicity) | soak/repro/bf_path_disagree.py (task 43, task 83, task 83) | bf (two equations switch): OccBin binds for one period with rnot - rlb = -2e-6, news does not bind (rnot - rlb = +2e-5): each satisfies its own regime condition; the paths differ by 0.006 although the two sit at the boundary: a jump across the constraint, i.e. two solutions |
-| `memory_jump` | A | 12 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 141, task 273, task 309) | Occbin.rules' memo trie (pydyn/occbin.py:260) is unbounded: at extreme parameter vectors OccBin's filter builds 232,740 rule nodes in one Occbin instance (1.3 GB peak, 10 s, then fails with 304). Seen 6+ times in A, C and D (the events listed under B, C, D with 1.0-1.1 GB are the same process memory after an A event: an artefact of the first version of the detector). The news solver needs 0.5 s at the same vector. Python does not return the memory to the OS: the process stays at ~1.4 GB |
-| `finite_vs_inf:occbin_finite_news_code304` | A | 10 | wrong-result (news refuses a point OccBin evaluates) | soak/repro/finite_vs_inf_news_304.py (task 75, task 155, task 500) | news horizon 40 too short at extreme vectors (filtered shocks of size 100+, spells longer than 40): horizon 80 gives the OccBin value to 1e-11. The filter reports the generic code 304; the message does not say that the horizon is the cause (trial points fail with 313, 168 of them at the first failing period) |
+| `path_disagree:nkm` | C | 138 | cosmetic (known cause) | soak/results/anomalies.jsonl (task 66, task 66, task 82) | the 'approx' constraint class: paths differ by 1e-5 relative in a long run once a knife-edge period flips (shock scale >= 2 x sd, 1000-period segments); regimes differ in that period |
+| `path_disagree:nkm_est` | C | 110 | cosmetic (known cause) | soak/results/anomalies.jsonl (task 127, task 127, task 127) | same as nkm (occest_nkm.mod) |
+| `variant_fails_where_news_ok:news-longest` | A | 76 | cosmetic | soak/results/anomalies.jsonl (task 12, task 24, task 96) | obc_selection='longest' (and 'shortest') can fail the filter (304) where the default selection succeeds: a different (longer) spell makes the root search fail; not a bug as such |
+| `lp_disagree_large:nkm:regime_count_differs` | A | 53 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 6, task 6, task 162) | knife edge of the approx class: one regime decision shifts by one period. Full counts from the sweeps: 195 of 8,279 finite NKM pairs differ by > 1e-8, 60 by > 0.12, 9 by > 0.4, max 1.54 (docs/OBC_ESTIMATION.md, 2d). The first logged lines (20 per kind) understated the size. |
+| `slow_failure` | C | 45 | perf | soak/repro/occbin_rule_trie_memory.py (task 14, task 43, task 43) | evaluations/simulations that fail after > 5 s (A) or > 10 s (C): OccBin inversion-filter failures with huge regime-guess tries (see memory_jump), the opt-in MILP configuration, and RegimeOBC's 30 s integer-programme limit (sw model: 30 s for one failing period) |
+| `finite_vs_inf:news_finite_occbin_code304` | A | 18 | wrong-result (occbin refuses a point news evaluates) | soak/results/anomalies.jsonl (task 30, task 193, task 285) | OccBin's failure codes (304 via 310/311/313) at points where the news filter finds a solution; the counterpart of the previous kind; expected at cycling/periodic guess-and-verify failures |
+| `finite_vs_inf:occbin_finite_news_code304` | A | 15 | wrong-result (news refuses a point OccBin evaluates) | soak/repro/finite_vs_inf_news_304.py (task 75, task 155, task 500) | news fails (304) where OccBin has a value: the news solver's trial points are undecided / horizon_too_short at horizon 40. Now reported with a cause (est.last_failure) and recoverable with the opt-in est.obc_horizon_max: 9 of the 15 logged vectors are recovered at obc_horizon_max=160 (equal to OccBin up to 5e-12, knife-edge 0.02/0.2, or 4.6 at lp -1.4e11), 4 still fail with horizon_too_short at 160 (bf 155, 2483, 2531, nkms 1630) and 2 are root-search failures unrelated to the horizon (nkms 874, 1642) |
+| `memory_jump` | A | 15 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 141, task 273, task 309) | FIXED in obc-soak (Occbin.rule_memo_bytes, 384 MiB per Occbin object): the memo trie of Occbin.rules was unbounded (232,740 nodes, 1.3 GB at extreme vectors). After the fix the peak is ~550 MB and results are bit for bit unchanged. Remaining jumps of 100-440 MB are the bounded memo filling. (Events listed for B/C/D at 1.0-1.1 GB were artefacts of the first detector.) |
+| `path_disagree:bf` | C | 15 | probably not a bug (multiplicity) | soak/repro/bf_path_disagree.py (task 43, task 83, task 83) | bf (two equations switch): OccBin binds for one period with rnot - rlb = -2e-6, news does not bind (rnot - rlb = +2e-5): each satisfies its own regime condition; the paths differ by 0.006 although the two sit at the boundary: a jump across the constraint, i.e. two solutions |
+| `regime_history_differs_equal_path:nkm` | C | 10 | cosmetic | soak/results/anomalies.jsonl (task 82, task 82, task 130) | regime histories differ in the knife-edge period while paths agree to 1e-6 |
 | `lp_absurd` | A | 9 | cosmetic | soak/results/anomalies.jsonl (task 70, task 70, task 70) | FALSE POSITIVE of an early threshold (|lp|>1e6): legitimate huge negative values from tiny shock standard deviations (-3e10 ... -2e12). Threshold changed to lp>1e5; huge negative values are counted separately |
-| `memory_jump` | D | 9 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 1782, task 2697, task 3313) | Occbin.rules' memo trie (pydyn/occbin.py:260) is unbounded: at extreme parameter vectors OccBin's filter builds 232,740 rule nodes in one Occbin instance (1.3 GB peak, 10 s, then fails with 304). Seen 6+ times in A, C and D (the events listed under B, C, D with 1.0-1.1 GB are the same process memory after an A event: an artefact of the first version of the detector). The news solver needs 0.5 s at the same vector. Python does not return the memory to the OS: the process stays at ~1.4 GB |
-| `regime_history_differs_equal_path:nkm` | C | 9 | cosmetic | soak/results/anomalies.jsonl (task 82, task 82, task 130) | regime histories differ in the knife-edge period while paths agree to 1e-6 |
-| `slow_failure` | A | 8 | perf | soak/repro/occbin_rule_trie_memory.py (task 65, task 75, task 105) | evaluations/simulations that fail after > 5 s (A) or > 10 s (C): OccBin inversion-filter failures with huge regime-guess tries (see memory_jump), the opt-in MILP configuration, and RegimeOBC's 30 s integer-programme limit (sw model: 30 s for one failing period) |
+| `memory_jump` | D | 9 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 1782, task 2697, task 3313) | FIXED in obc-soak (Occbin.rule_memo_bytes, 384 MiB per Occbin object): the memo trie of Occbin.rules was unbounded (232,740 nodes, 1.3 GB at extreme vectors). After the fix the peak is ~550 MB and results are bit for bit unchanged. Remaining jumps of 100-440 MB are the bounded memo filling. (Events listed for B/C/D at 1.0-1.1 GB were artefacts of the first detector.) |
+| `slow_failure` | A | 9 | perf | soak/repro/occbin_rule_trie_memory.py (task 65, task 75, task 105) | evaluations/simulations that fail after > 5 s (A) or > 10 s (C): OccBin inversion-filter failures with huge regime-guess tries (see memory_jump), the opt-in MILP configuration, and RegimeOBC's 30 s integer-programme limit (sw model: 30 s for one failing period) |
+| `lp_disagree_large:nkms:regime_count_differs` | A | 6 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 79, task 556, task 1156) | same knife edge as for nkm (3-parameter model); also seen at news MCMC draws (replay under occbin, part B) and at a news posterior mode (0.23 with equal binding-period count but a shifted sequence) |
 | `milp_timeout_hit` | A | 6 | perf | soak/results/anomalies.jsonl (task 65, task 75, task 105) | only in the opt-in configuration est.obc_milp_time_limit=1.0 (default 0): up to 96 integer programmes per evaluation, each running to its 1 s limit -> one evaluation 45 s (bf) or > 40 s (nkm); 'rescued' stays 0. Documented cost of the option |
-| `lp_disagree_large:nkms:regime_count_differs` | A | 3 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 79, task 556, task 1156) | same knife edge as for nkm (3-parameter model); also seen at news MCMC draws (replay under occbin, part B) and at a news posterior mode (0.23 with equal binding-period count but a shifted sequence) |
+| `one_method_fails:occbin_fails:expected:OccbinPeriodicError:310:sw` | C | 4 | cosmetic | soak/results/anomalies.jsonl (task 30, task 86, task 430) | OccBin guess-and-verify cycles (error 310) or news reports horizon_too_short/no_solution on one side only; counted per 1000-period segment (counts are segments, not events) |
+| `regime_history_differs_equal_path:nkm_est` | C | 4 | cosmetic | soak/results/anomalies.jsonl (task 127, task 215, task 247) | regime histories differ in the knife-edge period while paths agree to 1e-6 |
 | `one_method_fails:occbin_fails:expected:OccbinPeriodicError:310:nkm` | C | 3 | cosmetic | soak/results/anomalies.jsonl (task 82, task 354, task 370) | OccBin guess-and-verify cycles (error 310) or news reports horizon_too_short/no_solution on one side only; counted per 1000-period segment (counts are segments, not events) |
-| `one_method_fails:occbin_fails:expected:OccbinPeriodicError:310:sw` | C | 3 | cosmetic | soak/results/anomalies.jsonl (task 30, task 86, task 430) | OccBin guess-and-verify cycles (error 310) or news reports horizon_too_short/no_solution on one side only; counted per 1000-period segment (counts are segments, not events) |
-| `regime_history_differs_equal_path:nkm_est` | C | 3 | cosmetic | soak/results/anomalies.jsonl (task 127, task 215, task 247) | regime histories differ in the knife-edge period while paths agree to 1e-6 |
+| `path_disagree:sw` | C | 3 | probably not a bug (multiplicity) | soak/results/anomalies.jsonl (task 118, task 350, task 478) | SW model has several equilibria (tests document it); paths 0.08 apart (0.5%) with different regimes. Not minimised |
 | `warning:RuntimeWarning: invalid value encountered in sqrt` | B | 3 | cosmetic | soak/results/anomalies.jsonl (task 167, task 185) | Estimation.laplace takes sqrt of the diagonal of an inverse Hessian that is not positive definite at the mode csminwel reached (estimation.py:1754, outside the OBC code; the result is NaN, handled) |
 | `discontinuity_same_regimes:bf` | A | 2 | false positive | soak/repro/bf_line_jump.py (task 404, task 404) | a steep but smooth slope far from the mode (bf, -1283 -> -840 within 0.05 of the line parameter, 11 sub-steps all smooth, same regimes). Detector changed to compare with neighbouring steps |
 | `lp_disagree_large:nkms:regime_count_differs` | B | 2 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 103, task 130) | same knife edge as for nkm (3-parameter model); also seen at news MCMC draws (replay under occbin, part B) and at a news posterior mode (0.23 with equal binding-period count but a shifted sequence) |
-| `path_disagree:sw` | C | 2 | probably not a bug (multiplicity) | soak/results/anomalies.jsonl (task 118, task 350) | SW model has several equilibria (tests document it); paths 0.08 apart (0.5%) with different regimes. Not minimised |
 | `timeout` | A | 2 | see judgement | soak/results/anomalies.jsonl (task 105, task 1445) | per-evaluation 40-60 s timer fired: the opt-in MILP configuration (A#105: 80 MILP time-outs)  |
 | `driver_or_unexpected:TypeError:dict() got multiple values for keyword argument 'part'` | B | 1 | ? | soak/results/anomalies.jsonl (task 155) | not yet looked at |
-| `lp_disagree_large:nkm:same_regime_count` | B | 1 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 119) | knife edge of the 'approx' class: one binding period starts/ends one period apart (regime count differs by 1, or same count with shifted sequence). Size 0.15-0.4, i.e. larger than the documented ~0.12. Period 21 of the sample at line t=0.1 (A#6) differs; filtered shock differs by 0.04. |
+| `lp_disagree_large:nkm:same_regime_count` | B | 1 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 119) | knife edge of the approx class: one regime decision shifts by one period. Full counts from the sweeps: 195 of 8,279 finite NKM pairs differ by > 1e-8, 60 by > 0.12, 9 by > 0.4, max 1.54 (docs/OBC_ESTIMATION.md, 2d). The first logged lines (20 per kind) understated the size. |
 | `lp_disagree_large:nkms:same_regime_count` | A | 1 | wrong-result (known cause) | soak/repro/lp_disagree_nkm.py (task 94) | same knife edge as for nkm (3-parameter model); also seen at news MCMC draws (replay under occbin, part B) and at a news posterior mode (0.23 with equal binding-period count but a shifted sequence) |
-| `memory_jump` | B | 1 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 35) | Occbin.rules' memo trie (pydyn/occbin.py:260) is unbounded: at extreme parameter vectors OccBin's filter builds 232,740 rule nodes in one Occbin instance (1.3 GB peak, 10 s, then fails with 304). Seen 6+ times in A, C and D (the events listed under B, C, D with 1.0-1.1 GB are the same process memory after an A event: an artefact of the first version of the detector). The news solver needs 0.5 s at the same vector. Python does not return the memory to the OS: the process stays at ~1.4 GB |
-| `memory_jump` | C | 1 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 63) | Occbin.rules' memo trie (pydyn/occbin.py:260) is unbounded: at extreme parameter vectors OccBin's filter builds 232,740 rule nodes in one Occbin instance (1.3 GB peak, 10 s, then fails with 304). Seen 6+ times in A, C and D (the events listed under B, C, D with 1.0-1.1 GB are the same process memory after an A event: an artefact of the first version of the detector). The news solver needs 0.5 s at the same vector. Python does not return the memory to the OS: the process stays at ~1.4 GB |
+| `memory_jump` | B | 1 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 35) | FIXED in obc-soak (Occbin.rule_memo_bytes, 384 MiB per Occbin object): the memo trie of Occbin.rules was unbounded (232,740 nodes, 1.3 GB at extreme vectors). After the fix the peak is ~550 MB and results are bit for bit unchanged. Remaining jumps of 100-440 MB are the bounded memo filling. (Events listed for B/C/D at 1.0-1.1 GB were artefacts of the first detector.) |
+| `memory_jump` | C | 1 | resource (real) | soak/repro/occbin_rule_trie_memory.py (task 63) | FIXED in obc-soak (Occbin.rule_memo_bytes, 384 MiB per Occbin object): the memo trie of Occbin.rules was unbounded (232,740 nodes, 1.3 GB at extreme vectors). After the fix the peak is ~550 MB and results are bit for bit unchanged. Remaining jumps of 100-440 MB are the bounded memo filling. (Events listed for B/C/D at 1.0-1.1 GB were artefacts of the first detector.) |
+| `mode_search_unfinished_90s` | B | 1 | cosmetic | soak/repro/mode_search_slow.py (task 407) | csminwel with the news likelihood from random starts does not stop within 90 s: 2,700 evaluations at 33 ms each, still improving (lp 1679.9); not a hang (soak/repro/mode_search_slow.py). The known non-convergence of csminwel on the NKM posterior |
 | `one_method_fails:occbin_fails:expected:OccbinPeriodicError:310:bf` | C | 1 | cosmetic | soak/results/anomalies.jsonl (task 403) | OccBin guess-and-verify cycles (error 310) or news reports horizon_too_short/no_solution on one side only; counted per 1000-period segment (counts are segments, not events) |
 | `one_method_fails:occbin_fails:expected:OccbinPeriodicError:310:nkm_est` | C | 1 | cosmetic | soak/results/anomalies.jsonl (task 127) | OccBin guess-and-verify cycles (error 310) or news reports horizon_too_short/no_solution on one side only; counted per 1000-period segment (counts are segments, not events) |
 | `perf_cliff` | A | 1 | ? | soak/results/anomalies.jsonl (task 1894) | not yet looked at |
@@ -88,36 +94,36 @@ Distance bin = rms of the relative deviation from the model's initial values: a 
 
 | model | config | n | finite | failed (by code) | by distance bin: finite share |
 |---|---|---|---|---|---|
-| bf | news | 4566 | 0.819 | c304 546, c41 44, c42 237 | a:1.00 (30) b:0.91 (33) c:0.82 (160) d:0.54 (143) e:0.44 (125) line:0.84 (4075) |
-| bf | news-milp | 20 | 0.300 | c0 1, c304 1, c41 2, c42 10 | a:1.00 (2) b:1.00 (1) c:0.50 (2) d:0.17 (6) e:0.11 (9) |
-| bf | news20 | 98 | 0.643 | c304 10, c41 7, c42 18 | a:1.00 (2) b:1.00 (6) c:0.82 (28) d:0.57 (37) e:0.44 (25) |
-| bf | news60 | 98 | 0.643 | c304 10, c41 7, c42 18 | a:1.00 (2) b:1.00 (6) c:0.82 (28) d:0.57 (37) e:0.44 (25) |
-| bf | occbin | 4566 | 0.819 | c304 544, c41 44, c42 237 | a:1.00 (30) b:0.91 (33) c:0.82 (160) d:0.55 (143) e:0.44 (125) line:0.84 (4075) |
-| bf | occbin60 | 32 | 0.844 | c304 5 | b:1.00 (1) c:0.82 (22) d:0.89 (9) |
-| nkm | minnorm | 164 | 0.957 | c304 4, c41 3 | c:0.99 (76) d:0.92 (77) e:1.00 (11) |
-| nkm | news | 4591 | 0.859 | c3 2, c304 98, c4 24, c41 39, c42 481, c5 5 | a:1.00 (4) b:0.75 (4) c:0.88 (170) d:0.60 (181) e:0.35 (132) line:0.89 (4100) |
-| nkm | news-longest | 164 | 0.640 | c304 56, c41 3 | c:0.66 (76) d:0.62 (77) e:0.64 (11) |
-| nkm | news-milp | 19 | 0.579 | c0 1, c304 1, c4 2, c41 2, c42 1, c5 1 | c:0.75 (4) d:0.38 (8) e:0.71 (7) |
-| nkm | news-shortest | 164 | 0.957 | c304 4, c41 3 | c:0.99 (76) d:0.92 (77) e:1.00 (11) |
-| nkm | news20 | 98 | 0.592 | c304 6, c4 3, c41 8, c42 21, c5 2 | b:0.00 (1) c:0.85 (34) d:0.51 (39) e:0.38 (24) |
-| nkm | news60 | 98 | 0.592 | c304 6, c4 3, c41 8, c42 21, c5 2 | b:0.00 (1) c:0.85 (34) d:0.51 (39) e:0.38 (24) |
-| nkm | occbin | 4591 | 0.858 | c3 2, c304 103, c4 24, c41 39, c42 481, c5 5 | a:1.00 (4) b:0.75 (4) c:0.88 (170) d:0.61 (181) e:0.33 (132) line:0.88 (4100) |
-| nkm | occbin60 | 33 | 0.939 | c304 1, c41 1 | c:0.93 (15) d:0.94 (16) e:1.00 (2) |
-| nkms | minnorm | 164 | 0.780 | c4 23, c42 13 | a:1.00 (8) b:1.00 (10) c:0.86 (7) d:0.67 (15) e:0.76 (124) |
-| nkms | news | 4591 | 0.947 | c304 22, c306 1, c4 135, c41 46, c42 31, c5 7 | a:1.00 (8) b:1.00 (29) c:0.95 (103) d:0.64 (110) e:0.59 (241) line:0.98 (4100) |
-| nkms | news-milp | 17 | 1.000 |  | b:1.00 (2) c:1.00 (10) d:1.00 (4) e:1.00 (1) |
-| nkms | news20 | 99 | 0.697 | c304 3, c306 1, c4 9, c41 8, c42 9 | a:1.00 (1) b:1.00 (8) c:0.88 (24) d:0.48 (21) e:0.64 (45) |
-| nkms | news60 | 99 | 0.697 | c304 3, c306 1, c4 9, c41 8, c42 9 | a:1.00 (1) b:1.00 (8) c:0.88 (24) d:0.48 (21) e:0.64 (45) |
-| nkms | occbin | 4591 | 0.947 | c304 23, c306 1, c4 135, c41 46, c42 31, c5 7 | a:1.00 (8) b:1.00 (29) c:0.94 (103) d:0.63 (110) e:0.59 (241) line:0.98 (4100) |
-| nkms | occbin60 | 66 | 0.561 | c304 2, c306 1, c4 9, c41 8, c42 9 | a:1.00 (1) b:1.00 (2) c:0.25 (4) d:0.27 (15) e:0.66 (44) |
+| bf | news | 6498 | 0.837 | c304 714, c41 56, c42 288 | a:1.00 (46) b:0.89 (47) c:0.81 (223) d:0.57 (209) e:0.45 (173) line:0.86 (5800) |
+| bf | news-milp | 27 | 0.407 | c0 1, c304 1, c41 3, c42 11 | a:1.00 (3) b:1.00 (1) c:0.75 (4) d:0.33 (9) e:0.10 (10) |
+| bf | news20 | 139 | 0.676 | c304 14, c41 9, c42 22 | a:1.00 (5) b:1.00 (8) c:0.80 (45) d:0.60 (48) e:0.48 (33) |
+| bf | news60 | 139 | 0.676 | c304 14, c41 9, c42 22 | a:1.00 (5) b:1.00 (8) c:0.80 (45) d:0.60 (48) e:0.48 (33) |
+| bf | occbin | 6498 | 0.838 | c304 709, c41 56, c42 288 | a:1.00 (46) b:0.89 (47) c:0.81 (223) d:0.60 (209) e:0.45 (173) line:0.86 (5800) |
+| bf | occbin60 | 46 | 0.826 | c304 8 | b:1.00 (2) c:0.79 (34) d:0.90 (10) |
+| nkm | minnorm | 233 | 0.953 | c304 6, c41 5 | c:0.97 (105) d:0.95 (112) e:0.88 (16) |
+| nkm | news | 6523 | 0.849 | c3 4, c304 152, c4 36, c41 62, c42 727, c5 6 | a:1.00 (4) b:0.75 (4) c:0.88 (232) d:0.61 (266) e:0.33 (192) line:0.88 (5825) |
+| nkm | news-longest | 233 | 0.627 | c304 82, c41 5 | c:0.63 (105) d:0.65 (112) e:0.44 (16) |
+| nkm | news-milp | 26 | 0.577 | c0 1, c304 1, c4 3, c41 4, c42 1, c5 1 | c:0.75 (4) d:0.36 (11) e:0.73 (11) |
+| nkm | news-shortest | 233 | 0.953 | c304 6, c41 5 | c:0.97 (105) d:0.95 (112) e:0.88 (16) |
+| nkm | news20 | 140 | 0.614 | c304 7, c4 4, c41 11, c42 30, c5 2 | b:0.00 (1) c:0.87 (47) d:0.53 (57) e:0.43 (35) |
+| nkm | news60 | 140 | 0.614 | c304 7, c4 4, c41 11, c42 30, c5 2 | b:0.00 (1) c:0.87 (47) d:0.53 (57) e:0.43 (35) |
+| nkm | occbin | 6523 | 0.848 | c3 4, c304 157, c4 36, c41 62, c42 727, c5 6 | a:1.00 (4) b:0.75 (4) c:0.88 (232) d:0.61 (266) e:0.32 (192) line:0.88 (5825) |
+| nkm | occbin60 | 47 | 0.957 | c304 1, c41 1 | c:0.95 (21) d:0.96 (24) e:1.00 (2) |
+| nkms | minnorm | 233 | 0.747 | c4 38, c42 21 | a:1.00 (12) b:1.00 (15) c:0.85 (13) d:0.55 (20) e:0.72 (173) |
+| nkms | news | 6498 | 0.948 | c304 31, c306 1, c4 192, c41 57, c42 46, c5 8 | a:1.00 (12) b:1.00 (42) c:0.96 (156) d:0.63 (144) e:0.56 (344) line:0.98 (5800) |
+| nkms | news-milp | 24 | 1.000 |  | b:1.00 (3) c:1.00 (14) d:1.00 (6) e:1.00 (1) |
+| nkms | news20 | 140 | 0.679 | c304 6, c306 1, c4 17, c41 10, c42 11 | a:1.00 (2) b:1.00 (12) c:0.88 (34) d:0.54 (26) e:0.56 (66) |
+| nkms | news60 | 140 | 0.679 | c304 6, c306 1, c4 17, c41 10, c42 11 | a:1.00 (2) b:1.00 (12) c:0.88 (34) d:0.54 (26) e:0.56 (66) |
+| nkms | occbin | 6498 | 0.948 | c304 34, c306 1, c4 192, c41 57, c42 46, c5 8 | a:1.00 (12) b:1.00 (42) c:0.95 (156) d:0.62 (144) e:0.56 (344) line:0.98 (5800) |
+| nkms | occbin60 | 93 | 0.527 | c304 5, c306 1, c4 17, c41 10, c42 11 | a:1.00 (2) b:1.00 (4) c:0.20 (5) d:0.29 (17) e:0.57 (65) |
 
 occbin vs news, both finite: |difference in log posterior|
 
 | model | pairs | <=1e-9 (rel) | 1e-9..0.15 | >0.15 | max |
 |---|---|---|---|---|---|
-| bf | 3737 | 3724 | 9 | 4 | 4 |
-| nkm | 3934 | 3794 | 100 | 40 | 1.69e+06 |
-| nkms | 4345 | 4276 | 64 | 5 | 2.12 |
+| bf | 5438 | 5418 | 16 | 4 | 4 |
+| nkm | 5526 | 5334 | 135 | 57 | 1.69e+06 |
+| nkms | 6157 | 6056 | 92 | 9 | 2.31 |
 
 ## Timing distributions
 
@@ -125,49 +131,49 @@ Part A, seconds per finite log-posterior evaluation:
 
 | model | config | n | median | p99 | max |
 |---|---|---|---|---|---|
-| bf | news | 3739 | 0.0303 | 0.188 | 0.4317 |
-| bf | news-milp | 6 | 0.02875 | 0.04344 | 0.0441 |
-| bf | news20 | 63 | 0.0305 | 0.05702 | 0.06 |
-| bf | news60 | 63 | 0.0315 | 0.0544 | 0.0544 |
-| bf | occbin | 3741 | 0.0843 | 0.1646 | 0.2645 |
-| bf | occbin60 | 27 | 0.0829 | 0.1187 | 0.1198 |
-| nkm | minnorm | 157 | 0.0361 | 0.06378 | 0.1042 |
-| nkm | news | 3942 | 0.0357 | 0.07566 | 0.2644 |
-| nkm | news-longest | 105 | 0.2736 | 0.3922 | 0.4262 |
-| nkm | news-milp | 11 | 0.0389 | 13.28 | 13.3 |
-| nkm | news-shortest | 157 | 0.286 | 0.4933 | 0.5325 |
-| nkm | news20 | 58 | 0.0368 | 0.1776 | 0.2012 |
-| nkm | news60 | 58 | 0.037 | 0.1921 | 0.2962 |
-| nkm | occbin | 3937 | 0.1347 | 0.2525 | 1.108 |
-| nkm | occbin60 | 31 | 0.1383 | 0.2191 | 0.2374 |
-| nkms | minnorm | 128 | 0.0331 | 0.0633 | 0.077 |
-| nkms | news | 4349 | 0.0334 | 0.06086 | 0.6264 |
-| nkms | news-milp | 17 | 0.0355 | 0.06441 | 0.0683 |
-| nkms | news20 | 69 | 0.0344 | 0.06708 | 0.0764 |
-| nkms | news60 | 69 | 0.035 | 0.06436 | 0.073 |
-| nkms | occbin | 4348 | 0.1213 | 0.2139 | 2.547 |
-| nkms | occbin60 | 37 | 0.1244 | 1.359 | 1.978 |
+| bf | news | 5440 | 0.0304 | 0.1942 | 0.4941 |
+| bf | news-milp | 11 | 0.0288 | 0.0711 | 0.0714 |
+| bf | news20 | 94 | 0.0309 | 0.08347 | 0.2584 |
+| bf | news60 | 94 | 0.03205 | 0.09285 | 0.4018 |
+| bf | occbin | 5445 | 0.0858 | 0.1928 | 0.3352 |
+| bf | occbin60 | 38 | 0.08475 | 0.1739 | 0.1752 |
+| nkm | minnorm | 222 | 0.0367 | 0.09551 | 0.1083 |
+| nkm | news | 5536 | 0.0359 | 0.08801 | 0.2644 |
+| nkm | news-longest | 146 | 0.2803 | 0.5125 | 0.7029 |
+| nkm | news-milp | 15 | 0.0528 | 13.27 | 13.3 |
+| nkm | news-shortest | 222 | 0.2942 | 0.5372 | 0.7295 |
+| nkm | news20 | 86 | 0.03715 | 0.166 | 0.2012 |
+| nkm | news60 | 86 | 0.03755 | 0.141 | 0.2962 |
+| nkm | occbin | 5531 | 0.1371 | 0.2914 | 1.108 |
+| nkm | occbin60 | 45 | 0.1388 | 0.2375 | 0.2375 |
+| nkms | minnorm | 174 | 0.03335 | 0.08783 | 0.1346 |
+| nkms | news | 6163 | 0.0335 | 0.08124 | 0.6264 |
+| nkms | news-milp | 24 | 0.0348 | 0.07438 | 0.0762 |
+| nkms | news20 | 95 | 0.0342 | 0.07642 | 0.0767 |
+| nkms | news60 | 95 | 0.0354 | 0.07927 | 0.0803 |
+| nkms | occbin | 6160 | 0.1234 | 0.2691 | 2.547 |
+| nkms | occbin60 | 49 | 0.1255 | 1.152 | 1.978 |
 
 Part C, seconds per simulated period (per 1000-period segment, averaged over a task):
 
 | model | method | tasks | median | p99 | max |
 |---|---|---|---|---|---|
-| bf | news | 20 | 3.45e-05 | 5.81e-05 | 6e-05 |
-| bf | occbin | 20 | 0.000248 | 0.0003027 | 0.0003033 |
-| borrcon | news | 48 | 3e-05 | 7.843e-05 | 8e-05 |
-| borrcon | occbin | 48 | 0.0003217 | 0.0005447 | 0.0005667 |
-| borrcon_d | news | 40 | 2.667e-05 | 9.87e-05 | 0.0001 |
-| borrcon_d | occbin | 40 | 0.000311 | 0.0007812 | 0.00088 |
-| nkm | news | 33 | 2.333e-05 | 4.787e-05 | 5e-05 |
-| nkm | occbin | 33 | 0.00029 | 0.0004755 | 0.0005 |
-| nkm_est | news | 37 | 2.2e-05 | 5.64e-05 | 6e-05 |
-| nkm_est | occbin | 37 | 0.00028 | 0.0004761 | 0.0005133 |
-| sw | news | 15 | 4e-05 | 9.822e-05 | 0.0001067 |
-| sw | occbin | 15 | 0.00027 | 0.0004675 | 0.0004833 |
-| zlb | news | 55 | 3.7e-05 | 6.46e-05 | 7e-05 |
-| zlb | occbin | 55 | 0.000341 | 0.0005092 | 0.00052 |
-| zlb2 | news | 56 | 5.183e-05 | 0.0001207 | 0.0001459 |
-| zlb2 | occbin | 56 | 0.0004657 | 0.0009382 | 0.0009848 |
+| bf | news | 24 | 3.4e-05 | 5.77e-05 | 6e-05 |
+| bf | occbin | 24 | 0.0002458 | 0.0003026 | 0.0003033 |
+| borrcon | news | 53 | 3e-05 | 7.827e-05 | 8e-05 |
+| borrcon | occbin | 53 | 0.00032 | 0.0005424 | 0.0005667 |
+| borrcon_d | news | 47 | 2.667e-05 | 9.847e-05 | 0.0001 |
+| borrcon_d | occbin | 47 | 0.00031 | 0.0007635 | 0.00088 |
+| nkm | news | 39 | 2.333e-05 | 4.747e-05 | 5e-05 |
+| nkm | occbin | 39 | 0.000289 | 0.0004709 | 0.0005 |
+| nkm_est | news | 44 | 3e-05 | 6.19e-05 | 6.333e-05 |
+| nkm_est | occbin | 44 | 0.0002822 | 0.0005171 | 0.00052 |
+| sw | news | 17 | 4e-05 | 0.0001013 | 0.0001067 |
+| sw | occbin | 17 | 0.00027 | 0.0004668 | 0.0004833 |
+| zlb | news | 65 | 3.667e-05 | 6.36e-05 | 7e-05 |
+| zlb | occbin | 65 | 0.000332 | 0.0005072 | 0.00052 |
+| zlb2 | news | 66 | 5.183e-05 | 0.0001161 | 0.0001459 |
+| zlb2 | occbin | 66 | 0.000472 | 0.0009297 | 0.0009848 |
 
 Part D, seconds per period of `HigherOrderNews.simulate` (successful runs):
 
@@ -302,7 +308,7 @@ Part D: runs per model and configuration (ok / error types):
 
 ## Memory (resident MB at the end of each task; one process per ~8 minute chunk, so growth is only meaningful within a chunk)
 
-- A: median 142, max 1446
-- B: median 247, max 1409
-- C: median 259, max 1412
+- A: median 187, max 1446
+- B: median 216, max 1409
+- C: median 226, max 1412
 - D: median 395, max 1415
