@@ -23,7 +23,7 @@ IVF = {"likelihood_inversion_filter": True}
 MODELS_A = ["nkm", "nkms", "bf"]
 _EST = {}
 KNOWN_TOL = {"nkm": 0.15, "nkms": 0.15, "bf": 1e-7}        # largest expected |lp(occbin) - lp(news)| (knife edge, "approx" class)
-EVAL_TIMEOUT = 60
+EVAL_TIMEOUT = 40
 
 
 def make_est(case, fresh=False):
@@ -398,7 +398,7 @@ def mode_search(st, anom, i):
     t0 = time.time()
     e.obc_method = "news"
     try:
-        with alarm(200):
+        with alarm(90):
             r = e.mode(x0=x0, mode_compute=4)
         rec.update(lp=float(r.log_posterior), nfev=int(r.nfev), success=bool(r.success), x=np.asarray(r.x).tolist(), msg=str(r.message)[:60])
         if not np.isfinite(r.log_posterior) or r.log_posterior < lp0 - 1e-6:
@@ -409,7 +409,7 @@ def mode_search(st, anom, i):
         cmp_pairs({"occbin": ro, "news": rn}, e, anom, dict(where, theta=np.asarray(r.x).tolist(), at="mode"), st)
     except Alarm:
         rec["timeout"] = True
-        anom("timeout", **where, method="news", seconds=200, what="mode search")
+        anom("mode_search_unfinished_90s", **where, method="news")
     except Exception as exc:                                  # noqa: BLE001
         ex = exc_info(exc)
         if ex["type"] in {t.__name__ for t in expected_error_types()}:
