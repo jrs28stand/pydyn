@@ -439,12 +439,14 @@ SPECS = {
 
 #: why a refused option is refused (first matching prefix; the default says it is not implemented)
 REFUSAL_REASONS = (
-    ("particle.", "particle filters are not implemented"),
-    ("filter.particle.", "particle filters are not implemented"),
+    ("filter.particle.", "the OccBin particle filter is not implemented"),
     ("posterior_importance_sampling.", "importance sampling of the posterior is not implemented"),
-    ("skewed_kalman.", "the skewed Kalman filter is not implemented"),
+    ("skewed_kalman.", "the pruned skewed Kalman filter (kalman_algo=5) needs the closed skew-normal shock distribution of M_.csn "
+                       "(shocks skewness, set_shock_skew_value, skew in estimated_params), none of which pydyn.dynare() has"),
     ("irf_opt.", "generalised impulse responses (EM / analytical GIRF) are not implemented"),
-    ("mh_initialize_from_previous_mcmc.", "initialising the chains from a previous MCMC is not implemented"),
+    ("mh_initialize_from_previous_mcmc.", "the chains would start from the last parameters recorded in the metropolis/<name>_mh_history_*.mat "
+                                          "files of an earlier run, and pydyn does not write or read Dynare's MH history files "
+                                          "(load_mh_file and mh_recover are refused for the same reason)"),
     ("shock_decomp.", "this realtime shock decomposition option is not implemented"),
 )
 
@@ -561,3 +563,17 @@ def warn_model(model):
         warn_once(model, f"pydyn does not act on these {name} options of the .mod file: {', '.join(sorted(keys))} "
                          "(pydyn.dynare() refuses the statement)", stacklevel=4)
     return bad
+
+
+def _promote(statement, keys):
+    """Options pydyn now acts on: refused -> honoured."""
+    spec = SPECS[statement]
+    ks = frozenset(keys)
+    assert ks <= spec["refused"], ks - spec["refused"]
+    spec["refused"] = spec["refused"] - ks
+    spec["honoured"] = spec["honoured"] | ks
+
+
+_promote("estimation", ["selected_variables_only", "fast_kalman_filter", "conditional_likelihood.status"])
+#: the options of the nonlinear filters (pydyn.nonlinear_estimation acts on them or refuses the value with its reason)
+_promote("estimation", sorted(k for k in SPECS["estimation"]["refused"] if k.startswith("particle.")))

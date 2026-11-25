@@ -105,13 +105,18 @@ class MiMixin:
 
     def _mi_bayestopt(self, name):
         R = _R()
-        if self.opt_flag("selected_variables_only"):
-            raise Unsupported(f"bayestopt_.{name} with selected_variables_only", "results")
-        _ov, _inv, k2, obs_decl, obs_dr, state_dr = self._mi_layout()
+        _ov, inv, k2, obs_decl, obs_dr, state_dr = self._mi_layout()
         n = self.model.n_endo
+        sel = self._selected_variables()
+        if sel is None:
+            k3 = np.arange(n)
+        else:
+            k3 = np.array(sorted(int(inv[i]) for i in sel[1]), int)       # dynare_estimation_init.m: k3 in dr order
+        svl = np.union1d(k2, k3)                                           # smoother_var_list
         vals = {"mf0": np.searchsorted(k2, state_dr) + 1, "mf1": np.searchsorted(k2, obs_dr) + 1, "mf2": obs_dr + 1,
-                "mfys": obs_decl + 1, "smoother_var_list": np.arange(1, n + 1), "smoother_mf": obs_dr + 1,
-                "smoother_restrict_columns": state_dr + 1, "smoother_saved_var_list": np.arange(1, n + 1)}
+                "mfys": obs_decl + 1, "smoother_var_list": svl + 1, "smoother_mf": np.searchsorted(svl, obs_dr) + 1,
+                "smoother_restrict_columns": np.searchsorted(svl, state_dr) + 1,
+                "smoother_saved_var_list": np.searchsorted(svl, k3) + 1}
         return R.col(np.asarray(vals[name], float))
 
     def _missing(self, name, why):
@@ -190,6 +195,30 @@ class MiMixin:
         self.set_oo("steady_state", R.col(ys))
         self.push()
         return [self.oo_]
+
+    def _set_restrict_fields(self):
+        """oo_.dr.restrict_var_list and restrict_columns as dynare_estimation_init.m leaves them (k2 = union of the observed
+        variables and the predetermined ones in decision-rule order; restrict_columns the places of the states in k2)."""
+        from .perturbation import dr_ordering
+        from .matlab import Struct
+        R = _R()
+        m = self.model
+        if not m.varobs:
+            return
+        order_var, _sv, cnt = dr_ordering(m.lead_lag_incidence)
+        inv = np.empty(m.n_endo, int)
+        inv[order_var] = np.arange(m.n_endo)
+        obs_dr = inv[np.array([m._ie[v] for v in m.varobs], int)]
+        nst, npred, nboth = cnt["nstatic"], cnt["npred"], cnt["nboth"]
+        state_dr = np.arange(nst, nst + npred + nboth)
+        k2 = np.union1d(obs_dr, state_dr)
+        nspred = int(float(self.M_["nspred"]))
+        ic = np.searchsorted(k2, state_dr) + 1
+        dr = self.oo_.get("dr")
+        dr = R.rstruct("oo_.dr") if not isinstance(dr, Struct) else dr
+        dr = R.struct_set(dr, "restrict_var_list", R.col(k2 + 1))
+        dr = R.struct_set(dr, "restrict_columns", R.col(np.concatenate([ic, len(k2) + np.arange(1, nspred - (npred + nboth) + 1)])))
+        self.set_oo("dr", dr)
 
     def _mi_state_space(self, est):
         """oo_.dr after dynare_estimation_init: set_state_space (order_var, inv_order_var) and the restricted state space

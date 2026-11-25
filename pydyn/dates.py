@@ -220,8 +220,25 @@ def data_start_date(path, base_dir=None):
         return Date.parse(m.group(1)) if m else None
     if ext == ".mat":
         from scipy.io import loadmat
-        v = loadmat(str(p), squeeze_me=True).get("INIT__")
+        mat = loadmat(str(p), squeeze_me=True)
+        v = mat.get("INIT__")
         return Date.parse(str(v)) if v is not None and Date.is_date(str(v)) else None
+    return None
+
+
+def _dseries_default_start(path, base_dir=None):
+    """load_m_file_data.m / load_mat_file_data.m: "default values for freq and init are 1 and dates(1,1)" for a .m or .mat
+    data file that names neither FREQ__ nor INIT__ (the data command's dates then count from 1Y)."""
+    p = _resolve(path, base_dir)
+    if not p.exists():
+        return None
+    ext = p.suffix.lower()
+    if ext == ".m":
+        return None if re.search(r"^\s*(FREQ__|INIT__)\s*=", p.read_text(errors="replace"), re.M) else Date.parse("1Y")
+    if ext == ".mat":
+        from scipy.io import loadmat
+        mat = loadmat(str(p), squeeze_me=True)
+        return None if ("FREQ__" in mat or "INIT__" in mat) else Date.parse("1Y")
     return None
 
 
@@ -246,17 +263,18 @@ def apply_data_command(model, opts, base_dir=None):
         raise ValueError("data command without a file")
     opts["datafile"] = d["file"]
     start = data_start_date(d["file"], base_dir)
+    dstart = start if start is not None else _dseries_default_start(d["file"], base_dir)
 
     def index(v, what):
         v = v[0] if isinstance(v, (list, tuple)) and len(v) == 1 else v
         if is_date_value(v):
-            if start is None:
+            if dstart is None:
                 raise DateError(f"data({what}={v}): the data file has no dates (a first column of dates in a .csv "
                                 "file, or INIT__ in a .m/.mat file)")
             dd = Date.parse(v)
-            if dd.freq != start.freq:
-                raise DateError(f"data({what}={dd}): the data are at another frequency (first date {start})")
-            return dd - start + 1
+            if dd.freq != dstart.freq:
+                raise DateError(f"data({what}={dd}): the data are at another frequency (first date {dstart})")
+            return dd - dstart + 1
         return int(v)
 
     first = index(d["first_obs"], "first_obs") if "first_obs" in d else 1

@@ -790,10 +790,9 @@ def test_calibration_and_option_report(post):
     # options that are not (moments_varendo is acted on since pydyn.posterior_moments): reported once, by name
     with pytest.warns(pydyn.options.UnsupportedOptionWarning) as rec:
         e2 = estimation.Estimation(est.model, forecast=8, analytic_derivation=True, mh_recover=True,
-                                   load_mh_file=True, conditional_likelihood=True, nodiagnostic=True)
+                                   load_mh_file=True, nodiagnostic=True)
     msg = str(rec[0].message)
-    for name in ("forecast", "analytic_derivation", "mh_recover", "load_mh_file",
-                 "conditional_likelihood"):
+    for name in ("forecast", "analytic_derivation", "mh_recover", "load_mh_file"):
         assert name in msg and name in e2.unsupported_options
     assert "nodiagnostic" not in msg and "mode_file" not in msg and "sub_draws" not in msg
     # aliases of the JSON names

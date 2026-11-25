@@ -297,6 +297,38 @@ def kalman_filter(Y, a, P, T, QQ, H, z, kalman_tol=1e-10, riccati_tol=1e-6, pres
     return (LIK, lik) if return_lik else LIK
 
 
+def kalman_filter_fast(Y, a, P, T, H, z, kalman_tol=1e-10, presample=0, diffuse_periods=0):
+    """``kalman_filter_fast.m`` (Herbst 2015, Chandrasekhar recursions; Z given as the index vector ``z``): minus the
+    log likelihood and the per-period densities.  ``inf`` as soon as the forecast-error covariance is ill conditioned."""
+    pp, smpl = Y.shape
+    z = np.asarray(z, int)
+    lik = np.zeros(smpl)
+    K = T @ P[:, z]
+    F = P[np.ix_(z, z)] + H
+    W = K
+    iF = np.linalg.inv(F)
+    Kg = K @ iF
+    M = -iF
+    for t in range(smpl):
+        v = Y[:, t] - a[z]
+        _, rc = _inv_rcond(F)
+        if rc < kalman_tol:
+            return np.inf, lik
+        lik[t] = np.log(np.linalg.det(F)) + v @ iF @ v
+        a = T @ a + Kg @ v
+        ZWM = W[z, :] @ M
+        ZWMWp = ZWM @ W.T
+        M = M + ZWM.T @ iF @ ZWM
+        F = F + ZWMWp[:, z]
+        iF = np.linalg.inv(F)
+        K = K + T @ ZWMWp.T
+        Kg = K @ iF
+        W = T @ W - Kg @ W[z, :]
+    lik = 0.5 * (lik + pp * LOG2PI)
+    LIK = float(np.sum(lik[presample - diffuse_periods:])) if presample > diffuse_periods else float(np.sum(lik))
+    return LIK, lik
+
+
 def kalman_filter_d(Y, a, Pinf, Pstar, T, QQ, H, z, kalman_tol=1e-10, diffuse_kalman_tol=1e-6,
                     presample=0, data_index=None):
     """Diffuse stage of the filter (``kalman_filter_d.m`` / ``missing_observations_kalman_filter_d.m``).

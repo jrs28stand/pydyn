@@ -181,9 +181,9 @@ def test_matlab_variables(runs, case):
 
 
 def test_refused_field_is_refused_not_wrong(tmp_path):
-    """oo_.dr.fuu is filled by Dynare at order 2 and not by pydyn: reading it is a refusal, never a wrong value."""
-    (tmp_path / "e.mod").write_text((REF / "rbc_oo_o2.mod").read_text() + "\nzz = oo_.dr.fuu;\n")
-    with pytest.raises(ResultsError, match="fuu"):
+    """oo_.dr.g_0 is filled by Dynare at order 3 and not by pydyn: reading it is a refusal, never a wrong value."""
+    (tmp_path / "e.mod").write_text((REF / "rbc_oo_o3.mod").read_text() + "\nzz = oo_.dr.g_0;\n")
+    with pytest.raises(ResultsError, match="g_0"):
         pydyn.dynare(tmp_path / "e.mod")
 
 
