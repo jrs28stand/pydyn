@@ -8,6 +8,11 @@ parameter vectors or long runs. Library code is not changed; anomalies are catal
 2. `pydyn/obc_filter.py`, `occbin_filter.py`, `occbin_estimation.py`: failure causes of news trial points (`solver.causes`, `failure_info()`), `est.last_failure`, extra text in `est.last_info` (code stays 304/313), opt-in `est.obc_horizon_max`. Tests: `tests/test_obc_horizon_cause.py`.
 3. docs/OBC_ESTIMATION.md 2d: size of knife-edge differences. 4. `driver_or_unexpected:TypeError ... 'part'` was a driver bug (`record_warnings` passed `part` twice), fixed.
 
+## Approx-class study (second task; branch obc-soak)
+Harness `soak/approx/` (study.py E|F, analyze.py, nkm60.py, classify.py, gen.py, models.py, chunk.sh `E:550 F:500`), results in `soak/approx/results/{E,F}.jsonl`, nkm60.json,
+state in `soak/approx/state/`; write-up in docs/OBC_ESTIMATION.md ("Approx-class constraints"). Resume: `soak/approx/chunk.sh E:550` (E stopped at task 2316, F at 1014) then `python3 soak/approx/analyze.py`.
+Library: `obc_formulation` (auto|lcp|regime|hybrid), `pydyn.obc.HybridOBC`; tests/test_obc_formulation.py. Defaults unchanged.
+
 ## State / how to resume
 
 Everything lives under `soak/` of branch `obc-soak` (pushed to `wip/obc-soak`): `soak/run.py` (driver), `soak/lib.py`, `soak/part_a.py` (parts A and B),

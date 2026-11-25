@@ -430,3 +430,86 @@ Test: `test_orientation_rule_7` (5 cases) in tests/test_obc.py. All existing cla
 ## State / next step
 - Done: tasks 0 to 4 (merge, OccBin speed-up verified bit for bit, `minnorm` alias, singular-solve guard, orientation test). OBC + OccBin tests: 221 passed, 2 skipped.
 - Next: nothing outstanding from this task list. Not done: JDyn side of any of this; `RegimeOBC.single_spell_solutions`, `obc_lk.py` and filter linearisation solves not guarded against singular blocks.
+
+## Approx-class constraints: LCP, regime and hybrid formulations (study of branch obc-soak)
+Question: for constraints that `constraint_objects` classifies as `complementarity` with `approx > 0` (the equation's two versions differ by a term the
+condition lacks; accepted up to 5%), the news LCP can land on a different regime sequence than OccBin's iteration. Should the regime formulation
+(`RegimeOBC`, one wedge per switched equation, accepted by OccBin's own bind/relax test in levels) be the default for them?  **No default was changed.**
+
+**Option.** `obc_formulation` = `'auto'` (default: LCP when every constraint is one complementary pair, else regime; unchanged behaviour), `'lcp'`, `'regime'`,
+`'hybrid'` in `Occbin.simulate(..., obc_method='news', obc_formulation=...)` and `OccbinEstimation.obc_formulation` (also `NewsFilterSolver(formulation=)`).
+`lcp` and `hybrid` raise `ValueError` for models with a constraint that is not one complementary pair. `hybrid` = `pydyn.obc.HybridOBC`: solve the LCP by the
+active-set solver only (no MILP), take the implied regime sequence, evaluate OccBin's bind/relax test in levels along the **whole anticipated path** (horizon plus
+check-ahead rows, not only the current period), accept if it passes, else fall back to the regime solver for that period. Tests: `tests/test_obc_formulation.py` (6).
+
+**Models** (`soak/approx/gen.py`, `models.py`; discrepancy d = relative residual of the entry/exit test from `constraint_objects`). Controls and approx variants
+are built from the exact test models zlb / zlb2 / nk_occ by multiplying the rate equation of both regimes by `(1 + km*m)` (a policy shock, as in NKM) while the condition
+stays `bind rn < rbar`; the mismatch is (steady-state gap 0.008) x km x m, d = 0.008 km, with km chosen for each d. d = 0 controls use an additive shock `r = rn + km m`.
+`zlbm_*` (one constraint, d = 0, 1e-3, 1e-2, 5e-2 -> 0, 0.00100, 0.0100, 0.0499), `zlb2m_*` (same plus a second, exact, constraint), `nkocc_*` (nk_occ; gap and
+parameter ranges limited d to 0.00100, 0.00426, 0.00747). Estimated: phi, rho, sige, sigm; observables pi, r (R); 150 periods of OccBin-simulated data (first seed
+for which OccBin solves every period). Existing models: NKM, NKMS (`occest_nkm/nkms`, d = 0.0057, `NKM_*` also 0.0057) are the only approx models in the repository;
+borrcon, obc_zlb, zlb2, occ_borrcon, nk_occ, plt_occ, simple1_occ, fig_occ1, occ1 are exact `complementarity`; bf, bf_ppf, obc_sw_zlb are `multi_equation`;
+rbc_occbin, occ_rbc* , occest_rbc contain an `inconsistent` constraint (relative residual 1).
+
+**Estimation, log posterior at prior draws, perturbations and 13-point line sweeps (`soak/approx/study.py E`; pairs = both OccBin and the method finite).**
+Difference = |log posterior(method) - log posterior(OccBin)|; "diff" means above 1e-9 relative.
+| model | d | method | pairs | diff | >0.12 | >0.4 | max | only-OccBin-finite | only-method-finite | both fail | median s / eval (method; OccBin) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| nkm | .0057 | lcp / regime / hybrid | 457 | 27 (5.9%) / 0 / 0 | 14 / 0 / 0 | 2 / 0 / 0 | 0.73 / 0 / 0 | 1 / 1 / 1 | 0 / 0 / 0 | 142 | .034 / .043 / .047; .135 |
+| nkms | .0057 | lcp / regime / hybrid | 563 | 28 (5.0%) / 0 / 0 | 6 / 0 / 0 | 0 | 0.22 / 0 / 0 | 0 | 0 | 37 | same; .131 |
+| nkocc_1e-3 | .0010 | lcp / regime / hybrid | 569 | 20 (3.5%) / 0 / 0 | 15 / 0 / 0 | 5 / 0 / 0 | 0.85 / 0 / 0 | 0 | 0 | 31 | .034 / .043 / .046; .119 |
+| nkocc_5e-3 | .0043 | lcp / regime / hybrid | 558 | 17 (3.0%) / 0 / 0 | 13 / 0 / 0 | 0 | 0.39 / 0 / 0 | 0 | 0 | 42 | same; .117 |
+| nkocc_1.5e-2 | .0075 | lcp / regime / hybrid | 559 | 91 (16.3%) / 0 / 2 (0.4%) | 75 / 0 / 0 | 2 / 0 / 0 | 0.59 / 0 / 5e-4 | 0 | 5 / 0 / 0 | 36 / 41 / 41 | same; .119 |
+| zlbm_0 (exact) | 0 | lcp / regime / hybrid | 574 | 0 / 0 / 0 | 0 | 0 | 0 | 0 | 0 | 26 | .035 / .044 / .048; .125 |
+| zlbm_1e-3 | .0010 | lcp / regime / hybrid | 418 | 57 (13.6%) / 0 / 0 | 56 | 56 | 4e4 / 0 / 0 | 0 | 146 / 0 / 0 | 36 / 182 / 182 | .034 / .044 / .047; .121 |
+| zlbm_1e-2 | .0100 | lcp / regime / hybrid | 439 | 208 (47%) / 0 / 2 (0.5%) | 194 / 0 / 1 | 185 / 0 / 1 | 572 / 0 / 1.44 | 0 / 0 / 1 | 109 / 0 / 3 | 52 / 161 / 158 | same; .122 |
+| zlbm_5e-2 | .0499 | lcp / regime / hybrid | 365 | 365 (100%) / 0 / 4 (1.2%) of 338 | 365 / 0 / 1 | 365 / 0 / 1 | 305 / 0 / 0.97 | 0 / 0 / 27 | 207 / 0 / 49 | 28 / 235 / 186 | same; .121 |
+| zlb2m_0 (exact) | 0 | all | 557 | 0 | 0 | 0 | 0 | 0 | 0 | 43 | .041 / .053 / .056; .163 |
+| zlb2m_1e-3 | .0010 | lcp / regime / hybrid | 298 | 93 (31%) / 0 / 2 (0.7%) | 90 / 0 / 2 | 86 / 0 / 2 | 9e3 / 0 / 1.31 | 0 / 0 / 0 | 266 / 0 / 4 | 36 / 302 / 298 | .039 / .084 / .096; .221 |
+| zlb2m_1e-2 | .0100 | lcp / regime / hybrid | 248 | 232 (94%) / 0 / 11 (4.7%) of 233 | 224 / 0 / 6 | 210 / 0 / 3 | 101 / 0 / 1.27 | 0 / 0 / 15 | 308 / 0 / 76 | 44 / 352 / 276 | .038 / .078 / .089; .208 |
+| zlb2m_5e-2 | .0499 | lcp / regime / hybrid | 130 | 130 (100%) / 0 / 1 of 29 | 130 / 0 / 1 | 130 / 0 / 0 | 198 / 0 / 0.37 | 0 / 0 / 101 | 447 / 0 / 83 | 23 / 470 / 387 | .040 / .067 / .075; .187 |
+Reading it. (i) **Regime formulation: 0 pairs above rounding in all 13 models** (about 5,900 pairs), and it has exactly OccBin's failure set (both fail = same points; where
+OccBin fails the regime solver fails too: the 'both fail' column is OccBin's own cycling or non-convergence, which grows from ~5% at d=0 to 50-80% at the perturbed
+parameter vectors of the d >= 1e-3 models with a second regime change, so those models yield fewer pairs). (ii) **LCP**: disagreement share grows with d on the zlb models
+(0 -> 14% -> 47% -> 100% for d = 0, .1%, 1%, 5%, one constraint) and is 3-6% (NKM, nk_occ-based, d about 0.1-0.7%); most differences are large when they occur (a
+different regime sequence moves the log posterior by the Jacobian term: >0.4 in 40-100% of the differing pairs at the zlb models), and the LCP returns finite values where OccBin
+fails (only-method-finite; those values are not comparable to OccBin's). The frequency scales with d and with how often the constraint binds near the data, the size does not
+(a switch, not a smooth bias). (iii) **Hybrid**: equals OccBin to rounding in the 7 models with d <= 0.0075 except 2 pairs at nkocc_1.5e-2 (5e-4), and disagrees in 0.5-5% of pairs
+at the zlb models with d >= 1e-3 (max 1.4), plus loses finite values (only-OccBin-finite: up to 101 of 130 at zlb2m_5e-2): it can be worse than the regime solver.
+**NKM 60-point check** (`soak/approx/nkm60.py`; the logged part A points with |occbin - news| > 0.12 on nkm/nkms, 81 vectors since the sweep logs more than the 60 of the first soak
+note): LCP differs from OccBin at all 81 (up to 1.54); **the regime formulation and the hybrid bring all 81 to rounding (max 0)**.
+
+**Why the hybrid still disagrees (one example, `zlbm_1e-2`, soak task 693, point 12).** OccBin and the regime solver have the constraint binding in periods [11, 13]; the hybrid
+in [10, 11, 13]. At period 10 the hybrid took the LCP regime sequence, it passes OccBin's bind/relax test along the whole path (the check is exactly that
+test, 302 of 303 LCP paths were accepted), so it is a valid piecewise-linear solution of that period too, yet not the one OccBin's guess-and-verify iteration lands
+on: the inversion filter reproduces the observables with a different shock and regime, and the log posterior moves by 1.44 (the shock Jacobian). So *passing the
+levels test does not make the path the one OccBin returns* (multiplicity near regime changes: the test has more than one fixed point, OccBin's iteration picks one by its guess
+order, the LCP active set another), and the difference then changes the state history of later periods. Not shown by an independent enumeration of all solutions (only the two found).
+
+**Simulation (`soak/approx/study.py F`, 1000-period segments carried on from the OccBin path, shock scale 0.4-1.2 sd, parameter perturbations 0-3%; per segment).**
+| model | d | segments | LCP: segs diff (max, periods with different regime) | regime | hybrid | time per 1000 periods: lcp / regime / hybrid / OccBin |
+|---|---|---|---|---|---|---|
+| nkm (NKM_0_std_shocks) | .0057 | 90 | 11 (6e-5; 14) | 0 | 0 | .01 / .04 / .04 / .26 |
+| nkm_est | .0057 | 120 | n/a: not LCP-class for 30 (guard raises) / 9 (1e-4) | 0 | 0 | same |
+| nkocc_1e-3 / 5e-3 / 1.5e-2 | .0010 / .0043 / .0075 | 150 / 148 / 85 | 8 / 11 / 25 (6e-6 / 2e-5 / 6e-5) | 0 / 1 / 1 (1.4e-5, 2.3e-5) | 1 / 2 / 2 | .01-.02 / .04 / .04 / .25 |
+| zlbm_0 / zlb2m_0 (exact) | 0 | 150 / 150 | 0 | 0 | 0 | .01 / .03 / .04 / .24 |
+| zlbm_1e-3 / 1e-2 / 5e-2 | .001 / .01 / .05 | 149 / 84 / 59 | 19 / 24 / 45 (1e-4 / 1.2e-3 / 4.6e-3) | 0 | 0 / 8 / 7 | .01 / .04 / .04 / .25 |
+| zlb2m_1e-3 / 1e-2 / 5e-2 | .001 / .01 / .05 | 142 / 37 / 13 (LCP 7) | 13 / 9 / 5 (1e-4 / 9e-4 / 3e-3) | 0 | 4 / 2 / 2 | .01 / .04-.08 / .05 / .3 |
+Simulation differences are small (<= 5e-3 in levels) and rare (a few periods per segment), because in simulation the same shocks are fed to both solvers and a
+different regime at a knife edge moves the path only a little; in estimation (inversion) the shock is solved for, so a regime change shifts the log posterior by a Jacobian term.
+The regime formulation equals OccBin in simulation except 2 periods in nkocc_5e-3/1.5e-2 (2e-5; the OccBin sequence not reproduced at a knife-edge of 1e-6, as in 2d).
+
+**Cost.** Per evaluation (150 periods): LCP 0.034 s, regime 0.043 s (x1.3; 0.078 at zlb2m, x2), hybrid 0.047 s, OccBin 0.12-0.2 s. Per period in simulation: LCP 0.01 ms-scale,
+regime 0.04 s per 1000 periods (x3-4 the LCP), hybrid about the same as regime (the extra LCP solve is repaid by skipping the regime search when accepted). The whole-estimation
+cost ratio is therefore 1.3x (estimation, one constraint) to 2x, and 3-4x in simulation. **Exact class (`zlbm_0`, `zlb2m_0`, the Dynare test models): `auto` is unchanged; bit-identical log posterior
+(1528.0919683511543) and simulation sum against 3fdb1e7; time 0.976 vs 1.033 s per 30 evaluations (noise), simulation 0.011 vs 0.014 s per 1000 periods.**
+
+**Recommendation (for the user to decide; nothing changed).** For approx-class models use the **regime formulation** in estimation: it is OccBin-identical in every one of
+13 models and ~5,900 pairs (including the 81 NKM points), whereas the LCP differs in 3-100% of pairs with a share growing with d, at +30% (to 2x) cost; also in simulation if the
+OccBin path matters at the 1e-5 level, at 3-4x cost. Do not make `hybrid` the default: it is never better than regime and loses finite points at d >= 1%. A safe rule: default
+`regime` when `approx > 0` (above a small threshold such as 1e-4 given the knife-edge level), `lcp` for exact classes (unchanged).
+
+**Not established.** Pairs are 130-570 per model, not thousands, because OccBin itself fails at 5-80% of the perturbed vectors on the d >= 1e-3 zlb models; no model with
+d in (0.0075, 0.05) and a non-zlb structure; constraints of the `multi_equation` classes (only regime applies) not studied; the multiplicity explanation rests on one
+replayed example, not on enumerating solutions; "current-period-only" levels test for the hybrid was not measured (the whole path was used); exact-class timing is from one machine, 5 repeats;
+whether OccBin's non-convergence at those points means the regime formulation's finiteness is the same event for every cause (the failure sets are identical, causes not tabulated).
