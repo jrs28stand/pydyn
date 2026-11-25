@@ -106,5 +106,53 @@
  "optimal_policy/Ramsey/ramsey_ex_aux": {
   "class": "Dynare quirk",
   "note": "the steady-state file's find_c uses csolve with tolerance 1e-8: Dynare's stored dr.ys differs from pydyn's by 4e-8 (the same helper run by pydyn's interpreter converges to a different point inside the tolerance); dr.ghx/ghu/gx/Gy/autocorr follow at 4e-8"
+ },
+ "deterministic_simulations/rbc_det5": {
+  "class": "Dynare quirk",
+  "note": "both programs stop their Newton iteration at the default tolerance dynatol.f=1e-5: the stored oo_.deterministic_simulation.error is 6.9e-6 in Dynare and 5.7e-6 in pydyn (rbc_det4: 2.9e-6 vs 1.7e-6), so each path is exact only to that residual and two such paths differ by 5e-5 (2.5e-6 relative to the scale 20); the protocol's 1e-6 for perfect-foresight paths is tighter than the solvers' own stop"
+ },
+ "solve_algo_12_14/simul_backward_12": {
+  "class": "Dynare quirk (probable)",
+  "note": "simul_backward with solve_algo=12: Dynare's own stored result differs from Dynare's own simul_backward_reference run (same model, default solver) by 4.8e-4, so the paths are solver-tolerance-limited; pydyn's differs from Dynare's 12 run by 1.9e-4 (1.4e-6 relative to 138); the residuals at the two points were not evaluated"
+ },
+ "solve_algo_12_14/simul_backward_14": {
+  "class": "Dynare quirk (probable)",
+  "note": "simul_backward with solve_algo=14: Dynare's own stored result differs from Dynare's own simul_backward_reference run (same model, default solver) by 4.8e-4, so the paths are solver-tolerance-limited; pydyn's differs from Dynare's 14 run by 1.9e-4 (1.4e-6 relative to 138); the residuals at the two points were not evaluated"
+ },
+ "solve_algo_12_14/purely_backward_12": {
+  "class": "Dynare quirk (probable)",
+  "note": "purely_backward with solve_algo=12: Dynare's own stored result differs from Dynare's own purely_backward_reference run (same model, default solver) by 4.9e-5 and pydyn's differs from that reference by about the same (4.9e-5), i.e. the paths are solver-tolerance-limited; pydyn's differs from Dynare's 12 run by 2.6e-5 (about 4e-5 relative to a scale of 1.1); residuals at the points were not evaluated"
+ },
+ "solve_algo_12_14/purely_backward_14": {
+  "class": "Dynare quirk (probable)",
+  "note": "purely_backward with solve_algo=14: Dynare's own stored result differs from Dynare's own purely_backward_reference run (same model, default solver) by 4.9e-5 and pydyn's differs from that reference by about the same (4.9e-5), i.e. the paths are solver-tolerance-limited; pydyn's differs from Dynare's 14 run by 2.6e-5 (about 4e-5 relative to a scale of 1.1); residuals at the points were not evaluated"
+ },
+ "solve_algo_12_14/purely_forward_12": {
+  "class": "Dynare quirk (probable)",
+  "note": "purely_forward with solve_algo=12: Dynare's own stored result differs from Dynare's own purely_forward_reference run (same model, default solver) by 1.1e-4 and pydyn's differs from that reference by about the same (1.1e-4), i.e. the paths are solver-tolerance-limited; pydyn's differs from Dynare's 12 run by 4.6e-5 (about 4e-5 relative to a scale of 1.1); residuals at the points were not evaluated"
+ },
+ "solve_algo_12_14/purely_forward_14": {
+  "class": "Dynare quirk (probable)",
+  "note": "purely_forward with solve_algo=14: Dynare's own stored result differs from Dynare's own purely_forward_reference run (same model, default solver) by 1.1e-4 and pydyn's differs from that reference by about the same (1.1e-4), i.e. the paths are solver-tolerance-limited; pydyn's differs from Dynare's 14 run by 4.6e-5 (about 4e-5 relative to a scale of 1.1); residuals at the points were not evaluated"
+ },
+ "external_function/extfun_in_mlv": {
+  "class": "Dynare quirk (numerical derivative scheme)",
+  "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
+ },
+ "external_function/first_deriv_given": {
+  "class": "Dynare quirk (numerical derivative scheme)",
+  "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
+ },
+ "external_function/first_deriv_given_dll": {
+  "class": "Dynare quirk (numerical derivative scheme)",
+  "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
+ },
+ "external_function/no_deriv_given": {
+  "class": "Dynare quirk (numerical derivative scheme)",
+  "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
+ },
+ "external_function/no_deriv_given_dll": {
+  "class": "Dynare quirk (numerical derivative scheme)",
+  "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
  }
 }
