@@ -15,18 +15,23 @@ from scipy.io import loadmat
 import pydyn
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "ident"
-CASES = ["BrockMirman", "fl1", "cgg_criteria_differ", "as2007_QT"]
+CASES = ["BrockMirman", "fl1", "cgg_criteria_differ", "as2007_QT", "forward_looking_varobs_x", "au5", "au6", "kim2",
+         "fs2000_corr_pt"]
+# (file name stem) -> paths whose values depend on a basis chosen arbitrarily by an SVD of a rank-deficient problem
+BASIS_PATHS = {"fs2000_corr_pt": ("ide_minimal_point.dMINIMAL", "ide_minimal_point.norm_dMINIMAL")}
+# kim2: the Hessian is singular to 1e-17 and Octave's A\\B then returns an LU solution of rounding noise
+SINGULAR_PATHS = {"kim2": ("si_dMOMENTSnorm", "si_dREDUCEDFORMnorm", "si_dDYNAMICnorm")}
 NOISE = {"cond", "Mco", "Pco", "V"}
 NOISE_PATH = {"ide_hess_point.indno"}
 
 
-def _cmp(a, b, path, bad, tol):
+def _cmp(a, b, path, bad, tol, skip=()):
     if hasattr(a, "_fieldnames"):
         assert set(a._fieldnames) == set(b._fieldnames), (path, a._fieldnames, b._fieldnames)
         for k in a._fieldnames:
-            _cmp(getattr(a, k), getattr(b, k), f"{path}.{k}", bad, tol)
+            _cmp(getattr(a, k), getattr(b, k), f"{path}.{k}", bad, tol, skip)
         return
-    if path.rsplit(".", 1)[-1] in NOISE or path in NOISE_PATH:
+    if path.rsplit(".", 1)[-1] in NOISE or path in NOISE_PATH or path in skip or path.rsplit(".", 1)[-1] in skip:
         return
     a = a.toarray() if hasattr(a, "toarray") else a
     b = b.toarray() if hasattr(b, "toarray") else b
@@ -34,7 +39,7 @@ def _cmp(a, b, path, bad, tol):
     if a.dtype == object:
         assert a.shape == b.shape, path
         for i, (x, y) in enumerate(zip(a.ravel(order="F"), b.ravel(order="F"))):
-            _cmp(x, y, f"{path}{{{i}}}", bad, tol)
+            _cmp(x, y, f"{path}{{{i}}}", bad, tol, skip)
         return
     if a.dtype.kind in "US":
         return
@@ -54,6 +59,10 @@ def _cmp(a, b, path, bad, tol):
         bad.append(f"{path}: maxdiff {np.max(np.abs(a - b)):.3g} (scale {scale:.3g})")
 
 
+def _dense(x):
+    return x.toarray() if hasattr(x, "toarray") else np.asarray(x)
+
+
 @pytest.mark.parametrize("case", CASES)
 def test_against_octave(case, tmp_path):
     for f in list(REF.glob("*.inc")) + list(REF.glob("*_QT.mat")):
@@ -63,26 +72,41 @@ def test_against_octave(case, tmp_path):
         warnings.simplefilter("ignore")
         pydyn.dynare(tmp_path / f"{case}.mod")
     out = tmp_path / case / "identification"
-    ref = loadmat(REF / f"{case}_identif.mat", struct_as_record=False)
-    files = sorted(out.glob("*_identif.mat"))
-    assert files, "no identification files written"
-    assert (out / f"{case}_identif.mat").exists()
-    for f in files:
-        got = loadmat(f, struct_as_record=False)
+    skip = BASIS_PATHS.get(case, ()) + SINGULAR_PATHS.get(case, ())
+    stems = [f"{case}_identif"] + [p.stem for p in sorted(REF.glob(f"{case}_identif_*.mat"))]
+    for stem in stems:
+        ref = loadmat(REF / f"{stem}.mat", struct_as_record=False)
+        got = loadmat(out / f"{stem}.mat", struct_as_record=False)
         bad = []
         for k in ref:
             if k.startswith("__") or k == "store_options_ident":
                 continue
-            assert k in got, f"{f.name}: {k} missing"
-            _cmp(ref[k][0, 0], got[k][0, 0], k, bad, 1e-8)
-        assert not bad, f"{f.name}: " + "; ".join(bad)
+            assert k in got, f"{stem}: {k} missing"
+            if k.startswith("STO_"):
+                a, b = _dense(ref[k]), _dense(got[k])
+                assert a.shape == b.shape, (stem, k, a.shape, b.shape)
+                if a.dtype != object:
+                    assert np.max(np.abs(a - b)) <= 1e-7 * max(1.0, np.max(np.abs(a))), (stem, k)
+                continue
+            _cmp(ref[k][0, 0], got[k][0, 0], k, bad, 1e-7 if case in ("kim2", "au5", "au6") else 1e-8, skip)
+        assert not bad, f"{stem}: " + "; ".join(bad)
+    # the label file holds the point variables (Dynare writes it before the Monte Carlo ones are appended)
+    labelled = [p for p in out.glob(f"{case}_*_identif.mat")]
+    assert labelled
+    if case == "fs2000_corr_pt":
+        # a non-minimal system: dMINIMAL is only defined up to an orthogonal change of the basis of the uncontrollable
+        # states; the singular values of its parameter block do not depend on it
+        r = loadmat(REF / f"{stems[0]}.mat", struct_as_record=False)["ide_minimal_point"][0, 0].dMINIMAL
+        g = loadmat(out / f"{stems[0]}.mat", struct_as_record=False)["ide_minimal_point"][0, 0].dMINIMAL
+        npar = 4
+        assert np.allclose(np.linalg.svd(r[:, :npar], compute_uv=False), np.linalg.svd(g[:, :npar], compute_uv=False),
+                           rtol=1e-8, atol=1e-10)
 
 
 REFUSE = [
-    ("identification(order=2);", "order"),
-    ("identification(prior_mc=5);", "prior_mc"),
-    ("identification(advanced=1);", "advanced"),
-    ("identification(analytic_derivation_mode=-1);", "analytic_derivation_mode"),
+    ("identification(no_identification_strength,order=2);", "order"),
+    ("identification(no_identification_strength,prior_mc=5,checks_via_subsets=1);", "checks_via_subsets"),
+    ("identification(no_identification_strength,analytic_derivation_mode=-1);", "analytic_derivation_mode"),
 ]
 
 

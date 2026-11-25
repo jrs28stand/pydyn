@@ -23,6 +23,7 @@ differences), unit roots (the diffuse filter), the brute-force collinearity sear
 from __future__ import annotations
 
 import itertools
+import warnings
 
 import numpy as np
 from scipy import linalg
@@ -67,6 +68,15 @@ def vnorm(A):
     return np.sqrt(np.sum(np.abs(np.asarray(A, float)) ** 2, axis=0))
 
 
+def vnorm_matlab(A):
+    """``identification.vnorm(A)`` exactly: the norm runs along the first non-singleton dimension, so a single-row matrix
+    gives one number (the norm of the row), not the norms of its columns."""
+    A = np.asarray(A, float)
+    if A.shape[0] == 1 and A.shape[1] > 1:
+        return np.sqrt(np.sum(np.abs(A) ** 2))
+    return vnorm(A)
+
+
 # Octave's X\y (a rank-deficient least-squares problem) calls LAPACK dgelsd with rcond = -1, i.e. dlamch("E") = eps/2
 def cosn(H):
     """Multiple cosine of the first column of ``H`` with the span of the others (``cosn.m``)."""
@@ -85,19 +95,19 @@ def cosn(H):
 
 
 def mldivide(A, B):
-    """Octave's ``A\\B`` for a square ``A``: an LU solve, or the minimum-norm least-squares solution (LAPACK dgelsd) where
-    ``rcond(A) < eps`` (Octave warns that the matrix is singular and falls back to ``lssolve``)."""
+    """Octave's ``A\\B`` for a square ``A``: an LU solve (LAPACK dgetrf/dgetrs), also where the matrix is singular to
+    machine precision (Octave then only warns); the minimum-norm least-squares solution (dgelsd) only where dgetrf meets an
+    exactly zero pivot."""
     A = np.asarray(A, float)
     B = np.asarray(B, float)
     if A.size == 0:
         return np.zeros((A.shape[1],) + B.shape[1:])
-    try:
-        rc = 1.0 / (np.linalg.norm(A, 1) * np.linalg.norm(np.linalg.inv(A), 1))
-    except np.linalg.LinAlgError:
-        rc = 0.0
-    if not rc >= EPS:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        lu, piv = linalg.lu_factor(A, check_finite=False)
+    if np.any(np.diag(lu) == 0) or not np.all(np.isfinite(lu)):
         return linalg.lstsq(A, B, cond=EPS / 2, lapack_driver="gelsd")[0]
-    return np.linalg.solve(A, B)
+    return linalg.lu_solve((lu, piv), B)
 
 
 def minv(A):
@@ -138,7 +148,7 @@ def checks(X, test_flag, tol_rank, tol_sv, param_nbr=None):
     nonzero = (lambda ind: Xpar[np.ix_(ind, ind)]) if test_flag == 3 else (lambda ind: Xpar[:, ind])
     Xn = nonzero(ind1)
     M = Xn if Xrest.shape[1] == 0 else np.hstack([Xn, Xrest])
-    ee1 = linalg.svd(M, full_matrices=False, lapack_driver="gesvd")[2].T
+    ee1 = linalg.svd(M, full_matrices=M.shape[0] < M.shape[1], lapack_driver="gesvd")[2].T
     condX = cond(M)
     rankX = rank(X, tol_rank)
     icheck = False
@@ -154,7 +164,7 @@ def checks(X, test_flag, tol_rank, tol_sv, param_nbr=None):
     if icheck:
         Xn = nonzero(ind1)
         M = Xn if Xrest.shape[1] == 0 else np.hstack([Xn, Xrest])
-        ee1 = linalg.svd(M, full_matrices=False, lapack_driver="gesvd")[2].T
+        ee1 = linalg.svd(M, full_matrices=M.shape[0] < M.shape[1], lapack_driver="gesvd")[2].T
         condX = cond(M)
         rankX = rank(X, tol_rank)
     ind0 = np.zeros(param_nbr)
@@ -523,6 +533,103 @@ class _SingularF(Exception):
     caller then fails (dsge_likelihood indexes a cell with it) and identification.analysis falls back to simulation."""
 
 
+def univariate_asymptotic_hessian(Y, T, R, Q, Z, DT, DYss, DOm, Pstar, kalman_tol=1e-10, riccati_tol=1e-6, presample=0):
+    """The ``asymptotic`` Hessian of ``univariate_kalman_filter.m`` (no measurement error), with
+    ``univariate_computeDLIK``/``univariate_computeDstate`` and ``univariate_kalman_filter_ss``: the filter dsge_likelihood.m
+    switches to where the prediction error covariance is singular.  Same arguments and result as
+    :func:`asymptotic_hessian`."""
+    mm, k = T.shape[0], DT.shape[2]
+    Z = np.asarray(Z, int)
+    pp = len(Z)
+    QQ = R @ Q @ R.T
+    nobs = Y.shape[1]
+    a = np.zeros(mm)
+    P = Pstar.copy()
+    DP = np.zeros((mm, mm, k))
+    for i in range(k):
+        rhs = DT[:, :, i] @ Pstar @ T.T + T @ Pstar @ DT[:, :, i].T + DOm[:, :, i]
+        DP[:, :, i] = _lyap(T, rhs)
+    Da = np.zeros((mm, k))
+    Hess = np.zeros((k, k))
+    DDK = np.zeros((mm, pp, k))
+    DDF = np.zeros((pp, k))
+    K = np.full((mm, pp), np.nan)
+    oldK = np.full(mm * pp, np.inf)
+
+    def dstate(a, P, Da, DP, notsteady):
+        Da1 = np.zeros_like(Da)
+        DP1 = np.zeros_like(DP)
+        for j in range(k):
+            Da1[:, j] = T @ Da[:, j] + DT[:, :, j] @ a
+            if notsteady:
+                DP1[:, :, j] = T @ DP[:, :, j] @ T.T + DT[:, :, j] @ P @ T.T + T @ P @ DT[:, :, j].T
+            else:
+                DP1 = DP
+        if notsteady:
+            DP1 = DP1 + DOm
+        return Da1, DP1
+
+    notsteady, t = True, 0
+    while notsteady and t < nobs:
+        P = (P + P.T) / 2
+        for i in range(pp):
+            z = Z[i]
+            pe = Y[i, t] - a[z]
+            PZ = P[:, z].copy()
+            Fi = PZ[z]
+            if Fi > kalman_tol:
+                Ki = PZ / Fi
+                K[:, i] = Ki
+                Dv = -Da[z, :] - DYss[z, :]
+                DF = DP[z, z, :].copy()
+                DK = DP[:, z, :] / Fi - np.outer(PZ, DF) / Fi ** 2
+                DDK[:, i, :] = DK
+                DDF[i, :] = DF
+                Hesst = np.outer(DF, DF) / Fi ** 2 + 2 * np.outer(Dv, Dv) / Fi
+                Da = Da + DK * pe + np.outer(Ki, Dv)
+                DP1 = np.zeros_like(DP)
+                for j in range(k):
+                    DP1[:, :, j] = DP[:, :, j] - np.outer(DP[:, z, j], Ki) - np.outer(PZ, DK[:, j])
+                DP = DP1
+                if t + 1 > presample:
+                    Hess = Hess + Hesst
+                a = a + Ki * pe
+                P = P - np.outer(PZ, Ki)
+                P = (P + P.T) / 2
+            elif Fi < 0:
+                raise NotImplementedError("identification: negative prediction error variance in the univariate filter")
+        Da, DP = dstate(a, P, Da, DP, True)
+        a = T @ a
+        P = T @ P @ T.T + QQ
+        Kv = K.ravel(order="F")
+        diff = np.abs(Kv - oldK)
+        notsteady = bool(np.any(~np.isnan(diff)) and np.nanmax(diff) > riccati_tol)
+        oldK = Kv.copy()
+        t += 1
+    Hess = -Hess / 2
+    if t < nobs:
+        H2 = np.zeros((k, k))
+        for tt in range(t, nobs):
+            PP = P.copy()
+            for i in range(pp):
+                z = Z[i]
+                pe = Y[i, tt] - a[z]
+                PPZ = PP[:, z].copy()
+                Fi = PPZ[z]
+                if Fi > kalman_tol:
+                    Ki = PPZ / Fi
+                    a = a + Ki * pe
+                    PP = PP - np.outer(PPZ, Ki)
+                    Dv = -Da[z, :] - DYss[z, :]
+                    DK, DF = DDK[:, i, :], DDF[i, :]
+                    H2 = H2 + np.outer(DF, DF) / Fi ** 2 + 2 * np.outer(Dv, Dv) / Fi
+                    Da = Da + DK * pe + np.outer(Ki, Dv)
+            Da, _ = dstate(a, P, Da, DP, False)
+            a = T @ a
+        Hess = Hess + (-H2 / 2)
+    return Hess
+
+
 def _rcond(F):
     """Octave's rcond (reciprocal condition number in the 1-norm)."""
     try:
@@ -686,7 +793,7 @@ def _norm_rows(M):
 
 def _svd_SV(M, totparam_nbr):
     """``[~,S,V] = svd(M,0)`` padded as analysis.m does."""
-    U, s, Vh = linalg.svd(M, full_matrices=False, lapack_driver="gesvd")
+    U, s, Vh = linalg.svd(M, full_matrices=M.shape[0] < M.shape[1], lapack_driver="gesvd")
     V = Vh.T
     S = np.concatenate([s, np.zeros(M.shape[1] - M.shape[0])]) if M.shape[0] < M.shape[1] else s
     if totparam_nbr > 8:
@@ -713,6 +820,41 @@ def _remove_problematic(idx, problparset):
     return idx
 
 
+def bruteforce(J, max_dim_cova_group, tol_deriv):
+    """``identification.bruteforce``: for every parameter the group of up to ``max_dim_cova_group`` other parameters whose
+    Jacobian columns best reproduce its column (multiple cosine, largest over all groups of that size). Returns the cell
+    ``pars`` (totparam x max_dim, 1-based indices, NaN for no collinearity, [] if not reached) and ``cosnJ``."""
+    tot = J.shape[1]
+    cosnJ = np.zeros((tot, max_dim_cova_group))
+    pars = np.empty((tot, max_dim_cova_group), dtype=object)
+    for r in range(tot):
+        for c in range(max_dim_cova_group):
+            pars[r, c] = np.zeros((0, 0))
+    for ll in range(1, max_dim_cova_group + 1):
+        for ii in range(tot):
+            tmp = [k for k in range(tot) if k != ii]
+            combos = list(itertools.combinations(tmp, ll))
+            c2 = np.array([cosn(np.hstack([J[:, [ii]], J[:, list(cm)]])) for cm in combos])
+            cosnJ[ii, ll - 1] = np.max(c2)
+            if cosnJ[ii, ll - 1] > tol_deriv:
+                if ll > 1 and (cosnJ[ii, ll - 1] - cosnJ[ii, ll - 2]) < tol_deriv:
+                    pars[ii, ll - 1] = np.concatenate([np.ravel(pars[ii, ll - 2]), [np.nan]]).reshape(1, -1)
+                    cosnJ[ii, ll - 1] = cosnJ[ii, ll - 2]
+                else:
+                    k = int(np.flatnonzero(c2 == np.max(c2))[0])
+                    pars[ii, ll - 1] = (np.array(combos[k], float) + 1).reshape(1, -1)
+            else:
+                pars[ii, ll - 1] = np.full((1, ll), np.nan)
+    return pars, cosnJ
+
+
+def _grow(a, n):
+    """MATLAB/Octave growth by assignment: a larger array with zeros in the new rows."""
+    if a.shape[0] >= n:
+        return a
+    return np.vstack([a, np.zeros((n - a.shape[0], a.shape[1]))])
+
+
 class IdentificationStop(Exception):
     """The model does not solve at the point tested (Dynare prints a message and returns)."""
 
@@ -722,7 +864,7 @@ class Identification:
     model parameters), the solution and the Jacobians at a point (:meth:`analysis`) and the statement itself
     (:meth:`run_point`)."""
 
-    def __init__(self, model, raw_options, estimation=None, rng=None):
+    def __init__(self, model, raw_options, estimation=None, rng=None, no_priors=False):
         self.rng = rng
         from .estimation import Estimation
         self.model = model
@@ -731,7 +873,8 @@ class Identification:
         if not self.varobs:
             raise NotImplementedError("identification: the model has no varobs statement (Dynare stops there too)")
         self.est = estimation
-        if estimation is None and any(st.get("statementName") == "estimated_params" for st in model.statements):
+        if estimation is None and not no_priors and any(st.get("statementName") == "estimated_params"
+                                                        for st in model.statements):
             self.est = _IdentEstimation(model, order=1)
         self.prior_exist = self.est is not None
         n_exo = model.n_exo
@@ -762,15 +905,46 @@ class Identification:
         self.indvobs = inv[[model._ie[v] for v in self.varobs]]
         self.nstatic, self.nspred = cnt["nstatic"], cnt["npred"] + cnt["nboth"]
         self.opts = identification_options(self.raw, self.totparam_nbr, self.prior_exist)
+        self._pers = {}
+        self._set_derivation_mode(default_mode_set="analytic_derivation_mode" in self.raw)
+        if self.prior_exist and not self.est.prior.is_bayesian:
+            self.opts["prior_mc"] = 1                 # only bounds in estimated_params: one single point
         if self.opts["order"] != 1:
             raise NotImplementedError("identification: orders 2 and 3 are not ported (order=1 only)")
-        if self.opts["analytic_derivation_mode"] not in (0, 1):
-            raise NotImplementedError("identification: analytic_derivation_mode -1 and -2 (finite differences) are not "
-                                      "ported; the analytic modes 0 and 1 are")
-        if self.opts["prior_mc"] > 1:
-            raise NotImplementedError("identification: prior Monte Carlo (prior_mc > 1) is not ported yet")
-        if self.opts["advanced"]:
-            raise NotImplementedError("identification: advanced=1 (brute-force collinearity analysis) is not ported yet")
+        if self.opts["analytic_derivation_mode"] not in (0, 1, -2):
+            raise NotImplementedError("identification: analytic_derivation_mode -1 (finite differences of all Jacobians) "
+                                      "is not ported; the modes 0, 1 and -2 are")
+
+    def _set_derivation_mode(self, default_mode_set):
+        """dynare_estimation_init.m: where the steady-state file changes parameter values (or leaves some NaN) at the
+        estimated parameters varied by 1 %, Dynare re-sets ``analytic_derivation_mode`` to -2 (numerical derivatives of
+        the steady state and the dynamic Jacobian) unless the statement gives the mode itself."""
+        from .steady import steady_state, SteadyStateError
+        o = self.opts
+        if not o["analytic_derivation"] or o["order"] != 1:
+            return
+        m = self.model
+        if self.prior_exist:
+            if len(self.indpmodel) == 0:
+                return
+            x0 = np.array(self.est.x0, float)
+            pvec = np.array(self.est.calibration(x0)["params"], float)
+            pvec[self.indpmodel] *= 1.01
+        else:
+            pvec = np.array(m.params, float) * 1.01
+        try:
+            _, pp = steady_state(m, pvec)
+        except (SteadyStateError, NotImplementedError):
+            return
+        pp = np.asarray(pp, float)
+        with np.errstate(invalid="ignore"):
+            diff = pp - pvec
+        if np.any(diff != 0):                                 # NaN differences count, as find() does
+            if not default_mode_set:
+                o["analytic_derivation_mode"] = -2
+                self.messages_init = ["The steadystate file changed the values of parameters or left some NaN: the "
+                                      "derivatives of the Jacobian and steady state are computed numerically "
+                                      "(analytic_derivation_mode = -2)"]
 
     # ---------------------------------------------------------------------------------------- parameter vectors
     def calibration(self):
@@ -820,10 +994,13 @@ class Identification:
                 pp = np.asarray(pp, float)
                 if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(pp))):
                     raise SteadyStateError("steady state or parameters are not finite")
-                if np.any((pp != pvec) & ~(np.isnan(pp) & np.isnan(pvec))):
-                    raise NotImplementedError("identification: the steady-state file changes parameter values; Dynare then "
-                                              "switches to numerical derivatives (analytic_derivation_mode=-2), not ported")
-                d = perturbation_params_derivs(m, self.indpmodel, self.indpstderr, self.indpcorr, ys=ys, params=pp)
+                numerical = self.opts["analytic_derivation_mode"] == -2
+                if not numerical and np.any((pp != pvec) & ~(np.isnan(pp) & np.isnan(pvec))):
+                    raise NotImplementedError("identification: the steady-state file changes parameter values although "
+                                              "analytic_derivation_mode is 0 or 1 (Dynare's analytic derivatives are then "
+                                              "wrong); use analytic_derivation_mode=-2")
+                d = perturbation_params_derivs(m, self.indpmodel, self.indpstderr, self.indpcorr, ys=ys, params=pp,
+                                               numerical=numerical)
             except (SteadyStateError, BlanchardKahnError) as exc:
                 raise IdentificationStop(str(exc)) from None
             except ParamsDerivsError as exc:
@@ -853,45 +1030,54 @@ class Identification:
         MOMENTS, dMOMENTS = J["MOMENTS"], J["dMOMENTS"]
         dSPECTRUM = J["dSPECTRUM"]
         ind_dMOMENTS = ind_dSPECTRUM = ind_dMINIMAL = ind_dREDUCEDFORM = None
-        if not o["no_identification_moments"]:
-            if np.any(np.isnan(MOMENTS)):
-                raise ValueError("There are NaN's in the theoretical moments.")
-            ind_dMOMENTS = _rows_above(dMOMENTS, tol_deriv)
-        if not o["no_identification_spectrum"]:
-            ind_dSPECTRUM = _rows_above(dSPECTRUM, tol_deriv)
-        if not o["no_identification_minimal"] and dMINIMAL is not None:
-            ind_dMINIMAL = _rows_above(dMINIMAL, tol_deriv)
-        if err["identification_moments"] and err["identification_minimal"] and err["identification_spectrum"]:
-            raise ValueError("identification_analyis: Stationarity condition(s) failed")
-        if not o["no_identification_moments"] and not err["identification_moments"]:
-            opts_local = dict(o)
-            while len(ind_dMOMENTS) < tot and nlags < 10:
-                messages.append("The number of moments with non-zero derivative is smaller than the number of parameters\n"
-                                f"Try increasing ar = {nlags + 1}")
-                nlags += 1
-                opts_local.update(no_identification_minimal=1, no_identification_spectrum=1, ar=nlags)
-                Jl = get_jacobians(self.model, ghx, ghu, sol["ys"], sol["pp"], sol["Sigma"], sol["derivs"], self.indvobs,
-                                   self.nstatic, self.nspred, self.nsc, opts_local)
-                MOMENTS, dMOMENTS = Jl["MOMENTS"], Jl["dMOMENTS"]
+        if not init:
+            # persistent indices of the first call (analysis.m): in a Monte Carlo loop the thresholds could give
+            # vectors of different length
+            ind_dMOMENTS, ind_dREDUCEDFORM, ind_dDYNAMIC = (self._pers.get(k) for k in
+                                                            ("moments", "reducedform", "dynamic"))
+            if not o["no_identification_moments"] and ind_dMOMENTS is None:
+                raise ValueError("identification: no stored indices of the first analysis")
+        if init:
+            if not o["no_identification_moments"]:
+                if np.any(np.isnan(MOMENTS)):
+                    raise ValueError("There are NaN's in the theoretical moments.")
                 ind_dMOMENTS = _rows_above(dMOMENTS, tol_deriv)
-            if len(ind_dMOMENTS) < tot:
-                messages.append("WARNING: Order condition for dMOMENTS failed: There are not enough moments and too many "
-                                "parameters.\n         Skip identification analysis based on moments.\n"
-                                "         Skip identification strength analysis.")
-                err["identification_moments"] = 1
-                err["identification_strength"] = 1
-        if not o["no_identification_minimal"] and not err["identification_minimal"]:
-            if len(ind_dMINIMAL) < dMINIMAL.shape[1]:
-                messages.append("WARNING: Order condition for dMINIMAL failed: There are too many parameters or too few "
-                                "observable variables.\n         Skip identification analysis based on minimal state "
-                                "space system.")
-                err["identification_minimal"] = 1
-        if err["identification_moments"] and err["identification_minimal"] and err["identification_spectrum"]:
-            raise ValueError("identification_analyis: Order condition(s) failed")
+            if not o["no_identification_spectrum"]:
+                ind_dSPECTRUM = _rows_above(dSPECTRUM, tol_deriv)
+            if not o["no_identification_minimal"] and dMINIMAL is not None:
+                ind_dMINIMAL = _rows_above(dMINIMAL, tol_deriv)
+            if err["identification_moments"] and err["identification_minimal"] and err["identification_spectrum"]:
+                raise ValueError("identification_analyis: Stationarity condition(s) failed")
+            if not o["no_identification_moments"] and not err["identification_moments"]:
+                opts_local = dict(o)
+                while len(ind_dMOMENTS) < tot and nlags < 10:
+                    messages.append("The number of moments with non-zero derivative is smaller than the number of parameters\n"
+                                    f"Try increasing ar = {nlags + 1}")
+                    nlags += 1
+                    opts_local.update(no_identification_minimal=1, no_identification_spectrum=1, ar=nlags)
+                    Jl = get_jacobians(self.model, ghx, ghu, sol["ys"], sol["pp"], sol["Sigma"], sol["derivs"], self.indvobs,
+                                       self.nstatic, self.nspred, self.nsc, opts_local)
+                    MOMENTS, dMOMENTS = Jl["MOMENTS"], Jl["dMOMENTS"]
+                    ind_dMOMENTS = _rows_above(dMOMENTS, tol_deriv)
+                if len(ind_dMOMENTS) < tot:
+                    messages.append("WARNING: Order condition for dMOMENTS failed: There are not enough moments and too many "
+                                    "parameters.\n         Skip identification analysis based on moments.\n"
+                                    "         Skip identification strength analysis.")
+                    err["identification_moments"] = 1
+                    err["identification_strength"] = 1
+            if not o["no_identification_minimal"] and not err["identification_minimal"]:
+                if len(ind_dMINIMAL) < dMINIMAL.shape[1]:
+                    messages.append("WARNING: Order condition for dMINIMAL failed: There are too many parameters or too few "
+                                    "observable variables.\n         Skip identification analysis based on minimal state "
+                                    "space system.")
+                    err["identification_minimal"] = 1
+            if err["identification_moments"] and err["identification_minimal"] and err["identification_spectrum"]:
+                raise ValueError("identification_analyis: Order condition(s) failed")
         dREDUCEDFORM, dDYNAMIC = J["dREDUCEDFORM"], J["dDYNAMIC"]
-        if not o["no_identification_reducedform"] and not err["identification_reducedform"]:
-            ind_dREDUCEDFORM = _rows_above(dREDUCEDFORM, tol_deriv)
-        ind_dDYNAMIC = _rows_above(dDYNAMIC, tol_deriv)
+        if init:
+            if not o["no_identification_reducedform"] and not err["identification_reducedform"]:
+                ind_dREDUCEDFORM = _rows_above(dREDUCEDFORM, tol_deriv)
+            ind_dDYNAMIC = _rows_above(dDYNAMIC, tol_deriv)
         DYNAMIC = J["DYNAMIC"][ind_dDYNAMIC]
         si_dDYNAMIC = dDYNAMIC[ind_dDYNAMIC, :]
         REDUCEDFORM, si_dREDUCEDFORM = J["REDUCEDFORM"], None
@@ -912,6 +1098,8 @@ class Identification:
                 ide_dynamic["si_dDYNAMICnorm"] = st["si_dDYNAMICnorm"]
                 ide_moments["si_dMOMENTSnorm"] = st["si_dMOMENTSnorm"]
                 ide_reducedform["si_dREDUCEDFORMnorm"] = st["si_dREDUCEDFORMnorm"]
+        if init:
+            self._pers = {"moments": ind_dMOMENTS, "reducedform": ind_dREDUCEDFORM, "dynamic": ind_dDYNAMIC}
         norm = o["normalize_jacobians"]
         norm_dDYNAMIC = _norm_rows(si_dDYNAMIC) if norm else 1
         ide_dynamic.update(ind_dDYNAMIC=ind_dDYNAMIC + 1, norm_dDYNAMIC=norm_dDYNAMIC, si_dDYNAMIC=si_dDYNAMIC,
@@ -924,6 +1112,10 @@ class Identification:
             norm_dMOM = _norm_rows(si_dMOMENTS) if norm else 1
             ide_moments.update(ind_dMOMENTS=ind_dMOMENTS + 1, norm_dMOMENTS=norm_dMOM, si_dMOMENTS=si_dMOMENTS,
                                dMOMENTS=dMOMENTS, MOMENTS=MOMENTS)
+            if o["advanced"]:
+                # no normalisation: the OLS in bruteforce is very sensitive to norm_dMOMENTS
+                ide_moments["pars"], ide_moments["cosndMOMENTS"] = bruteforce(dMOMENTS[ind_dMOMENTS, :],
+                                                                              o["max_dim_cova_group"], tol_deriv)
             S, V = _svd_SV(dMOMENTS[ind_dMOMENTS, :], tot)
             ide_moments["S"], ide_moments["V"] = S, V
         if not o["no_identification_minimal"] and not err["identification_minimal"]:
@@ -1070,7 +1262,11 @@ class Identification:
         try:
             Hess = asymptotic_hessian(Y, T, R, Sigma, Z, DT, DYss, DOm, Pstar)
         except _SingularF:
-            return None
+            # kalman_filter.m returns an infinite likelihood: dsge_likelihood switches to the univariate filter
+            if not self.raw.get("use_univariate_filters_if_singularity_is_detected", 1):
+                raise NotImplementedError("identification: singular prediction error covariance with "
+                                          "use_univariate_filters_if_singularity_is_detected=0 (not ported)") from None
+            Hess = univariate_asymptotic_hessian(Y, T, R, Sigma, Z, DT, DYss, DOm, Pstar)
         return -Hess
 
     def _restrict_dr(self):
@@ -1173,24 +1369,274 @@ class Identification:
                 "ind_dDYNAMIC": ind_dDYNAMIC, "si_dDYNAMIC": si_dDYNAMIC, "si_dDYNAMICnorm": si_dDYNAMICnorm,
                 "si_dMOMENTSnorm": si_dMOMENTSnorm, "si_dREDUCEDFORMnorm": si_dREDUCEDFORMnorm}
 
-    def run_point(self):
-        """run.m for ``prior_mc = 1``: the analysis at the statement's ``parameter_set`` and the variables Dynare saves
-        (``ide_moments_point`` ...).  Returns ``(label, variables)`` or None where the model does not solve."""
+    # ---------------------------------------------------------------------------------------- prior draws
+    def _prior(self):
+        """``dprior(bayestopt_, options_.prior_trunc, options_ident.prior_range)``: the prior, its truncation bounds and
+        the prior used for sampling (uniform on the supports for ``prior_range``)."""
+        import copy
+        e = self.est
+        lb, ub = e.prior.bounds(float(self.raw.get("prior_trunc", 1e-10)))
+        pr = e.prior
+        if self.opts["prior_range"]:
+            pr = copy.copy(pr)
+            pr.shape = np.full(len(pr.shape), 5, int)
+        return pr, lb, ub
+
+    def prior_draw(self):
+        """``Prior.draw()``: uniform and normal priors replay Octave's streams (``rand``/``randn``); the others cannot
+        (Octave's ``gamrnd``/``betarnd`` use ``randg``, which Dynare does not seed) and come from a fixed numpy generator."""
+        from .samplers import prior_draw
+        if self.rng is None:
+            raise NotImplementedError("identification: prior draws need a random stream")
+        pr, lb, ub = self._prior()
+        if not hasattr(self, "_gen"):
+            self._gen = np.random.default_rng(0)
+        if np.any(np.isin(pr.shape, (1, 2, 4, 6, 8))):
+            self._not_replayed = True
+        return prior_draw(pr, lb, ub, self.rng, self._gen)
+
+    # ---------------------------------------------------------------------------------------- the statement
+    def run(self):
+        """``identification.run`` for the statement: the point analysis (with up to 50 prior draws where the model does not
+        solve there) and, for ``prior_mc > 1``, the Monte Carlo analysis over prior draws.  Returns None where the model does
+        not solve; otherwise a dict with ``label``, ``point`` (the variables of ``<name>_identif.mat`` and of the file named
+        by the label), ``extra`` (variables appended to ``<name>_identif.mat``), ``sto`` (the ``<name>_identif_<k>.mat``
+        files, as a list of dicts), ``clear_sto`` (delete earlier ones) and ``messages``."""
+        o = self.opts
         theta, label = self.point()
+        messages = []
+        res = None
         try:
             res = self.analysis(theta, init=True)
         except IdentificationStop as exc:
+            messages.append(f"The model does not solve for {label}: {exc}")
             if self.prior_exist and self.est.prior.is_bayesian:
-                raise NotImplementedError("identification: the model does not solve at the starting point and Dynare would "
-                                          "try up to 50 random draws from the prior (not ported): " + str(exc)) from None
+                for _ in range(50):
+                    theta = self.prior_draw()
+                    try:
+                        res = self.analysis(theta, init=True)
+                        break
+                    except IdentificationStop:
+                        continue
+                if res is not None:
+                    label = "Random_prior_params"
+        if res is None:
             return None
+        messages += res["messages"]
         res["ide_hess"]["params"] = np.asarray(theta, float)
         store = {k: v for k, v in self.opts.items()}
-        variables = {"ide_moments_point": res["ide_moments"], "ide_spectrum_point": res["ide_spectrum"],
-                     "ide_minimal_point": res["ide_minimal"], "ide_hess_point": res["ide_hess"],
-                     "ide_reducedform_point": res["ide_reducedform"], "ide_dynamic_point": res["ide_dynamic"],
-                     "store_options_ident": store}
-        return label, variables, res["messages"]
+        point = {"ide_moments_point": res["ide_moments"], "ide_spectrum_point": res["ide_spectrum"],
+                 "ide_minimal_point": res["ide_minimal"], "ide_hess_point": res["ide_hess"],
+                 "ide_reducedform_point": res["ide_reducedform"], "ide_dynamic_point": res["ide_dynamic"],
+                 "store_options_ident": store}
+        out = {"label": label, "point": point, "extra": {}, "sto": [], "clear_sto": False, "messages": messages}
+        if o["prior_mc"] > 1:
+            self._monte_carlo(out, res)
+        return out
+
+    def run_point(self):
+        """Compatibility: ``(label, variables, messages)`` of :meth:`run` for a single point."""
+        out = self.run()
+        if out is None:
+            return None
+        return out["label"], out["point"], out["messages"]
+
+    def _monte_carlo(self, out, point_res):
+        o = self.opts
+        S = o["prior_mc"]
+        tot, modn = self.totparam_nbr, self.modparam_nbr
+        if o["checks_via_subsets"]:
+            raise NotImplementedError("identification: prior_mc > 1 with checks_via_subsets=1 (Dynare's own Monte Carlo "
+                                      "loop stops there, as checks_via_subsets does not return cond, ind0, ...)")
+        if o["no_identification_reducedform"]:
+            raise NotImplementedError("identification: prior_mc > 1 with no_identification_reducedform (Dynare's "
+                                      "Monte Carlo loop needs the reduced form criterion)")
+        if o["gsa_sample_file"]:
+            raise NotImplementedError("identification: external prior samples are not supported")
+        opts_ident = dict(o)
+        opts_mc = dict(o, advanced=0)
+        no_rf, no_mom = opts_mc["no_identification_reducedform"], opts_mc["no_identification_moments"]
+        no_spec, no_min = opts_mc["no_identification_spectrum"], opts_mc["no_identification_minimal"]
+        # Dynare sets options_ident.checks_via_subsets = 0 after copying options_MC: the later reruns use it, the draws not
+        opts_rerun = dict(opts_ident, checks_via_subsets=0)
+        iteration = run_index = 0
+        pdraws = np.zeros((S, tot))
+        sto = {}
+        files = []
+        max_runs = None
+        n_attempts = 0
+        max_attempts = max(1000, 200 * S)
+        self.opts = opts_mc
+        try:
+            while iteration < S:
+                n_attempts += 1
+                if n_attempts > max_attempts:
+                    raise ValueError("identification: no admissible parameter draw (the model does not solve) in "
+                                     f"{max_attempts} attempts")
+                theta = self.prior_draw()
+                try:
+                    res = self.analysis(theta, init=False)
+                except IdentificationStop:
+                    continue
+                ide_dyn, ide_rf, ide_mom = res["ide_dynamic"], res["ide_reducedform"], res["ide_moments"]
+                ide_spec, ide_min, err = res["ide_spectrum"], res["ide_minimal"], res["error_indicator"]
+                if iteration == 0:
+                    out["clear_sto"] = True
+                    rows_rf = ide_rf["si_dREDUCEDFORM"].shape[0]
+                    max_runs = min(S, int(np.ceil(1e7 / (rows_rf * tot) / 8)))
+                    sto["si_dDYNAMIC"] = np.zeros((ide_dyn["si_dDYNAMIC"].shape[0], modn, max_runs))
+                    sto["DYNAMIC"] = np.zeros((len(ide_dyn["DYNAMIC"]), S))
+                    sto["IDE_DYNAMIC"] = self._ide_store(ide_dyn, S, modn, ind="ind_dDYNAMIC")
+                    sto["si_dREDUCEDFORM"] = np.zeros((rows_rf, tot, max_runs))
+                    sto["REDUCEDFORM"] = np.zeros((len(ide_rf["REDUCEDFORM"]), S))
+                    sto["IDE_REDUCEDFORM"] = self._ide_store(ide_rf, S, tot, ind="ind_dREDUCEDFORM")
+                    if not no_mom:
+                        if not ide_mom:
+                            raise NotImplementedError("identification: no moment criterion at the first draw")
+                        sto["si_dMOMENTS"] = np.zeros((ide_mom["si_dMOMENTS"].shape[0], tot, max_runs))
+                        sto["MOMENTS"] = np.zeros((len(ide_mom["MOMENTS"]), S))
+                        sto["IDE_MOMENTS"] = self._ide_store(ide_mom, S, tot, ind="ind_dMOMENTS")
+                        k8 = min(8, tot)
+                        sto["IDE_MOMENTS"]["S"] = np.zeros((S, k8))
+                        sto["IDE_MOMENTS"]["V"] = np.zeros((S, tot, k8))
+                    if not no_spec:
+                        if err["identification_spectrum"] or not ide_spec:
+                            raise NotImplementedError("identification: no spectrum criterion at the first draw")
+                        sto["dSPECTRUM"] = np.zeros((ide_spec["dSPECTRUM"].shape[0], ide_spec["dSPECTRUM"].shape[1],
+                                                     max_runs))
+                    if not no_min:
+                        if err["identification_minimal"] or not ide_min or not ide_min.get("minimal_state_space"):
+                            sto["dMINIMAL"] = None    # Dynare: STO_dMINIMAL = {} (saved as an empty cell)
+                        else:
+                            sto["dMINIMAL"] = np.zeros((ide_min["dMINIMAL"].shape[0], ide_min["dMINIMAL"].shape[1],
+                                                        max_runs))
+                iteration += 1
+                run_index += 1
+                pdraws[iteration - 1, :] = theta
+                it = iteration - 1
+                sto["DYNAMIC"][:, it] = ide_dyn["DYNAMIC"]
+                sto["si_dDYNAMIC"][:, :, run_index - 1] = ide_dyn["si_dDYNAMIC"]
+                self._ide_put(sto["IDE_DYNAMIC"], it, ide_dyn)
+                sto["REDUCEDFORM"][:, it] = ide_rf["REDUCEDFORM"]
+                sto["si_dREDUCEDFORM"][:, :, run_index - 1] = ide_rf["si_dREDUCEDFORM"]
+                self._ide_put(sto["IDE_REDUCEDFORM"], it, ide_rf)
+                if not no_mom:
+                    sto["MOMENTS"][:, it] = ide_mom["MOMENTS"]
+                    sto["si_dMOMENTS"][:, :, run_index - 1] = ide_mom["si_dMOMENTS"]
+                    self._ide_put(sto["IDE_MOMENTS"], it, ide_mom)
+                    sto["IDE_MOMENTS"]["S"][it, :] = np.ravel(ide_mom["S"])
+                    sto["IDE_MOMENTS"]["V"][it, :, :] = ide_mom["V"]
+                if not no_spec:
+                    sto["dSPECTRUM"][:, :, run_index - 1] = ide_spec["dSPECTRUM"]
+                if not no_min and not err["identification_minimal"]:
+                    if sto["dMINIMAL"] is None:
+                        raise NotImplementedError("identification: the minimal system is available at a later draw only "
+                                                  "(Dynare's Monte Carlo loop fails there)")
+                    sto["dMINIMAL"][:, :, run_index - 1] = ide_min["dMINIMAL"]
+                if run_index == max_runs or iteration == S:
+                    n = run_index
+                    f = {"STO_si_dDYNAMIC": sto["si_dDYNAMIC"][:, :, :n].copy(),
+                         "STO_si_dREDUCEDFORM": sto["si_dREDUCEDFORM"][:, :, :n].copy()}
+                    if not no_mom:
+                        f["STO_si_dMOMENTS"] = sto["si_dMOMENTS"][:, :, :n].copy()
+                    if not no_spec:
+                        f["STO_dSPECTRUM"] = sto["dSPECTRUM"][:, :, :n].copy()
+                    if not no_min:
+                        f["STO_dMINIMAL"] = (sto["dMINIMAL"][:, :, :n].copy() if sto["dMINIMAL"] is not None
+                                             else np.empty((0, 0), dtype=object))
+                    files.append(f)
+                    for k in ("si_dDYNAMIC", "si_dREDUCEDFORM", "si_dMOMENTS", "dSPECTRUM", "dMINIMAL"):
+                        if sto.get(k) is not None:
+                            sto[k][:] = 0
+                    run_index = 0
+        finally:
+            self.opts = opts_ident
+        out["sto"] = files
+        # --- normalisation by the standard deviation over the sample
+        def std0(a, axis):
+            return np.std(a, axis=axis, ddof=1) if a.shape[axis] > 1 else np.zeros(a.shape[1 - axis])
+        norm_dyn = std0(sto["DYNAMIC"], 1)
+        norm_rf = std0(sto["REDUCEDFORM"], 1)
+        norm_mom = std0(sto["MOMENTS"], 1) if not no_mom else None
+        normaliz1 = std0(pdraws, 0)
+        nsc = self.nsc
+        iter_ = 0
+        res_dyn = res_rf = res_mom = None
+        with np.errstate(all="ignore"):
+            for f in files:
+                runs = [f["STO_si_dDYNAMIC"].shape[2], f["STO_si_dREDUCEDFORM"].shape[2]]
+                if not no_mom:
+                    runs.append(f["STO_si_dMOMENTS"].shape[2])
+                if not no_spec:
+                    runs.append(f["STO_dSPECTRUM"].shape[2])
+                if not no_min and f["STO_dMINIMAL"].ndim == 3:
+                    runs.append(f["STO_dMINIMAL"].shape[2])
+                nr = max(runs)
+                # Dynare re-creates these NaN arrays for every file; assignments beyond the rows grow them with zeros
+                res_dyn = np.full((nr, modn), np.nan)
+                res_rf = np.full((nr, tot), np.nan)
+                res_mom = np.full((nr, tot), np.nan) if not no_mom else None
+                for irun in range(nr):
+                    iter_ += 1
+                    res_dyn = _grow(res_dyn, iter_)
+                    res_rf = _grow(res_rf, iter_)
+                    A = f["STO_si_dDYNAMIC"][:, :, irun] if irun < runs[0] else None
+                    if A is not None:
+                        res_dyn[iter_ - 1, :] = vnorm_matlab(A / norm_dyn[:, None]) * normaliz1[nsc:]
+                    if irun < runs[1]:
+                        res_rf[iter_ - 1, :] = vnorm_matlab(f["STO_si_dREDUCEDFORM"][:, :, irun] / norm_rf[:, None]) * normaliz1
+                    if not no_mom:
+                        res_mom = _grow(res_mom, iter_)
+                        if irun < f["STO_si_dMOMENTS"].shape[2]:
+                            res_mom[iter_ - 1, :] = vnorm_matlab(f["STO_si_dMOMENTS"][:, :, irun] / norm_mom[:, None]) * normaliz1
+        sto["IDE_DYNAMIC"]["si_dDYNAMICnorm"] = res_dyn
+        extra = {"pdraws": pdraws, "IDE_DYNAMIC": sto["IDE_DYNAMIC"], "STO_DYNAMIC": sto["DYNAMIC"]}
+        sto["IDE_REDUCEDFORM"]["si_dREDUCEDFORMnorm"] = res_rf
+        extra.update(IDE_REDUCEDFORM=sto["IDE_REDUCEDFORM"], STO_REDUCEDFORM=sto["REDUCEDFORM"])
+        if not no_mom:
+            sto["IDE_MOMENTS"]["si_dMOMENTSnorm"] = res_mom
+            extra.update(IDE_MOMENTS=sto["IDE_MOMENTS"], STO_MOMENTS=sto["MOMENTS"])
+        out["extra"].update(extra)
+        if getattr(self, "_not_replayed", False):
+            out["messages"].append("prior draws of gamma, beta, inverse gamma and Weibull priors come from numpy's generator: "
+                                   "Octave's gamrnd/betarnd use randg, which Dynare does not seed, so they cannot be replayed")
+        # --- advanced: the draws with the highest and the lowest condition number, or the rank deficient ones
+        if o["advanced"]:
+            ino = np.ravel(sto["IDE_MOMENTS"]["ino"]) if not no_mom else np.zeros(S)
+            jcrit = np.flatnonzero(ino)
+            if len(jcrit) < S:
+                if len(jcrit) == 0:
+                    cond = np.ravel(sto["IDE_MOMENTS"]["cond"])
+                    jmax, jmin = int(np.argmax(cond)), int(np.argmin(cond))
+                    self.opts = opts_rerun
+                    try:
+                        for tag, j in (("max", jmax), ("min", jmin)):
+                            r = self.analysis(pdraws[j, :], init=True)
+                            out["extra"].update({f"ide_hess_{tag}": r["ide_hess"], f"ide_moments_{tag}": r["ide_moments"],
+                                                 f"ide_spectrum_{tag}": r["ide_spectrum"],
+                                                 f"ide_minimal_{tag}": r["ide_minimal"],
+                                                 f"ide_reducedform_{tag}": r["ide_reducedform"],
+                                                 f"ide_dynamic_{tag}": r["ide_dynamic"], f"j{tag}": float(j + 1)})
+                    finally:
+                        self.opts = opts_ident
+                else:
+                    raise NotImplementedError("identification: advanced=1 with rank deficient draws in the Monte Carlo "
+                                              "sample (struct arrays of the analyses) is not ported")
+
+    @staticmethod
+    def _ide_store(ide, S, ncol, ind):
+        d = {ind: ide[ind], "ino": np.zeros((S, ncol if ind == "ind_dDYNAMIC" else 1)), "ind0": np.zeros((S, ncol)), "jweak": np.zeros((S, ncol)),
+             "jweak_pair": np.zeros((S, ncol * (ncol + 1) // 2)), "cond": np.zeros((S, 1)), "Mco": np.zeros((S, ncol))}
+        return d
+
+    @staticmethod
+    def _ide_put(store, it, ide):
+        store["cond"][it, 0] = ide["cond"]
+        store["ino"][it, 0] = ide["ino"]
+        store["ind0"][it, :] = np.ravel(ide["ind0"])
+        store["jweak"][it, :] = np.ravel(ide["jweak"])
+        store["jweak_pair"][it, :] = np.ravel(ide["jweak_pair"])
+        store["Mco"][it, :] = np.ravel(ide["Mco"])
 
     def _checks_via_subsets(self, dDYNAMIC, ide_dynamic, ide_reducedform, ide_moments, ide_spectrum, ide_minimal, err):
         """``identification.checks_via_subsets``: ranks of the Jacobians and, by brute force, the parameter subsets (up to
