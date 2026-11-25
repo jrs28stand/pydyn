@@ -89,10 +89,11 @@ class NewsFilterSolver(_Solver):
     def failure_info(self):
         """The cause of the inversion filter's failure in the current period: dict(period, primary, counts, horizon, advice) or None.
         ``primary`` is ``horizon_too_short`` if any trial point of the period failed for that reason (the actionable one), else the
-        most frequent cause."""
+        most frequent cause, or ``root_search`` when no trial point failed in the solver (csolve did not converge)."""
         c = dict(self.period_causes)
         if not c:
-            return None
+            return dict(period=getattr(self, "period", None), primary="root_search", counts={}, horizon=self.horizon,
+                        advice="the root search of the period did not converge although no trial point failed in the news solver")
         primary = "horizon_too_short" if c.get("horizon_too_short") else max(c, key=c.get)
         adv = {"horizon_too_short": f"news horizon {self.horizon} too short at period {getattr(self, 'period', '?')}: try obc_horizon >= "
                                     f"{2 * self.horizon} (or set obc_horizon_max to retry with a doubled horizon)",

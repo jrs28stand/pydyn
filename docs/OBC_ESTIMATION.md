@@ -327,7 +327,7 @@ differently. Examples, each at the first differing evaluation:
 - full model, mode search from the prior mean, index 170, period 47: OccBin's spell has 9 periods and passes its own test with a margin of 9.6e-9 in period 8;
   the news spell has 8 periods and fails OccBin's test in period 8 by 8.3e-9. Difference 0.124.
 - the MCMC examples: period 66 (small, two chains), 41 and 69 (full): the same pattern (regimes differ in one period).
-The likelihood's Jacobian term depends on the regime (T, R of the period), hence a jump of 0.02-0.12 although paths and shocks agree to 1e-6 or better.
+The likelihood's Jacobian term depends on the regime (T, R of the period), hence a jump of 0.02-0.12 although paths and shocks agree to 1e-6 or better (the soak test of docs/OBC_SOAK.md, which looks much further from the modes, found larger jumps: see the note at the end of 2d).
 This is a property of the formulation on this model, not an error of either solver: on a model of the exact class (bf, tested above) there is no difference.
 
 ### 2d. Verdicts
@@ -335,6 +335,13 @@ This is a property of the formulation on this model, not an error of either solv
   0.02-0.12 because one regime decision lies within 1e-6 of OccBin's condition: 4 of 115 evaluations on the small model's mode path, 32 of the 987 finite ones on the full
   model's, 17 of 4002 in the small chains, 18 of 3002 in the full chains. Hessians agree (relative 1e-10 and 1e-12), the chains are identical draw for draw, the posterior
   means and sd identical; the small model's modes agree to 6e-6, but the full model's mode searches (which do not converge) end at different points.
+- **Size of the knife-edge differences far from the mode (OBC soak test, `docs/OBC_SOAK.md`).** The "0.02-0.12" above holds for the points visited by the mode searches and
+  chains. In the soak sweeps (prior draws, perturbations up to 2x, lines between vectors, near-bound vectors; NKM full and small, inversion filter, horizon 40), of
+  8,279 pairs with both likelihoods finite, 195 differ by more than 1e-8 (relative): 179 by more than 0.02, 60 by more than 0.12, 25 by more than 0.2, 9 by more than 0.4,
+  5 by more than 0.8, the largest 1.54 (at log posterior -1437; one pair at log posterior -8e12 differs by 1.7e6, relative 2e-7). Every one inspected is a one-period shift of a
+  regime decision (binding periods differ by one, or the same count with a shifted spell); the differences also occur at a news posterior mode (0.23, equal count, shifted
+  sequence) and at MCMC draws (0.21). So the size of a knife-edge jump is better stated as "up to about 1.5 at vectors of ordinary likelihood" than "up to 0.12".
+  bf (exact class) showed no such difference above 1e-7 (relative).
 - **Faster?** Per evaluation 6.8 to 8.3 x (median 0.034-0.037 s against 0.24-0.30 s); end to end: small model mode search 27.6 s -> 5.1 s (5.4 x, with 15 % more
   evaluations), Hessian 3.4 -> 0.4 s, 2 x 2000 draws 966 s -> 156 s (6.2 x); full model mode search 302 -> 38 s (7.9 x), 2 x 1500 draws 935 -> 128 s (7.3 x).
 - **At least as reliable?** In these runs yes: no filter failure in any chain; at all 210 trial points that the cheap checks could not decide (bf, NKM) OccBin failed too;
