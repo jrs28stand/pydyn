@@ -31,5 +31,8 @@ Repository = "https://github.com/jrs28stand/pydyn"
 [tool.setuptools]
 packages = ["pydyn"]
 
+[tool.setuptools.package-data]
+pydyn = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

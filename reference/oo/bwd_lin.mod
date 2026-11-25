@@ -1,0 +1,23 @@
+// simul_backward_model: linear model with two lags (auxiliary variable), correlated shocks, one shock with zero variance
+var y1 y2 y3;
+varexo e1 e2 e3;
+parameters a11 a12 a21 a22 b1;
+a11 = .5; a12 = .2; a21 = -.1; a22 = .6; b1 = .3;
+model(linear);
+    y1 = a11*y1(-1) + a12*y2(-1) + b1*y3(-2) + e1;
+    y2 = a21*y1(-1) + a22*y2(-1) + e2;
+    y3 = .9*y3(-1) + 0.5*y1 + e3;
+end;
+shocks;
+    var e1 = 1.0;
+    var e2 = 0.5;
+    var e3 = 0;
+    corr e1, e2 = 0.4;
+end;
+ic = dseries([1 2 3; 1.5 2.5 3.5; 0.5 1 -1], '2000Q1', {'y1'; 'y2'; 'y3'});
+[s1, flag1] = simul_backward_model(ic, 30);
+d1 = s1.data;
+endo1 = oo_.endo_simul;
+exo1 = oo_.exo_simul;
+bn1 = oo_.bnlms.shocks;
+clear s1 ic;

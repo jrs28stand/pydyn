@@ -18,6 +18,7 @@ from .occbin import Occbin, OccbinResult, OccbinError
 from . import occbin_filter
 from .occbin_estimation import OccbinEstimation
 from .nonlinear_estimation import NonlinearEstimation
+from .results import dynare, Results, ResultsError
 # the other public modules, so that ``import pydyn`` is enough to reach ``pydyn.<module>``
 # (``pydyn.simulate`` and ``pydyn.perfect_foresight`` are the functions of the same name)
 from . import (dates, dsge_var, endogenous_prior, epilogue, external, heteroskedastic, newrat, nonlinear_filters,
@@ -26,7 +27,7 @@ from . import (dates, dsge_var, endogenous_prior, epilogue, external, heterosked
 __all__ = ["run_preprocessor", "Model", "ModelError", "steady_state", "first_order", "FirstOrderSolution",
            "k_order", "simulate", "irf", "SteadyStateError", "perfect_foresight", "PerfectForesightError",
            "PerfectForesightResult", "unanticipated_shocks", "Occbin", "OccbinResult", "OccbinError", "OccbinEstimation",
-           "NonlinearEstimation",
+           "NonlinearEstimation", "dynare", "Results", "ResultsError",
            # modules
            "dates", "dsge_var", "endogenous_prior", "epilogue", "estimation", "external", "forecast", "heteroskedastic", "kalman",
            "korder", "matlab", "moments", "newrat", "nonlinear_filters", "occbin_filter", "octave_rng",

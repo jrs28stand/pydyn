@@ -59,14 +59,18 @@ class Model:
     """
 
     def __init__(self, json_dir: str | Path, functions: dict | None = None, steady_state_fn=None,
-                 cache: bool | None = None):
+                 cache: bool | None = None, run_statements: bool = True):
         """``functions`` maps names of external functions used in the model or in the
         ``steady_state_model`` block to Python callables. ``steady_state_fn`` is the Python
         counterpart of a Dynare ``_steadystate.m`` file: ``fn(model, params, exo) -> ys`` or
         ``(ys, params)``; it may raise ``SteadyStateError``. ``cache`` (default: on unless the
         environment variable PYDYN_CACHE is 0) keeps the compiled model functions in
         the user cache folder (``~/.cache/pydyn`` or ``$PYDYN_CACHE_DIR``), keyed by a hash of the JSON files,
-        so that loading the same model again skips translation and compilation."""
+        so that loading the same model again skips translation and compilation.
+
+        ``run_statements=False`` (used by ``pydyn.results.dynare``) builds the model and its empty
+        state but does not run the statements of the .mod file: the caller runs them, one at a time,
+        through ``_exec_statement`` (see ``pydyn.results``)."""
         json_dir = Path(json_dir)
         self.functions = dict(functions or {})
         self.steady_state_fn = steady_state_fn
@@ -121,6 +125,8 @@ class Model:
         self.n_exo_det = len(self.exo_det_names)
         self._ixd = {v: i for i, v in enumerate(self.exo_det_names)}
 
+        if self.n_endo == 0 and mf.get("heterogeneous_symbols"):
+            raise ModelError("heterogeneous-agent models (heterogeneity_dimension, heterogeneity= blocks) are not supported")
         info = mf["model_info"]
         lli = np.array(info["lead_lag_incidence"], dtype=int).reshape(self.n_endo, -1)
         # the preprocessor omits the lag (lead) column for models without lags (leads)
@@ -143,7 +149,9 @@ class Model:
         self.steady_state_file = mod_dir / f"{name}_steadystate.m"
         if not self.steady_state_file.exists():
             self.steady_state_file = None
-        self._run_statements()
+        self._init_state()
+        if run_statements:
+            self._run_statements()
 
     # ------------------------------------------------------------------ compilation
     def _tr_dynamic(self):
@@ -419,10 +427,8 @@ class Model:
         computations start from (and use the exogenous values of) the new content, as in Dynare."""
         (self.endval if self._endval_seen else self.initval).update(values)
 
-    def _run_statements(self):
-        """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
-        ``pydyn.matlab`` together with the Dynare statements, so that MATLAB control flow around
-        parameter assignments (``if calib == 1 ... end``) behaves as in Dynare."""
+    def _init_state(self):
+        """The state the statements of the .mod file fill (parameters NaN, no shocks, no options)."""
         self.params = np.full(len(self.param_names), np.nan)
         self.workspace: dict[str, float] = {}      # scalar MATLAB variables of the .mod file
         self.initval: dict[str, float] = {}
@@ -433,14 +439,19 @@ class Model:
         #: Dynare's M_.Correlation_matrix: set by 'corr' statements of shocks blocks only (not by
         #: 'var e, u = ...'); estimation rebuilds Sigma_e from it when standard deviations are estimated
         self.Correlation_matrix = np.eye(self.n_exo)
-        self.measurement_errors: dict[str, float] = {}
+        self.measurement_errors: dict[str, float] = {}     # M_.H diagonal: variances by observed variable
+        #: M_.H off-diagonal entries and M_.Correlation_matrix_ME (set by 'corr' statements only), keyed by the pair of
+        #: observed variables in sorted-name order
+        self.me_cov: dict[tuple, float] = {}
+        self.me_corr: dict[tuple, float] = {}
         self.occbin_constraints = []
         self.options: dict[str, dict] = {}
         #: (statement, its own options) in file order, for the statements whose options accumulate in
         #: Dynare's options_ (see pydyn.options.accumulated)
         self.options_sequence: list[tuple[str, dict]] = []
         self._options_parsed: dict[str, dict] = {}
-        self.matlab_options = matlab.Struct()      # options_.x = ... assignments (stored, not acted upon)
+        self.matlab_options = matlab.Struct()      # options_.x = ... assignments (see pydyn.options.HONOURED_MATLAB_OPTIONS)
+        self.matlab_options_log: list = []         # (index of the last Dynare statement run, options_ field, value) per assignment
         self.matlab_skipped: list = []             # MATLAB statements that were not executed: (text, kind, reason)
         self._n_surprise = 0
         self._oo: dict[str, float] = {}            # what Dynare holds in oo_.steady_state / oo_.exo_steady_state
@@ -452,6 +463,11 @@ class Model:
         #: set when MATLAB code read a numerically computed steady state: the calibration from that
         #: point on is only as accurate as the steady-state solver (Dynare's tolerance)
         self.calibration_tolerance = None
+
+    def _run_statements(self):
+        """Apply the statements of the .mod file in order.  Native MATLAB lines are interpreted by
+        ``pydyn.matlab`` together with the Dynare statements, so that MATLAB control flow around
+        parameter assignments (``if calib == 1 ... end``) behaves as in Dynare."""
         # every file goes through the session, with or without MATLAB lines: it also follows which
         # parameters and steady-state values an earlier steady/stoch_simul has changed in Dynare
         self._matlab = matlab.ModSession(self, ModelError)
@@ -575,7 +591,8 @@ class Model:
             stored = self._stmt_values[id(st)] = {}
             for i, path in enumerate(st.get("paths", [])):
                 for k, v in enumerate(path.get("values", [])):
-                    stored[(i, k)] = self._value(v["value"])
+                    # a vector (``values (xx);``) gives one value per period, as ``constrained_paths_(i,p1:p2)=xx``
+                    stored[(i, k)] = self._det_value(v["value"], int(v["period2"]) - int(v["period1"]) + 1, endo_steady=True)
         elif kind in ("forecast", "conditional_forecast", "plot_conditional_forecast"):
             pass                                   # read by pydyn.forecast.run_forecasts
         elif kind in ("native", "verbatim"):
@@ -603,13 +620,17 @@ class Model:
         self.options_sequence.append((kind, dict(opts)))
         self._options_parsed[kind] = dict(self.options[kind])
 
-    def _det_value(self, text, n):
+    def _det_value(self, text, n, endo_steady=False):
         """Value of a deterministic shock over ``n`` periods: a number, or (``values (v);``) a MATLAB
-        vector with one value per period, as Dynare's make_ex_ assigns it."""
+        vector with one value per period, as Dynare's make_ex_ assigns it.  ``endo_steady``: the names of endogenous
+        variables stand for oo_.steady_state(i) as the preprocessor writes them in conditional_forecast_paths."""
+        local = None
+        if endo_steady and hasattr(self._matlab, "endo_steady"):
+            local = {v: self._matlab.endo_steady(v) for v in self.endo_names if re.search(r"\b%s\b" % re.escape(v), str(text))}
         try:
-            return self._value(text)
+            return self._value(text, local)
         except ModelError:
-            v = self._matlab.eval_value(text, vector=True)
+            v = self._matlab.eval_value(text, local, vector=True)
             if v.size == 1:
                 return float(v[0])
             if v.size != n:
@@ -646,9 +667,13 @@ class Model:
         """One shocks block, applied in Dynare's order: reset, variances, covariances, correlations."""
         ix, S = self._ix, self.Sigma_e
         if st.get("overwrite"):
+            self.det_shocks = []                    # shocks(overwrite): M_.det_shocks = [] and the covariance matrices reset
+            self.det_shocks_exo_det = []
             S[:] = 0
             self.Correlation_matrix = np.eye(self.n_exo)
             self.measurement_errors.clear()
+            self.me_cov.clear()
+            self.me_corr.clear()
         for key, power in (("variance", 1), ("stderr", 2)):
             for d in st.get(key, []):
                 val = self._value(d[key]) ** power
@@ -658,8 +683,17 @@ class Model:
                     self.measurement_errors[d["name"]] = val
         for key in ("covariance", "correlation"):
             for d in st.get(key, []):
+                if d["name"] not in ix and d["name2"] not in ix:         # measurement errors: M_.H(i,j), Correlation_matrix_ME
+                    a, b = d["name"], d["name2"]
+                    pair = (a, b) if a <= b else (b, a)
+                    val = self._value(d[key])
+                    if key == "correlation":
+                        self.me_corr[pair] = val
+                        val *= np.sqrt(self.measurement_errors.get(a, 0.0) * self.measurement_errors.get(b, 0.0))
+                    self.me_cov[pair] = val
+                    continue
                 if d["name"] not in ix or d["name2"] not in ix:
-                    self.unhandled_statements.append("shocks: measurement-error covariance")
+                    self.unhandled_statements.append("shocks: covariance between a shock and a measurement error")
                     continue
                 i, j = ix[d["name"]], ix[d["name2"]]
                 val = self._value(d[key])
@@ -678,6 +712,50 @@ class Model:
         for key in ("skewness", "coskewness"):
             if st.get(key):
                 self.unhandled_statements.append(f"shocks: {key}")
+
+    # ------------------------------------------------------------------ measurement errors
+    def me_H(self, varobs=None) -> np.ndarray:
+        """``M_.H`` (calibrated measurement-error covariance matrix) in ``varobs`` order."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        extra = (set(self.measurement_errors) | {x for p in self.me_cov for x in p}) - set(varobs)
+        if extra:
+            raise ModelError(f"measurement error declared on non-observed variable(s) {sorted(extra)}")
+        k = {v: i for i, v in enumerate(varobs)}
+        H = np.zeros((len(varobs), len(varobs)))
+        for v, x in self.measurement_errors.items():
+            H[k[v], k[v]] = x
+        for (a, b), x in self.me_cov.items():
+            H[k[a], k[b]] = H[k[b], k[a]] = x
+        return H
+
+    def me_corr_matrix(self, varobs=None) -> np.ndarray:
+        """``M_.Correlation_matrix_ME`` in ``varobs`` order (identity but for the 'corr' statements)."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        k = {v: i for i, v in enumerate(varobs)}
+        C = np.eye(len(varobs))
+        for (a, b), x in self.me_corr.items():
+            C[k[a], k[b]] = C[k[b], k[a]] = x
+        return C
+
+    def set_me_H(self, H, varobs=None, C=None) -> None:
+        """Replace the calibrated measurement-error covariances by the matrix ``H`` (``varobs`` order)."""
+        varobs = list(self.varobs if varobs is None else varobs)
+        H = np.asarray(H, float)
+        self.measurement_errors = {v: float(H[i, i]) for i, v in enumerate(varobs) if H[i, i] != 0}
+        self.me_cov = {}
+        for i in range(len(varobs)):
+            for j in range(i):
+                if H[i, j] != 0:
+                    a, b = varobs[i], varobs[j]
+                    self.me_cov[(a, b) if a <= b else (b, a)] = float(H[i, j])
+        if C is not None:
+            C = np.asarray(C, float)
+            self.me_corr = {}
+            for i in range(len(varobs)):
+                for j in range(i):
+                    if C[i, j] != 0:
+                        a, b = varobs[i], varobs[j]
+                        self.me_corr[(a, b) if a <= b else (b, a)] = float(C[i, j])
 
     # ------------------------------------------------------------------ parameters
     def get_param(self, name: str) -> float:

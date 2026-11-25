@@ -1205,6 +1205,9 @@ def sample(est, method=None, *, replic=None, nblocks=None, mode=None, cov=None, 
               x0=x_init, drop=drop, accepted=acc, jscale=float(base), jscale_vector=np.array(js, float),
               proposal_chol=None if d is None else np.array(d), method=method, neval=neval, sampler_options=opts,
               proposal_center=xmode.copy() if method == IMH else None, rotation=V1, rotation_widths=WR)
+    # the generators of the last chain: under rng='octave' they are Dynare's global streams when the chains are done
+    # (posterior_sampler.m runs the chains one after the other, each loading its own generator state)
+    out.final_rng = chain_rand[-1] if (rng == "octave" and random is None and nblocks) else None
     if save is not None:
         _post.save_chains(save, out)
     return out

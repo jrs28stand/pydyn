@@ -19,7 +19,7 @@ def model(tmp_path):
     return make
 
 
-@pytest.mark.parametrize("expr", ["exit(3)", "quit()", "0*id(1)+1", "input()", "breakpoint()", "open", "__import__"])
+@pytest.mark.parametrize("expr", ["exit(3)", "quit()", "0*id(1)+1", "input()", "breakpoint()", "open"])
 def test_eval_expr_has_no_python_builtins(model, expr):
     with pytest.raises(NameError):
         model().eval_expr(expr)
@@ -34,3 +34,20 @@ def test_steady_state_model_cannot_call_exit(model):
     m = model("exit(3)")
     with pytest.raises(NameError):
         pydyn.steady_state(m)
+
+
+def test_numpy_warnings_inside_model_code_still_work(model):
+    import warnings
+    import numpy as np
+    from pydyn.expr import NAMESPACE
+    ns = dict(NAMESPACE, x=np.array([-1.0]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        with pytest.warns(RuntimeWarning):
+            eval("log(x)", ns)
+
+
+def test_only_warnings_can_be_imported_from_model_code(model):
+    from pydyn.expr import NAMESPACE
+    with pytest.raises(ImportError):
+        eval("__import__(x)", dict(NAMESPACE, x="os"))

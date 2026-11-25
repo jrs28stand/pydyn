@@ -45,7 +45,7 @@ automatic switch to the univariate filter when the forecast-error covariance is 
 Priors: beta, gamma, normal, inverse gamma 1 and 2, uniform, Weibull; none at all means maximum
 likelihood.
 
-Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 5 (newrat, ported), 1, 3, 7, 8, 9 (scipy equivalents),
+Mode (``Estimation.mode``): ``mode_compute`` 4 (csminwel, ported), 5 (newrat, ported), 7 (Octave fminsearch, ported), 1, 3, 8, 9 (scipy equivalents),
 0 with ``mode_file``; ``optim``, ``additional_optimizer_steps``, ``cova_compute``,
 ``use_penalized_objective_for_hessian``. When the ``.mod`` file gives no ``mode_compute`` (Dynare's
 default is 5, newrat) csminwel is used: see ``mode`` for the reasons.
@@ -72,7 +72,7 @@ once in an ``UnsupportedOptionWarning`` (display-only options excepted).
 
 Not implemented: orders above one, ``lik_init`` 4 and 5, the univariate filters with correlated
 measurement errors, calibrated measurement-error covariances, ``estimated_params_bounds``,
-``estimated_params_init(use_calibration)``, endogenous priors, prior restrictions,
+endogenous priors, prior restrictions,
 ``noconstant`` (which Dynare 7.2 itself resets), recursive estimation, the other samplers
 (DIME, online), ``mode_compute`` 2, 6, 10 and above, ``mh_recover``,
 ``load_mh_file`` as a ``.mod`` option (use ``sample(load=...)``), forecasts, posterior distributions of
@@ -90,6 +90,7 @@ import numpy as np
 from scipy import linalg, optimize
 
 from . import kalman
+from .model import ModelError
 from .perturbation import BlanchardKahnError, dr_ordering, solve_linear_re
 from .priors import Prior, PriorError
 from .steady import SteadyStateError, steady_state
@@ -971,7 +972,7 @@ _HONOURED_BY = {
                                 "smoother", "filtered_vars", "filter_step_ahead"],
 }
 #: mode_compute values: ported algorithm, scipy stand-in, or not available
-_MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"), 7: ("Nelder-Mead", "fminsearch"),
+_MODE_COMPUTE_EQUIVALENTS = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"),
                              8: ("Nelder-Mead", "Dynare's simplex routine"),
                              9: ("differential_evolution", "CMA-ES (cmaes.m)")}
 
@@ -1245,14 +1246,17 @@ class Estimation:
                               "these covariances were not set by one (e.g. 'var e, u = ...'); write them as 'corr' to keep them",
                               UserWarning, stacklevel=3)
         pp = len(self.varobs)
-        H = np.zeros((pp, pp))
-        for name, var in m.measurement_errors.items():
-            if name not in self.varobs:
-                raise EstimationError(f"measurement error on {name}, which is not an observed variable")
-            H[self.varobs.index(name), self.varobs.index(name)] = var
-        self._H0 = H
-        if any("measurement-error covariance" in s for s in m.unhandled_statements):
-            warnings.warn("calibrated measurement-error covariances are ignored")
+        try:
+            H = m.me_H(self.varobs)
+        except ModelError as exc:
+            raise EstimationError(str(exc)) from None
+        self._H0, self._corrME0 = H, m.me_corr_matrix(self.varobs)
+        # check_for_calibrated_covariances.m: the calibrated off-diagonal entries of M_.H that are not estimated are kept at
+        # their value (whenever any exists, unlike those of Sigma_e, which are only looked for when a shock correlation is
+        # estimated)
+        estimated_corrn = {frozenset(k) for _, k, _ in groups["cn"]}
+        self._calibrated_cov_ME = [(i, j) for i in range(pp) for j in range(i)
+                                   if H[i, j] != 0 and frozenset((i, j)) not in estimated_corrn]
         nz = ~np.all(S == 0, axis=0)
         nz[[k for _, k, _ in groups["vx"]]] = True
         self._Q_check = np.flatnonzero(nz)
@@ -1261,12 +1265,14 @@ class Estimation:
         self._H_check = np.flatnonzero(nz)
 
     def _apply_init_blocks(self, init):
-        """``estimated_params_init`` blocks: explicit initial values (``use_calibration`` is not supported)."""
+        """``estimated_params_init`` blocks: explicit initial values; with ``use_calibration`` the estimated parameters
+        that have none start at their calibrated values (``do_parameter_initialization.m``: the calibrated standard
+        deviation of a shock or measurement error that is 0 with an inverse gamma prior (IG1) is not used)."""
+        use_cal = False
         for st in self.model.statements:
             if st.get("statementName") != "estimated_params_init":
                 continue
-            if st.get("use_calibration_initialization") or st.get("use_calibration"):
-                raise NotImplementedError("estimated_params_init(use_calibration) is not supported")
+            use_cal = use_cal or bool(st.get("use_calibration_initialization") or st.get("use_calibration"))
             for e in st.get("params", []):
                 if "param" in e:
                     name = e["param"]
@@ -1277,13 +1283,42 @@ class Estimation:
                 if name not in self.names:
                     raise EstimationError(f"estimated_params_init: {name} is not estimated")
                 init[self.names.index(name)] = self._num(e["init_val"])
+        if use_cal:
+            m, g = self.model, self._groups
+            Q, H = np.array(m.Sigma_e, float), np.array(m.me_H(self.varobs), float)
+            C = getattr(m, "Correlation_matrix", None)
+            CH = np.array(m.me_corr_matrix(self.varobs), float)
+            calib = []
+            for _, k, _ in g["vx"]:
+                calib.append(np.sqrt(Q[k, k]))
+            for _, k, _ in g["vn"]:
+                calib.append(np.sqrt(H[k, k]))
+            for _, (k1, k2), _ in g["cx"]:
+                calib.append(C[k1, k2] if C is not None and np.shape(C) == Q.shape else np.nan)
+            for _, (k1, k2), _ in g["cn"]:
+                calib.append(CH[k1, k2])
+            for _, k, _ in g["p"]:
+                calib.append(m.params[k])
+            calib = np.array(calib, float)
+            shape = np.asarray(self.prior.shape)
+            nstd = len(g["vx"]) + len(g["vn"])
+            calib[:nstd][(calib[:nstd] == 0) & (shape[:nstd] == 4)] = np.nan   # violates the inverse gamma prior
+            if not self.prior.is_bayesian and np.any(np.isnan(init) & np.isnan(calib)):
+                raise EstimationError("When using the use_calibration option with ML, the parameters must be properly "
+                                      "initialized.")
+            fill = np.isnan(init) & ~np.isnan(calib)
+            init[fill] = calib[fill]
 
     def covariances(self, theta):
         """Structural-shock covariance matrix and measurement-error covariance matrix implied by
         ``theta`` (``set_all_parameters.m``)."""
+        return self._covariances(theta)[:2]
+
+    def _covariances(self, theta):
+        """``(Sigma_e, H, Correlation_matrix_ME)`` implied by ``theta`` (the last as ``set_all_parameters`` stores it)."""
         g = self._groups
         Q, C = self._Sigma_e0.copy(), self._corr0.copy()
-        H, CH = self._H0.copy(), np.eye(len(self.varobs))
+        H, CH = self._H0.copy(), self._corrME0.copy()
         o = 0
         for i, (_, k, _) in enumerate(g["vx"]):
             Q[k, k] = theta[o + i] ** 2
@@ -1304,7 +1339,9 @@ class Estimation:
         if g["vn"] or g["cn"]:
             sd = np.sqrt(np.diag(H))
             H = CH * np.outer(sd, sd)
-        return Q, H
+            for k1, k2 in self._calibrated_cov_ME:             # estim_params_.calibrated_covariances_ME
+                H[k1, k2] = H[k2, k1] = self._H0[k1, k2]
+        return Q, H, CH
 
     def model_params(self, theta):
         """Copy of the model's parameter vector with the estimated structural parameters set."""
@@ -1315,17 +1352,21 @@ class Estimation:
             p[k] = theta[o + i]
         return p
 
-    def calibration(self, theta) -> dict:
+    def calibration(self, theta, correlation_me=False) -> dict:
         """Calibration implied by ``theta`` as plain arrays, without touching the model:
         ``params`` (the model's parameter vector with the estimated parameters replaced; parameters
         that the steady state computes are as stored in the model: see ``state_space(theta)["params"]``
         for the values after the steady state), ``Sigma_e`` (covariance matrix of the structural
-        shocks) and ``H`` (covariance matrix of the measurement errors, in ``varobs`` order)."""
+        shocks) and ``H`` (covariance matrix of the measurement errors, in ``varobs`` order); with
+        ``correlation_me`` also ``Correlation_matrix_ME`` (Dynare's M_.Correlation_matrix_ME)."""
         theta = np.asarray(theta, float)
         if theta.shape != (self.n,):
             raise EstimationError(f"theta must have {self.n} elements (ordered as Estimation.names)")
-        Q, H = self.covariances(theta)
-        return {"params": self.model_params(theta), "Sigma_e": Q, "H": H}
+        Q, H, CH = self._covariances(theta)
+        out = {"params": self.model_params(theta), "Sigma_e": Q, "H": H}
+        if correlation_me:
+            out["Correlation_matrix_ME"] = CH
+        return out
 
     def _bk_penalty(self, theta):
         """Dynare's info code and penalty when the Blanchard-Kahn conditions fail
@@ -1509,9 +1550,13 @@ class Estimation:
         if self._groups["cx"] and not _ispd(Q[np.ix_(self._Q_check, self._Q_check)]):
             raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)",
                             43, _pd_penalty(Q[np.ix_(self._Q_check, self._Q_check)]))
-        if self._groups["cn"] and not _ispd(Hm[np.ix_(self._H_check, self._H_check)]):
+        if (self._groups["cn"] or self._calibrated_cov_ME) and not _ispd(Hm[np.ix_(self._H_check, self._H_check)]):
             raise _Rejected("covariance matrix of the measurement errors is not positive definite (info 44)",
                             44, _pd_penalty(Hm[np.ix_(self._H_check, self._H_check)]))
+        if self._calibrated_cov_ME and not _consistent_covariances(Hm):
+            pos = [(i, j) for i, j in self._calibrated_cov_ME]
+            raise _Rejected("the calibrated covariances of the measurement errors are inconsistent with their variances "
+                            "(info 72)", 72, float(sum(Hm[i, j] ** 2 for i, j in pos) * 2))
         try:
             ys, G, Hs, params = self.solve(theta)
         except SteadyStateError as exc:
@@ -1541,12 +1586,44 @@ class Estimation:
         algo = o["kalman_algo"]
         dLIK, dp, dlik = 0.0, 0, np.zeros(0)
 
+        pp_ = len(z)
+        correlated = bool(np.any(np.abs(Hm - np.diag(np.diag(Hm))) >= 1e-14))
+
         def Zmat():
-            if np.any(np.abs(Hm - np.diag(np.diag(Hm))) >= 1e-14):
-                raise _Rejected("the univariate filter with correlated measurement errors is not implemented", 50)
-            Zm = np.zeros((len(z), mm))
-            Zm[np.arange(len(z)), z] = 1.0
+            """Selection matrix and measurement-error variances of the univariate filters.  With correlated measurement
+            errors Dynare augments the state vector by the errors (Durbin-Koopman 2012, section 6.4.3): see ``aug_sys``."""
+            Zm = np.zeros((pp_, mm))
+            Zm[np.arange(pp_), z] = 1.0
+            if correlated:
+                return np.hstack([Zm, np.eye(pp_)]), np.zeros(pp_)
             return Zm, np.diag(Hm).copy()
+
+        def aug_sys(T_, QQ_):
+            """T and QQ = R Q R' of the augmented system (identity when the measurement errors are uncorrelated)."""
+            if not correlated:
+                return T_, QQ_
+            Ta = np.zeros((mm + pp_, mm + pp_))
+            Ta[:mm, :mm] = T_
+            if QQ_.ndim == 3:
+                Qa = np.zeros((mm + pp_, mm + pp_, QQ_.shape[2]))
+                Qa[:mm, :mm, :] = QQ_
+                Qa[mm:, mm:, :] = Hm[:, :, None]
+            else:
+                Qa = np.zeros((mm + pp_, mm + pp_))
+                Qa[:mm, :mm] = QQ_
+                Qa[mm:, mm:] = Hm
+            return Ta, Qa
+
+        def aug_P(P_, H_block):
+            if not correlated:
+                return P_
+            Pa = np.zeros((mm + pp_, mm + pp_))
+            Pa[:mm, :mm] = P_
+            Pa[mm:, mm:] = H_block
+            return Pa
+
+        def aug_a(a_):
+            return np.concatenate([a_, np.zeros(pp_)]) if correlated else a_
 
         if o["lik_init"] == 1:
             algo = 2 if algo == 2 else 1
@@ -1568,7 +1645,10 @@ class Estimation:
                     a = a1
             if singular or algo == 4:
                 Zm, Hd = Zmat()
-                dLIK, dlik, a, P = kalman.univariate_kalman_filter_d(Y, np.zeros(mm), Pinf, Pstar, T, QQf, Hd, Zm, **dkw)
+                Tu, QQu = aug_sys(T, QQf)
+                dLIK, dlik, a, P = kalman.univariate_kalman_filter_d(
+                    Y, np.zeros(mm + (pp_ if correlated else 0)), aug_P(Pinf, np.zeros((pp_, pp_))), aug_P(Pstar, Hm),
+                    Tu, QQu, Hd, Zm, **dkw)
             if np.isnan(dLIK):
                 raise _Rejected("the diffuse filter did not leave the diffuse stage, or a variance is negative (info 45)", 45)
             dp = len(dlik)
@@ -1590,7 +1670,10 @@ class Estimation:
                 algo = 2 if algo == 1 else 4
         if algo in (2, 4):
             Zm, Hd = Zmat()
-            LIK, lik = kalman.univariate_kalman_filter(Y[:, dp:], a, P, T, QQ, Hd, Zm, diffuse_periods=dp,
+            Tu, QQu = aug_sys(T, QQ)
+            if correlated and P.shape[0] == mm:      # augment the state of the stationary (or large-variance) start
+                P, a = aug_P(P, Hm), aug_a(a)
+            LIK, lik = kalman.univariate_kalman_filter(Y[:, dp:], a, P, Tu, QQu, Hd, Zm, diffuse_periods=dp,
                                                        data_index=di, no_more_missing=nmm, return_lik=True, **kw)
         self.last_filter = {1: "multivariate", 2: "univariate", 3: "multivariate (diffuse)",
                             4: "univariate (diffuse)"}[algo]
@@ -1921,6 +2004,30 @@ class Estimation:
                 niter += res["iterations"]
                 self.last_newrat = res
                 msgs.append(f"newrat: {res['message']} ({res['iterations']} iterations, {res['fcount']} evaluations)")
+            elif step == 7:                       # fminsearch as Octave runs it (pydyn.fminsearch, ported)
+                from .fminsearch import fminsearch as _fminsearch
+                known = {"maxiter": "MaxIter", "maxfunevals": "MaxFunEvals", "tolfun": "TolFun", "tolx": "TolX"}
+                nm = {"MaxIter": 6000, "MaxFunEvals": 1000000, "TolFun": 1e-8, "TolX": 1e-6}
+                for k_, v_ in opt.items():
+                    key = known.get(str(k_).lower())
+                    if key is None:
+                        if str(k_).lower() in ("display", "funvalcheck", "outputfcn"):
+                            if str(k_).lower() != "display":
+                                raise NotImplementedError(f"optim: {k_} with mode_compute=7 is not supported")
+                            continue
+                        raise NotImplementedError(f"optim: unknown option {k_!r} for mode_compute=7")
+                    nm[key] = float(v_)
+
+                def fm(v):
+                    nfev[0] += 1
+                    return self.objective(v)[0]
+                xs, fs, flag, out_ = _fminsearch(fm, x, tol_x=nm["TolX"], tol_f=nm["TolFun"],
+                                                 max_fun_evals=nm["MaxFunEvals"], max_iter=nm["MaxIter"])
+                x = xs
+                niter += out_["iterations"]
+                ok = ok and flag >= 0
+                msgs.append(f"fminsearch (Octave's Nelder-Mead, ported): {out_['message'].strip()} "
+                            f"({out_['iterations']} iterations, {out_['funcCount']} evaluations)")
             elif step in _MODE_COMPUTE_EQUIVALENTS:
                 name, matlab = _MODE_COMPUTE_EQUIVALENTS[step]
                 _opt.warn_once(self.model, f"mode_compute={step}: Dynare uses {matlab}; pydyn uses scipy's {name}, "
@@ -2309,6 +2416,17 @@ class Estimation:
                 "shocks": {v: res["eps"][i] for i, v in enumerate(m.exo_names)},
                 "measurement_errors": {v: res["eta"][i] for i, v in enumerate(self.varobs)},
                 "steady_state": ss["ys"]}
+
+
+def _consistent_covariances(C):
+    """check_consistency_covariances.m: no off-diagonal entry exceeds the product of the standard deviations."""
+    C = np.asarray(C, float)
+    if C.size == 0:
+        return True
+    sd = np.sqrt(np.diag(C))
+    bound = np.outer(sd, sd)
+    low = np.tril(C, -1)
+    return not (np.any(low > bound) or np.any(low < -bound))
 
 
 def _ispd(A):

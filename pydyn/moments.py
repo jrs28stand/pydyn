@@ -283,9 +283,15 @@ def _filter_name(o):
 
 
 def _default_var_list(m):
+    # The variable list belongs to one stoch_simul statement (it does not accumulate like the options):
+    # Dynare's final results come from the last statement, and a statement without a list covers every
+    # endogenous variable.
+    last = None
     for st in m.statements:
-        if st.get("statementName") == "stoch_simul" and st.get("symbol_list"):
-            return list(st["symbol_list"])
+        if st.get("statementName") == "stoch_simul":
+            last = st
+    if last is not None and last.get("symbol_list"):
+        return list(last["symbol_list"])
     return list(m.orig_endo_names)
 
 
@@ -347,6 +353,8 @@ def _measurement_errors(m):
     """``(H_diag, varobs_id)``: measurement-error variances in ``varobs`` order, observed indices."""
     varobs = list(getattr(m, "varobs", []) or [])
     me = getattr(m, "measurement_errors", {}) or {}
+    if getattr(m, "me_cov", None):
+        raise NotImplementedError("theoretical moments with correlated measurement errors are not implemented")
     H = np.array([float(me.get(v, 0.0)) for v in varobs])
     vid = np.array([list(m.endo_names).index(v) for v in varobs], int)
     return H, vid

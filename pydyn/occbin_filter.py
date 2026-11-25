@@ -885,8 +885,14 @@ def _engine(ctx: _PKFContext, t, step: _Step, regimes_pair) -> _Update:
             if use.lik < best.lik:
                 best = use
     if loss_fn and (info0 or info1):
-        raise NotImplementedError("the loss-function regime guess of the piecewise Kalman filter "
-                                  "(occbin.findmin) is not implemented")
+        res_f = _findmin(ctx, step)
+        if res_f is not None:
+            c = _algo(ctx, step, regimes0=[res_f.regimes[0], base], guess_regime=True)
+            if c.error_flag == 0 and c.regimes[0] not in regvec:
+                regvec.append(c.regimes[0])
+                likvec.append(c.lik)
+            if c.error_flag == 0 and c.lik < best.lik:
+                best = c
     if len(likvec) > 1:
         lv = np.asarray(likvec, float)
         mn = lv.min()
@@ -898,6 +904,42 @@ def _engine(ctx: _PKFContext, t, step: _Step, regimes_pair) -> _Update:
         elif np.isnan(best.a).any():
             best.error_flag = 324
     return best
+
+
+def fminsearch_octave(fcn, x0, tol_x=1e-4, tol_f=1e-4, max_fun_evals=None, max_iter=None):
+    """Octave 8's ``fminsearch`` (port in :mod:`pydyn.fminsearch`); returns the minimiser only."""
+    from .fminsearch import fminsearch
+    return fminsearch(fcn, x0, tol_x=tol_x, tol_f=tol_f, max_fun_evals=max_fun_evals, max_iter=max_iter)[0]
+
+def _findmin(ctx, step):
+    """``occbin.findmin`` + ``occbin.cost_function``: the regime guess from the shocks that minimise the
+    distance between the model's first-period OccBin solution and the observables (scaled by the
+    forecast variance of the observables), found with ``fminsearch``. Returns the OccBin solution
+    at the minimum, or None if it fails."""
+    di = step.di2
+    Z = ctx.Z
+    err_index = np.flatnonzero(np.diag(ctx.Q) != 0)
+    obs = np.argmax(Z[di] != 0, axis=1)
+    obs_decl = ctx.r[obs]
+    current_obs = step.y2[di] + ctx.ob.ys[obs_decl]
+    ZZ = Z[di]
+    weights = np.diag(ZZ @ step.P1_t @ ZZ.T)
+    init = np.zeros(ctx.n)
+    init[ctx.r] = step.a_prev
+    sim = dict(ctx.sim)
+
+    def run(x):
+        return ctx.solver.solve(np.asarray(x, float).reshape(1, -1), init, sim, exo_pos=err_index)
+
+    def cost(x):
+        flag, out = run(x)
+        if flag:
+            return 1.0e10
+        return float(np.mean((out.piecewise[0, obs_decl] - current_obs) ** 2 / weights))
+
+    y = fminsearch_octave(cost, np.zeros(len(err_index)))
+    flag, out = run(y)
+    return None if flag else out
 
 
 def _brute_force_two(ctx, step, best):
@@ -1005,6 +1047,31 @@ def _pkf_forward(ctx: _PKFContext, Y, a, P, data_index=None, presample=0, univar
         if t == 1:
             Pinit, ainit = P1[0].copy(), a1[:, 0].copy()
         di = data_index[i]
+        if univariate and t < fpou:
+            # missing_DiffuseKalmanSmootherH3_Z.m before first_period_occbin_update: the linear
+            # univariate filter with the base-regime matrices
+            if t == 1:
+                a = T @ a + C
+                P = T @ P @ T.T + QQ
+                a1[:, 0], P1[0] = a, P
+            at, Pt = a.copy(), P.copy()
+            Hd = np.diag(H)
+            for ii in di:
+                Zi = Z[ii]
+                vv[ii, i] = Y[ii, i] - Zi @ at
+                Fi[ii, i] = Zi @ Pt @ Zi + Hd[ii]
+                Ki[i][:, ii] = Pt @ Zi
+                if Fi[ii, i] > tol:
+                    at = at + Ki[i][:, ii] * vv[ii, i] / Fi[ii, i]
+                    Pt = Pt - np.outer(Ki[i][:, ii], Ki[i][:, ii]) / Fi[ii, i]
+                    Pt = (Pt + Pt.T) / 2
+            a0[:, i], P0[i] = at, Pt
+            Tn, Cn = TT[t + 1], CC[t + 1]
+            a = Tn @ at + Cn
+            P = Tn @ Pt @ Tn.T + RR[t + 1] @ Q @ RR[t + 1].T
+            P = (P + P.T) / 2
+            aK[:, i + 1] = a
+            continue
         if t < fpou or not use_updated:
             # the linear branch (Dynare uses it before first_period_occbin_update)
             if len(di) == 0:
@@ -1036,6 +1103,7 @@ def _pkf_forward(ctx: _PKFContext, Y, a, P, data_index=None, presample=0, univar
             else:
                 step = _Step(ctx, a0[:, i - 1], a1[:, i - 1], P0[i - 1], P1[i - 1], data_index[i - 1], di,
                              Y[:, i], TT[i], RR[i], CC[i], vv[:, i - 1], Fi[:, i - 1], Ki[i - 1], univariate)
+            step.P1_t = P
             res = _engine(ctx, t, step, (regimes_[i], regimes_[i + 1]))
             likx = res.lik
             if not univariate and t < int(o["likelihood.first_period_binding_regime_allowed"]) \
@@ -1197,8 +1265,9 @@ def occbin_smoother(ob: Occbin, Y, Q, H, obs_idx, options=None, data_index=None,
     if data_index is None:
         data_index = [np.flatnonzero(~np.isnan(Y[:, t])) for t in range(T)]
     state_dr = np.arange(counts["nstatic"], counts["nstatic"] + counts["npred"] + counts["nboth"])
-    if int(o["smoother.first_period_occbin_update"]) != 1:
-        raise NotImplementedError("smoother_first_period_occbin_update other than 1 is not implemented")
+    fpou_s = int(o["smoother.first_period_occbin_update"])
+    if fpou_s < 1:
+        raise ValueError("smoother_first_period_occbin_update must be a positive integer")
     T0, R0 = ctx.T0, ctx.R0
     if lik_init == 1:
         from .kalman import lyapunov_symm
@@ -1222,7 +1291,8 @@ def occbin_smoother(ob: Occbin, Y, Q, H, obs_idx, options=None, data_index=None,
     lin_alpha, lin_eta, lin_alpha0 = _univariate_backward(ctx, la1, lP1, lv, lFi, lKi, TTl, RRl, data_index,
                                                           a_init, P_init)
     # --- 2. real-time smoother
-    rt = _pkf_forward(ctx, Y, a_init, P_init, data_index, univariate=True, check_inf=False)
+    rt = _pkf_forward(ctx, Y, a_init, P_init, data_index, univariate=True, check_inf=False,
+                      first_period_occbin_update=fpou_s)
     rt_ok = rt.error_code == 0
     if rt_ok:
         alphahat, etahat, alphahat0 = _univariate_backward(ctx, rt.a1, rt.P1, rt.v, rt.Fi, rt.Ki, rt.TT, rt.RR,
@@ -1274,7 +1344,7 @@ def occbin_smoother(ob: Occbin, Y, Q, H, obs_idx, options=None, data_index=None,
         a_c = np.zeros(n)
         a_c[state_dr] = alphahat0[state_dr]
         rc = _pkf_forward(ctx, Y, a_c, np.zeros((n, n)), data_index, univariate=True, check_inf=False,
-                          regimes_init=[regime_history[0]] + list(regime_history))
+                          first_period_occbin_update=1, regimes_init=[regime_history[0]] + list(regime_history))
         if rc.error_code:
             error_flag = 322
         else:

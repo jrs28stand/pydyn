@@ -45,6 +45,8 @@ from pathlib import Path
 import numpy as np
 from scipy import linalg
 
+from .model import ModelError
+
 __all__ = ["smooth", "shock_decomposition", "initial_condition_decomposition", "group_shocks",
            "check", "load_data", "SmootherResult", "ShockDecomposition", "SmootherError",
            "parameter_vector", "prior_mode", "shock_groups", "init2shocks", "apply_init2shocks",
@@ -822,6 +824,52 @@ def _smoother_univariate(T, Z, R, Q, Hd, Pinf1, Pstar1, Y, di_list, nk, kalman_t
                 d=d, alphahat0=alphahat0)
 
 
+def _smoother_univariate_augmented(T, Z, R, Q, H, Pinf, Pstar, Y, di_list, nk, ktol, dtol, want_V, want_PK, compat,
+                                   a_pred, a_zero, kalman_algo):
+    """The univariate smoother with correlated measurement errors: DsgeSmoother.m augments the state vector by the
+    measurement errors (Durbin and Koopman 2012, section 6.4.3: T = blkdiag(T, 0), R = blkdiag(R, I), Q = blkdiag(Q, H),
+    Z = [Z I], H = 0, Pstar = blkdiag(Pstar, H), Pinf = blkdiag(Pinf, 0)), runs the smoother and drops the added states."""
+    if kalman_algo == 4:
+        raise NotImplementedError("the diffuse univariate smoother (kalman_algo=4) with correlated measurement errors: "
+                                  "Dynare recomputes the Schur decomposition for the augmented system")
+    if a_pred is not None or a_zero is not None:
+        raise NotImplementedError("filter_initial_state with the univariate smoother and correlated measurement errors")
+    mm, pp, nsh = T.shape[0], H.shape[0], Q.shape[0]
+    Ta = np.zeros((mm + pp, mm + pp))
+    Ta[:mm, :mm] = T
+    Za = np.hstack([Z, np.eye(pp)])
+    Ra = np.zeros((mm + pp, nsh + pp))
+    Ra[:mm, :nsh] = R
+    Ra[mm:, nsh:] = np.eye(pp)
+    Qa = np.zeros((nsh + pp, nsh + pp))
+    Qa[:nsh, :nsh] = Q
+    Qa[nsh:, nsh:] = H
+    Pst = np.zeros((mm + pp, mm + pp))
+    Pst[:mm, :mm] = Pstar
+    Pst[mm:, mm:] = H
+    Pin = None
+    if Pinf is not None:
+        Pin = np.zeros((mm + pp, mm + pp))
+        Pin[:mm, :mm] = Pinf
+    out = _smoother_univariate(Ta, Za, Ra, Qa, np.zeros(pp), Pin, Pst, Y, di_list, nk, ktol, dtol, want_V, want_PK, compat,
+                               None, None)
+    k = slice(0, mm)
+    out = dict(out)
+    out["alphahat"] = out["alphahat"][:, k]
+    out["etahat"] = out["etahat"][:, :nsh]
+    out["updated"] = out["updated"][:, k]
+    out["P"] = out["P"][:, k, k] if out["P"] is not None else None
+    out["aK"] = out["aK"][:, k, :]
+    if out["PK"] is not None:
+        out["PK"] = out["PK"][:, k, k, :]
+    if out["V"] is not None:
+        out["V"] = out["V"][:, k, k]
+    if out["V0"] is not None:
+        out["V0"] = out["V0"][k, k]
+    out["alphahat0"] = out["alphahat0"][k]
+    return out
+
+
 # --------------------------------------------------------------------------------- parameter sets
 def prior_mode(prior) -> np.ndarray:
     """Mode of each prior of a ``pydyn.priors.Prior`` (Dynare's ``bayestopt_.p5``, port of
@@ -964,13 +1012,6 @@ _FROM_ESTIMATION = ("datafile", "first_obs", "nobs", "prefilter", "loglinear", "
 
 
 # --------------------------------------------------------------------------------- public: smoother
-def _loglinear_rules(G, H, ys):
-    if np.any(ys <= 0) or not np.all(np.isfinite(ys)):
-        raise SmootherError("loglinear needs a strictly positive steady state for every variable "
-                            "(models with auxiliary variables for lagged shocks are not handled)")
-    return G * ys[None, :] / ys[:, None], H / ys[:, None]
-
-
 def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, mcmc=None, _reuse=None,
            **options) -> SmootherResult:
     """Kalman filter and smoother (Dynare's ``calib_smoother`` and ``evaluate_smoother``).
@@ -1061,10 +1102,10 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
             sol = first_order(model, params=params, loglinear=False)     # loglinear is applied below
         else:
             Q = np.array(model.Sigma_e, float)
-            Hme = np.diag([float(model.measurement_errors.get(v, 0.0)) for v in varobs])
-            extra_me = set(model.measurement_errors) - set(varobs)
-            if extra_me:
-                raise SmootherError(f"measurement error declared on non-observed variable(s) {sorted(extra_me)}")
+            try:
+                Hme = model.me_H(varobs)
+            except ModelError as exc:
+                raise SmootherError(str(exc)) from None
             if sol is None:
                 sol = first_order(model, loglinear=False)
     opts["parameter_set"] = pset
@@ -1072,8 +1113,11 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     ys = np.asarray(sol.ys, float)
     loglinear = bool(opts["loglinear"])
     if loglinear:
-        G, Hs = _loglinear_rules(sol.G, sol.H, ys)
-        const_all = np.log(ys)
+        from .perturbation import log_mask, loglinearize, LoglinearError
+        try:       # store_smoother_results.m: the auxiliary variables of exogenous leads and lags stay in levels
+            const_all, G, Hs = loglinearize(ys, sol.G, sol.H, log_mask(model))
+        except LoglinearError as exc:
+            raise SmootherError(str(exc)) from None
     else:
         G, Hs = np.array(sol.G, float), np.array(sol.H, float)
         const_all = ys.copy()
@@ -1127,7 +1171,18 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
     elif lik_init == 3:
         qz = 1 + 1e-6 if qz is None else qz
         kalman_algo = 4 if kalman_algo == 4 else 3
-        Pstar, Pinf = compute_Pinf_Pstar(mf, G, Hs, Q, qz)
+        # Dynare's DsgeSmoother calls compute_Pinf_Pstar with T, R and the observed positions in decision-rule order; the routine
+        # (which zeroes the diffuse directions that no observation loads on, with an indexing that depends on the ordering) does
+        # not give the same Pinf in another order, so it is called in that order and mapped back to declaration order
+        ov = np.asarray(getattr(sol, "order_var", np.arange(n)), int)
+        if ov.size == n:
+            pos = np.empty(n, int)
+            pos[ov] = np.arange(n)
+            Pstar_dr, Pinf_dr = compute_Pinf_Pstar(pos[mf], G[np.ix_(ov, ov)], Hs[ov], Q, qz)
+            Pstar, Pinf = np.zeros((n, n)), np.zeros((n, n))
+            Pstar[np.ix_(ov, ov)], Pinf[np.ix_(ov, ov)] = Pstar_dr, Pinf_dr
+        else:
+            Pstar, Pinf = compute_Pinf_Pstar(mf, G, Hs, Q, qz)
     else:
         raise NotImplementedError(f"lik_init={lik_init}: only 1 (stationary), 2 (large variance) and 3 (diffuse) "
                                   "are implemented")
@@ -1170,10 +1225,11 @@ def smooth(model, data=None, sol=None, estimation=None, theta=None, mode=None, m
             kalman_algo += 1                        # Dynare: switch to the univariate filter
     if out is None:
         if not np.all(np.abs(Hme - np.diag(np.diag(Hme))) < 1e-14):
-            raise NotImplementedError("the univariate smoother with correlated measurement errors is not "
-                                      "implemented (Dynare augments the state vector)")
-        out = _smoother_univariate(G, Z, Hs, Qs, np.diag(Hme).copy(), Pinf, Pstar, Yd, di_list, nk,
-                                   ktol, dtol, want_V, want_PK, compat, a_pred, a_zero)
+            out = _smoother_univariate_augmented(G, Z, Hs, Qs, Hme, Pinf, Pstar, Yd, di_list, nk, ktol, dtol,
+                                                 want_V, want_PK, compat, a_pred, a_zero, kalman_algo)
+        else:
+            out = _smoother_univariate(G, Z, Hs, Qs, np.diag(Hme).copy(), Pinf, Pstar, Yd, di_list, nk,
+                                       ktol, dtol, want_V, want_PK, compat, a_pred, a_zero)
     alphahat, updated, aK = out["alphahat"], out["updated"], out["aK"]
     eps = Yd.T - alphahat[:, mf]                      # NaN where the observation is missing
 
