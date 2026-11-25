@@ -89,7 +89,7 @@ def _split_comparison(expr: str):
 class Occbin:
     """Piecewise-linear solver for a model with an ``occbin_constraints`` block."""
 
-    def __init__(self, model, params=None):
+    def __init__(self, model, params=None, qz_criterium=None):
         if not model.occbin_constraints:
             raise ValueError("model has no occbin_constraints block")
         self.model = m = model
@@ -100,7 +100,10 @@ class Occbin:
         base = np.array(m.params if params is None else params, float)
         base[self.switch] = 0.0
         self.ys, self.params = steady_state(m, base)
-        self.ref = first_order(m, self.ys, self.params, loglinear=False)   # piecewise rules are in levels
+        # qz_criterium: occbin.solver keeps options_.qz_criterium when it is set (estimation sets 1 - 1e-6 for a
+        # stationary initialisation, select_qz_criterium_value.m), else 1 + 1e-6
+        self.ref = first_order(m, self.ys, self.params, qz_criterium=qz_criterium,
+                               loglinear=False)   # piecewise rules are in levels
         self.P, self.Q = self.ref.G, self.ref.H
         self.n, self.n_exo = m.n_endo, m.n_exo
         self._regimes: dict[tuple, tuple] = {}

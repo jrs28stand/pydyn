@@ -91,7 +91,8 @@ class OccbinEstimation(Estimation):
     def occbin_at(self, theta) -> Occbin:
         """The piecewise-linear model at ``theta`` (raises ``_Rejected`` with Dynare's codes)."""
         try:
-            ob = Occbin(self.model, self.model_params(np.asarray(theta, float)))
+            ob = Occbin(self.model, self.model_params(np.asarray(theta, float)),
+                        qz_criterium=self.options["qz_criterium"])
         except SteadyStateError as exc:
             raise _Rejected(f"steady state: {exc}", 20) from None
         except BlanchardKahnError as exc:

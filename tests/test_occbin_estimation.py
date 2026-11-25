@@ -325,3 +325,17 @@ def test_write_regime_table(tmp_path):
     # Dynare labels rows with ``periods`` but fills them from the first regimes
     assert of.regime_table(rh, periods=[3])[0]["regime_sequence"] == "0  1  0"
     assert of.regime_table(rh, periods=[3], dynare_indexing=True)[0]["regime_sequence"] == "0"
+
+
+def test_occbin_estimation_uses_estimation_qz_criterium(models, monkeypatch):
+    """occbin.solver keeps options_.qz_criterium when estimation has set it (1 - 1e-6 for a stationary
+    initialisation, select_qz_criterium_value.m); it falls back to 1 + 1e-6 only when it is empty."""
+    import pydyn.occbin as occ
+    r = ref("occest_nkm_lik")
+    est = estimation(models["occest_nkm"], r, occbin={"likelihood_inversion_filter": True})
+    assert est.options["qz_criterium"] == 1 - 1e-6
+    seen = []
+    orig = occ.first_order
+    monkeypatch.setattr(occ, "first_order", lambda *a, **k: (seen.append(k.get("qz_criterium")), orig(*a, **k))[1])
+    est.occbin_at(points(r, est.n)[:, 0])
+    assert seen == [1 - 1e-6]
