@@ -396,7 +396,7 @@ class CommandsMixin:
                 fh.write(np.ascontiguousarray(np.asarray(y, "<f8").T).tobytes(order="F"))
         led.record(path)
 
-    def _make_dr(self, sol, dr, order, qz):
+    def _make_dr(self, sol, dr, order, qz, ys=None):
         R = _R()
         m = self.model
         n = m.n_endo
@@ -420,7 +420,9 @@ class CommandsMixin:
         ys_dr = np.asarray(dr["ys"], float)
         loglin = self.opt_flag("loglinear")
         if loglin:                  # dr1.m: ys stays in levels and gx, Gy are the derivatives before the log transformation
-            ys_dr = np.asarray(farr(self.oo_["steady_state"]), float).ravel(order="F")
+            # resol passes the steady state it has just evaluated (at the parameters of its M_ argument)
+            ys_dr = (np.asarray(ys, float).ravel(order="F") if ys is not None
+                     else np.asarray(farr(self.oo_["steady_state"]), float).ravel(order="F"))
         D["ys"] = R.col(ys_dr)
         D["ghx"] = R.mat(ghx)
         D["ghu"] = R.mat(np.asarray(dr["ghu"], float))

@@ -154,7 +154,18 @@ _M_BLOCK = re.compile(r"([A-Za-z_]\w*)\s*=\s*\[(.*?)\]\s*('?)\s*;?", re.S)
 
 
 def _parse_m_file(path):
-    """Read a Dynare-style data ``.m`` file made of ``name = [ numbers ];`` assignments."""
+    """Read a Dynare-style data ``.m`` file made of ``name = [ numbers ];`` assignments.
+
+    The file is first evaluated like ``Estimation`` does (``estimation.read_m_data``), so that statements after the
+    matrices, such as ``gy_obs = log(gy_obs);``, change the series as MATLAB would run the script; the plain-number
+    reader below is the fallback for files that evaluator cannot read."""
+    try:
+        from .estimation import read_m_data
+        got = read_m_data(path)
+        if got:
+            return got
+    except Exception:                               # noqa: BLE001 - the plain reader decides
+        pass
     text = "\n".join(line.split("%")[0] for line in Path(path).read_text().splitlines())
     out = {}
     for name, body, _ in _M_BLOCK.findall(text):
