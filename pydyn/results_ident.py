@@ -23,6 +23,8 @@ import warnings
 
 import numpy as np
 
+from .matlab import Struct
+
 _COLUMN_FIELDS = {"DYNAMIC", "REDUCEDFORM", "MOMENTS", "S", "Mco"}
 
 
@@ -122,18 +124,49 @@ class IdentificationMixin:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ident = Identification(self.model, opts, rng=self.rng)
-                out = ident.run_point()
+                # the .mod may empty the global estim_params_ (kim2), which makes Dynare test the current parameters
+                ep = self.I.base.vars.get("estim_params_", None) if hasattr(self.I.base.vars, "get") else None
+                no_priors = False
+                if ep is not None:
+                    if np.size(ep) == 0 and not isinstance(ep, Struct):
+                        no_priors = True
+                    else:
+                        raise R.ResultsError("identification: estim_params_ was assigned in the .mod file; only [] is "
+                                             "supported")
+                ident = Identification(self.model, opts, rng=self.rng, no_priors=no_priors)
+                out = ident.run()
         except (NotImplementedError, ValueError, np.linalg.LinAlgError) as exc:
             raise R.ResultsError(f"identification: {exc}") from None
         if out is None:
             return
-        label, variables, messages = out
-        for msg in messages:
+        label, variables = out["label"], out["point"]
+        for msg in out["messages"]:
             self.warnings.append(f"identification: {msg}")
         name = self.name
-        self._write_identification_mat(f"{name}_identif.mat", variables)
+        if out["clear_sto"]:
+            self._delete_identification_files(f"{name}_identif_*.mat")
+        # Dynare saves the point variables, appends the Monte Carlo variables to the same file and writes the label file
+        # (without them) at the point stage
+        self._write_identification_mat(f"{name}_identif.mat", {**variables, **out["extra"]})
         self._write_identification_mat(f"{name}_{label}_identif.mat", variables)
+        for k, f in enumerate(out["sto"], 1):
+            self._write_identification_mat(f"{name}_identif_{k}.mat", f)
+
+    def _delete_identification_files(self, pattern):
+        """``delete([IdentifDirectoryName '/' fname '_identif_*.mat'])``, only for files pydyn itself wrote."""
+        folder = self.model.json_dir.parents[1] / "identification"
+        rec_path = self.model.json_dir.parents[1] / self._WRITTEN
+        try:
+            rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            rec = {}
+        for path in sorted(folder.glob(pattern)) if folder.is_dir() else []:
+            key = f"identification/{path.name}"
+            if path.is_file() and not path.is_symlink() and rec.get(key) == hashlib.sha256(path.read_bytes()).hexdigest():
+                path.unlink()
+                rec.pop(key, None)
+        if rec_path.parent.is_dir():
+            rec_path.write_text(json.dumps(rec, indent=0))
 
     def _write_identification_mat(self, fname, variables):
         """``save([IdentifDirectoryName '/' fname], 'ide_...')`` into ``<mod folder>/<name>/identification``."""

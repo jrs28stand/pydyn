@@ -94,7 +94,7 @@ def steady_state_derivatives(model, ys, params, qz_criterium=1 + 1e-6):
 
 
 def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=None, params=None, order=1,
-                               qz_criterium=1 + 1e-6):
+                               qz_criterium=1 + 1e-6, numerical=False, dynatol_x=1e-5):
     """Derivatives of the first-order solution with respect to selected parameters, in Dynare's layout.
 
     ``indpmodel``: 0-based positions in ``model.param_names``; ``indpstderr``: 0-based positions of shocks (declaration
@@ -129,11 +129,32 @@ def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=
     J = model.dynamic_jac(y3, x, params, ys)
     fm, f0, fp, fu = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:]
 
-    dys, _ = steady_state_derivatives(model, ys, params, qz_criterium)
-    # total derivative of the dynamic Jacobian: one complex-step evaluation per parameter
     rows, cols = model.jac_rows, model.jac_cols
     dJ = np.zeros((nm, n, J.shape[1]))
-    for jj, jp in enumerate(indpmodel):
+    if numerical:
+        # analytic_derivation_mode = -2: two-sided finite differences (fjaco.m, step dynatol.x * max(|x|, 1)) of the steady
+        # state and of the dynamic Jacobian, the steady state (with the steady-state file's parameter changes) recomputed
+        # at each point; the solution derivatives below are analytic as in mode 0
+        dys = np.zeros((n, len(model.param_names)))
+        for jj, jp in enumerate(indpmodel):
+            x0 = params[jp]
+            h = dynatol_x * max(abs(x0), 1.0)
+            xh1, xh0 = x0 + h, x0 - h
+            hh = xh1 - xh0
+            vals = []
+            for xv in (xh1, xh0):
+                pv = params.copy()
+                pv[jp] = xv
+                ysv, ppv = steady_state(model, pv)
+                ysv, ppv = np.asarray(ysv, float), np.asarray(ppv, float)
+                Jv = model.dynamic_jac(np.tile(ysv, 3), x, ppv, ysv)
+                vals.append((ysv, Jv))
+            dys[:, jp] = (vals[0][0] - vals[1][0]) / hh
+            dJ[jj][rows, cols] = ((vals[0][1] - vals[1][1]) / hh)[rows, cols]
+    else:
+        dys, _ = steady_state_derivatives(model, ys, params, qz_criterium)
+    # total derivative of the dynamic Jacobian: one complex-step evaluation per parameter
+    for jj, jp in enumerate(indpmodel if not numerical else ()):
         pc = params.astype(complex)
         pc[jp] += 1j * H_STEP
         d = dys[:, jp]
