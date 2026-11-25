@@ -1,0 +1,16 @@
+{
+ "_comment": "pydyn's scope: Dynare features pydyn has decided not to implement (for now). A test listed here that pydyn REFUSES is `excluded` in the comparison report (feature and reason shown); one pydyn runs is compared normally and flagged. Format and rules: docs/ACCEPTANCE.md, rule 6. To park another feature add an entry {feature, reason, ids (test ids or fnmatch patterns such as 'method_of_moments/*'), expect (optional regex of the refusal message)}. Per-port: another port keeps its own file.",
+ "entries": [
+  {
+   "feature": "parameter derivatives of the order-2/3 solution and the pruned state space (identification at order > 1, get_perturbation_params_derivs at order > 1)",
+   "reason": "parked by decision: low priority, identification at order 1 covers the usual use",
+   "ids": [
+    "identification/as2007/as2007_order_1_2_3",
+    "identification/as2007/as2007_order3_no_stoch_simul",
+    "analytic_derivatives/BrockMirman_PertParamsDerivs",
+    "analytic_derivatives/burnside_3_order_PertParamsDerivs"
+   ],
+   "expect": "orders 2 and 3 are not ported"
+  }
+ ]
+}

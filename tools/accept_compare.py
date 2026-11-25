@@ -8,6 +8,7 @@
 
     python tools/accept_compare.py <port_output_dir> [--ref /home/claude/accept_ref] [--known tools/accept_known.json]
                                    [--report out.md] [--only substr ...] [--name pydyn] [--verdicts out.json] [--include-heterogeneity]
+                                   [--scope tools/accept_scope_pydyn.json]
 
 A port's output directory holds, per test id (the id is the path of the test file below tests/ without ``.mod``, as in the
 reference folder, ``../examples/x/y.mod`` -> ``examples/x/y``):
@@ -43,15 +44,16 @@ A field the port does not hold is "refused" (listed in ``refused_fields``) or "n
 Verdicts: match (all compared fields agree, none missing), partial (some agree, others missing/refused/skipped), refused, wrong,
 port-error (the port failed or wrote an unreadable result), compare-error (the comparator itself failed or cannot compare a
 field: never the port's fault; the message is kept), dynare-failed (Dynare itself failed or timed out in the reference run), xfail
-(Dynare's own expected failure), no-comparison, excluded (heterogeneous-agent tests: ids with a ``heterogeneity`` path component, or
-whose reference holds M_.heterogeneity / oo_.heterogeneity; left out of totals and timing until a port supports them, switch
-back on with --include-heterogeneity).  ``--known`` is a json {id: {"class": ..., "note": ...}} of explained differences (Dynare
+(Dynare's own expected failure), no-comparison, excluded (out of scope for the port: heterogeneous-agent tests, a built-in entry (ids with a ``heterogeneity`` path component, or
+whose reference holds M_.heterogeneity / oo_.heterogeneity; switch back on with --include-heterogeneity), and the tests a port's
+``--scope`` file lists that the port refuses; left out of totals and timing; see rule 6 below).  ``--known`` is a json {id: {"class": ..., "note": ...}} of explained differences (Dynare
 quirks ...): they are printed beside the file in the report, the verdict stays "wrong".
 """
 from __future__ import annotations
 
 import argparse
 import collections
+import fnmatch
 import json
 import re
 import statistics
@@ -234,6 +236,34 @@ def cmp_any(a, b, rtol, atol=ATOL, where=""):
 
 
 # ------------------------------------------------------------------------------------------ what the reference says about the run
+HETEROGENEITY_FEATURE = "heterogeneous-agent models (heterogeneity_dimension / heterogeneity blocks, heterogeneity_solve, ...)"
+HETEROGENEITY_REASON = "no port supports them yet; excluded whatever the port reported (built-in entry, switch off with --include-heterogeneity)"
+
+
+def load_scope(path):
+    """A port's scope file: {"entries": [{"feature": str, "reason": str, "ids": [id or fnmatch pattern, ...], "expect": regex (optional)}]}.
+    A test listed there that the port REFUSES is `excluded` (feature and reason in the report); one the port runs is compared normally
+    and flagged; one refused with a message that does not match ``expect`` stays `refused` and is flagged."""
+    if not path:
+        return []
+    d = json.loads(Path(path).read_text())
+    ents = d["entries"] if isinstance(d, dict) else d  # a top-level "_comment" is ignored
+    for e in ents:
+        for k in ("feature", "reason", "ids"):
+            if not e.get(k):
+                raise ValueError(f"scope entry without '{k}': {e}")
+        if e.get("expect"):
+            re.compile(e["expect"])
+    return ents
+
+
+def scope_entry(scope, tid):
+    for e in scope:
+        if any(fnmatch.fnmatchcase(tid, pat) for pat in e["ids"]):
+            return e
+    return None
+
+
 def is_heterogeneity(tid, ref_oo=None, ref_M=None):
     """Heterogeneous-agent test: a ``heterogeneity`` path component in the id, or the reference run holds heterogeneity results."""
     return ("heterogeneity" in tid.split("/")) or nonempty(sget(ref_oo, "heterogeneity")) or nonempty(sget(ref_M, "heterogeneity"))
@@ -533,7 +563,7 @@ def read_log(ref_dir, tid):
         return ""
 
 
-def compare_one(tid, port_dir, ref_dir, include_heterogeneity=False):
+def compare_one(tid, port_dir, ref_dir, include_heterogeneity=False, scope=()):
     ref_json = json.loads((ref_dir / f"{tid}.json").read_text())
     out = {"file": tid, "rows": [], "notes": [], "dynare_status": ref_json["status"], "relaxed": []}
     het = ("heterogeneity" in tid.split("/"))
@@ -547,6 +577,7 @@ def compare_one(tid, port_dir, ref_dir, include_heterogeneity=False):
         het = het or is_heterogeneity(tid, ref_oo, ref_M)
     if het and not include_heterogeneity:
         out["verdict"], out["detail"] = EXCLUDED, "heterogeneous-agent model: excluded until a port supports them (Dynare reference: " + ref_json["status"] + ")"
+        out["feature"], out["reason"] = HETEROGENEITY_FEATURE, HETEROGENEITY_REASON
         return out
     if ref_json["status"] != "ok":
         out["verdict"] = {"xfail": "xfail", "xfail-passed": "xfail", "m-runner": "no-comparison"}.get(ref_json["status"], "dynare-failed")
@@ -559,9 +590,19 @@ def compare_one(tid, port_dir, ref_dir, include_heterogeneity=False):
     pinfo = json.loads(pj.read_text())
     out["timing"] = {k: pinfo[k] for k in ("load_s", "first_s", "second_s") if k in pinfo}
     st = pinfo.get("status")
+    ent = scope_entry(scope, tid)
     if st in ("refused", "error", "timeout") or not (port_dir / f"{tid}.mat").exists():
         out["verdict"] = "refused" if st == "refused" else "port-error"
         out["detail"] = pinfo.get("message", "") or st or "no .mat"
+        if ent is not None:
+            if st != "refused":
+                out["scope_flag"] = ("not-a-refusal", ent["feature"], f"listed in the scope file but the port failed ({st}), not refused: {out['detail'][:160]}")
+            elif ent.get("expect") and not re.search(ent["expect"], out["detail"]):
+                out["scope_flag"] = ("other-reason", ent["feature"], f"listed for '{ent['feature']}' but refused for another reason: {out['detail'][:200]}")
+            else:
+                out["verdict"] = EXCLUDED
+                out["feature"], out["reason"] = ent["feature"], ent["reason"]
+                out["detail"] = f"{ent['feature']}: {ent['reason']} (port: {pinfo.get('message', '')[:160]})"
         return out
     try:
         port_oo, _, _ = load_mat(port_dir / f"{tid}.mat")
@@ -577,6 +618,8 @@ def compare_one(tid, port_dir, ref_dir, include_heterogeneity=False):
     out["context"] = {k: getattr(ctx, k) for k in ("pf", "sim_paths", "sim_moments", "high_order", "mcmc", "noisy_objective", "ss_numeric")}
     out["steady_state_rel_diff"] = w.e_ss if np.isfinite(w.e_ss) else None
     out["verdict"], out["detail"] = verdict(w.rows)
+    if ent is not None:
+        out["scope_flag"] = ("now-runs", ent["feature"], f"listed for '{ent['feature']}' but the port runs it (verdict {out['verdict']}): remove the scope entry")
     return out
 
 
@@ -621,15 +664,25 @@ Everything below is read from Dynare's *reference* run, never from the port, so 
    everything computed at the posterior mean once a chain ran (all but the mode fields and `prior.*`); Gibbs draws (`olsgibbs`, `surgibbs`);
    estimations on a random objective (particle filter; simulated method of moments, recognised from the reference log).  Order-1 IRFs and theoretical moments are now **compared** for every port (before, all `irfs` were treated as random).
 5. **Bookkeeping fields are never compared**: wall-clock (`runtime`, `elapsed`, `cputime`, `duration`, `time`, ...) and the optimiser's own `optimization_info.{iterations,funcCount,exitflag,message,...}`.
-6. **Heterogeneous-agent tests** get the verdict `excluded` (ids with a `heterogeneity` path component, or whose reference has `M_.heterogeneity` / `oo_.heterogeneity`), whatever the port reported;
-   they are left out of the totals, the folder table and the timing, and listed separately.  `--include-heterogeneity` compares them as normal once a port supports them.
+6. **Excluded (out of scope for a port).**  Heterogeneous-agent tests (ids with a `heterogeneity` path component, or whose reference has `M_.heterogeneity` / `oo_.heterogeneity`) get the verdict `excluded`
+   whatever the port reported (a built-in entry; `--include-heterogeneity` compares them as normal once a port supports them).  A port can park further Dynare features with its own scope file,
+   `--scope tools/accept_scope_<port>.json` (a per-port decision: another port may implement what this one parks):
+   `{"entries": [{"feature": "<the missing Dynare feature, in plain words>", "reason": "<why it is parked>", "ids": ["<test id or fnmatch pattern>", ...], "expect": "<optional regex the refusal message must match>"}]}`.
+   A listed test that the port **refuses** (status `refused`, message matching `expect` if given) is `excluded`, with the feature and the reason in the report; excluded tests are left out of the totals, the folder table and the timing,
+   and are listed in one section grouped by feature.  A listed test that the port **runs** is compared normally, never excluded, and flagged `now-runs: remove the scope entry`;
+   one refused with a message that does not match `expect`, or one that fails (`error`, `timeout`) instead of being refused, stays `refused` / `port-error` and is flagged `other-reason` / `not-a-refusal`.
+   Flags are listed in "Scope entries to review".  Without `--scope` only the heterogeneity entry applies.
 7. **Cells, struct arrays, cells of structs** (`oo_.occbin.simul.regime_history`, ...) are compared cell by cell and field by field.  A field the comparator cannot compare is `not-compared` (with the reason; counts like skipped), never an error of the port.
 8. **Comparator robustness**: any exception inside the comparator is a field-level `compare-error` and, if nothing else is wrong, the verdict `compare-error` (listed in its own section with the message); `port-error` is only
    for a port that failed, wrote nothing, or wrote an unreadable .mat.  `skewness`/`kurtosis` are no longer ignored (they are compared when deterministic, skipped when simulated).
+9. **Runner rule: a test never starts with its own Dynare outputs** (`tools/accept_pydyn.py`; a port's runner should do the same).  The files of an entry run in order in one scratch folder, so later files see what the port wrote for
+   the earlier ones; nothing is copied for the file about to run (a port that writes `<fname>/Output/<fname>_results.mat` and never overwrites files it did not write would otherwise refuse for a reason that is not its own).
+   Only if an earlier file of the entry did not complete are the Octave-written artifacts of that earlier file copied in, and only the paths not already present.  The timing repeat (second call of the same file) cannot turn a result into a
+   refusal: a file that consumes its own input (`load` then `delete`) fails on the repeat, and the json keeps the first result and records `second_run_error`.
 """
 
 
-def report(results, known, ref_dir, name, out_path):
+def report(results, known, ref_dir, name, out_path, scope=()):
     incl = [r for r in results if r["verdict"] != EXCLUDED]
     excl = [r for r in results if r["verdict"] == EXCLUDED]
     byv = collections.Counter(r["verdict"] for r in incl)
@@ -645,15 +698,26 @@ def report(results, known, ref_dir, name, out_path):
     L += [f"| {k} | {v} |" for k, v in octave.most_common()]
     L += ["", f"## {name} verdicts\n", "| verdict | files |\n|---|---|"]
     L += [f"| {k} | {byv.get(k, 0)} |" for k in ORDER] + [f"| **total (compared set)** | {len(incl)} |",
-                                                          f"| excluded (heterogeneous-agent, not in the total) | {len(excl)} |", ""]
+                                                          f"| excluded (out of scope for this port, not in the total) | {len(excl)} |", ""]
     L += ["## By test folder\n", "| folder | " + " | ".join(ORDER) + " | total |\n|---|" + "---|" * (len(ORDER) + 1)]
     for fo in sorted(folder):
         c = folder[fo]
         L.append(f"| {fo} | " + " | ".join(str(c.get(k, 0)) for k in ORDER) + f" | {sum(c.values())} |")
     if excl:
-        L += ["", f"## Excluded: heterogeneous-agent tests ({len(excl)} files)\n",
-              "Left out of the totals, folder table and timing until a port supports heterogeneous-agent models (Dynare's own status in brackets).\n"]
-        L += [f"- {r['file']} [{r['dynare_status']}]" for r in excl]
+        bf = collections.defaultdict(list)
+        for r in excl:
+            bf[(r.get("feature", HETEROGENEITY_FEATURE), r.get("reason", HETEROGENEITY_REASON))].append(r)
+        L += ["", f"## Excluded: out of scope for this port ({len(excl)} files)\n",
+              "Left out of the totals, folder table and timing.  A scope entry excludes a test only when the port refuses it; "
+              "heterogeneous-agent tests are a built-in entry (excluded whatever the port reported).  Dynare's own status in brackets.\n"]
+        for (feat, why), rs in sorted(bf.items(), key=lambda kv: -len(kv[1])):
+            L += [f"### {feat} ({len(rs)} files)\n", f"Reason: {why}\n"] + [f"- {r['file']} [{r['dynare_status']}]" for r in rs] + [""]
+    flags = [r for r in results if r.get("scope_flag")]
+    if flags:
+        L += ["", f"## Scope entries to review ({len(flags)} files)\n",
+              "`now-runs`: the port runs a test that its scope file lists, so it was compared normally: remove the entry.  "
+              "`other-reason` / `not-a-refusal`: the port failed in another way than the entry expects, so the test was not excluded.\n"]
+        L += [f"- {r['file']}: **{r['scope_flag'][0]}**: {r['scope_flag'][2]}" for r in flags]
     wrong = [r for r in incl if r["verdict"] == "wrong"]
     L += ["", f"## Wrong results ({len(wrong)} files)\n", "Each mismatch names the tolerance class it was judged by.\n",
           "| file | field(s) and size of difference | classification |\n|---|---|---|"]
@@ -719,23 +783,25 @@ def main(argv=None):
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--name", default="the port")
     ap.add_argument("--verdicts", help="where to write the per-file verdicts json (default: <port_dir>/_verdicts.json)")
+    ap.add_argument("--scope", help="the port's scope file (tools/accept_scope_<port>.json): tests it refuses on purpose are `excluded` with the feature and reason")
     ap.add_argument("--include-heterogeneity", action="store_true", help="compare heterogeneous-agent tests instead of excluding them")
     a = ap.parse_args(argv)
     ref, port = Path(a.ref), Path(a.port_dir)
     known = json.loads(Path(a.known).read_text()) if Path(a.known).exists() else {}
+    scope = load_scope(a.scope)
     results = []
     for tid in test_ids(ref):
         if a.only and not any(o in tid for o in a.only):
             continue
         try:
-            r = compare_one(tid, port, ref, a.include_heterogeneity)
+            r = compare_one(tid, port, ref, a.include_heterogeneity, scope)
         except Exception as e:  # noqa: BLE001  (a comparator failure is never the port's error)
             r = {"file": tid, "rows": [], "relaxed": [], "verdict": "compare-error", "detail": f"{type(e).__name__}: {str(e)[:200]}"}
         results.append(r)
     Path(a.verdicts or port / "_verdicts.json").write_text(json.dumps(results, default=str, indent=1))
     print(dict(collections.Counter(r["verdict"] for r in results)), len(results), "tests")
     if a.report:
-        report(results, known, ref, a.name, a.report)
+        report(results, known, ref, a.name, a.report, scope)
         print("wrote", a.report)
     return results
 
