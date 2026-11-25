@@ -33,7 +33,8 @@ from . import matlab as _ml
 from .matlab import Cell, Struct, Tainted, Unsupported
 from .preprocessor import find_preprocessor
 
-PREFIXES = ("M_.var.", "M_.trend_component.", "M_.var_expectation.", "M_.pac.")
+PREFIXES = ("M_.var.", "M_.trend_component.", "M_.var_expectation.", "M_.pac.", "M_.exo_partitions", "M_.endo_partitions",
+            "M_.param_partitions")
 FUNCTION_FILES = ("varmatrices", "trend_component_ar_a0", "pac_target_coefficients",
                   # the model's own functions, callable from MATLAB code as <model>.<name>(...)
                   "set_auxiliary_variables", "dynamic_resid", "dynamic_resid_tt", "dynamic_g1", "dynamic_g1_tt",

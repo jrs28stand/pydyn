@@ -337,6 +337,8 @@ class LiveInterp(Interpreter):
 
     #: the results mode reproduces Dynare under Octave (reference runs, Octave's random generators): isoctave is true
     isoctave = True
+    #: graphics calls run (pydyn/mlgfx.py): the figures show results that exist here
+    graphics_enabled = True
 
     def __init__(self, directory, host, res):
         super().__init__(directory, host)
@@ -369,6 +371,9 @@ class LiveInterp(Interpreter):
         super().setvar(sc, name, value)
 
     def getfield(self, v, name):
+        tag = getattr(v, "_dyn", None)
+        if tag == "M_" and name in _PARTITION_FIELDS and name not in v:
+            v = self.res.load_partitions()                     # the driver's M_.*_partitions (pydyn/results_mi.py)
         if isinstance(v, Struct) and name not in v:
             tag = getattr(v, "_dyn", None)
             if tag is not None:
@@ -856,6 +861,8 @@ class _Core(CommandsMixin):
         if why:                                         # an option pydyn does not act on is never silently dropped
             raise ResultsError(f"<{kind}>: {why}")
         self.pull()
+        if kind in _VAR_LIST_STATEMENTS:                # the driver's ``var_list_ = {...};`` before the call
+            self.vars["var_list_"] = cellstr([str(x) for x in (st.get("symbol_list") or [])])
         try:
             if kind in IGNORED:
                 pass
@@ -898,12 +905,17 @@ class _Core(CommandsMixin):
         if kind == "varobs":
             names = list(st.get("varobs", m.varobs))
             self.set_options("varobs", cellstr(names))
-            self.set_options("varobs_id", col([m._ie[v] + 1 for v in names]))
+            self.set_options("varobs_id", row([m._ie[v] + 1 for v in names]))
 
 
 _MISSING = object()
-_NOOP_NAMES = set(_ml.PLOT_FUNCS) | {"hold", "drawnow", "pause", "close", "clf", "figure", "fclose", "dyn_figure", "search"}
-_NOOP_NAMES -= {"set", "get", "line", "text", "fill", "area", "bar", "hist", "histogram", "contour", "print", "type"}
+_PARTITION_FIELDS = ("exo_partitions", "endo_partitions", "param_partitions", "observed_exo_names")
+#: statements before which Dynare 7.2's driver sets ``var_list_`` (ComputingTasks.cc: symbol_list.writeOutput("var_list_"))
+_VAR_LIST_STATEMENTS = {"stoch_simul", "forecast", "ramsey_policy", "discretionary_policy", "occbin_graph", "estimation", "rplot", "osr",
+                        "dynasave", "dynatype", "ms_irf", "shock_decomposition", "realtime_shock_decomposition",
+                        "plot_shock_decomposition", "initial_condition_decomposition", "squeeze_shock_decomposition",
+                        "plot_conditional_forecast", "calib_smoother", "heterogeneity_simulate"}
+_NOOP_NAMES = (set(_ml.PLOT_FUNCS) | {"fclose", "dyn_figure", "search"}) - set(_ml.BUILTINS)    # graphics built-ins: pydyn/mlgfx.py
 
 
 def _tree(flat):
@@ -1109,15 +1121,25 @@ class _FunctionsMixin:
             for k, v in zip(("M_", "options_", "oo_"), args[:3]):
                 self.set_global(k, v)
             try:
-                self.run_command({"statementName": "stoch_simul", "options": {}, "symbol_list": var_list})
+                try:
+                    self.run_command({"statementName": "stoch_simul", "options": {}, "symbol_list": var_list})
+                except ResultsError as exc:
+                    if exc.matlab_message is None:
+                        raise
+                    raise MatlabError(exc.matlab_message) from None       # an error of Dynare's own: try/catch sees it
                 out = [_F(0.0), self.oo_, self.options_, self.M_]
             finally:
                 for k, v in saved.items():
                     self.I.globals[k] = v
             return out[:max(nargout, 1)]
-        for a in args:
-            var_list += _names(a)
-        self.run_command({"statementName": "stoch_simul", "options": {}, "symbol_list": var_list})
+        if args:                                          # Dynare 7.2: stoch_simul(M_, options_, oo_, var_list); M_ and the rest are
+            raise MatlabError("'options_' undefined")      # arguments of the function, so a shorter call fails
+        try:
+            self.run_command({"statementName": "stoch_simul", "options": {}, "symbol_list": var_list})
+        except ResultsError as exc:
+            if exc.matlab_message is None:
+                raise
+            raise MatlabError(exc.matlab_message) from None
         return []
 
     def fn_seed(self, args, nargout):

@@ -1222,6 +1222,107 @@ def osr_objective(model, values, param_names=None, order=None) -> float:
     return _OSRProblem(model, param_names, order)(np.asarray(values, float))[0]
 
 
+def _osr_equivalent(prob, opt_algo, x0, bounds, oo, analytic):
+    """``opt_algo`` 1, 3, 7, 8, 9 of dynare_minimize_objective for OSR (the values ``mode_compute`` has in estimation):
+    7 is Octave's fminsearch, ported (:mod:`pydyn.fminsearch`); 1 (fmincon), 3 (fminunc), 8 (Dynare's simplex) and
+    9 (CMA-ES) are scipy equivalents of the same class, not ports, and a warning says so; 2 (simulated annealing) and
+    the other values are refused."""
+    from scipy import optimize
+    from types import SimpleNamespace
+    model = prob.model
+    if opt_algo not in (1, 3, 7, 8, 9):
+        raise NotImplementedError(f"osr with opt_algo={opt_algo}: pydyn has opt_algo 4 (csminwel, ported), 7 (fminsearch, "
+                                  "ported) and the scipy equivalents of 1, 3, 8 and 9")
+    n = len(x0)
+    nfev = [0]
+
+    def f(x):
+        nfev[0] += 1
+        return float(prob(np.asarray(x, float))[0])
+    lb = np.full(n, -np.inf) if bounds is None else np.asarray(bounds, float)[:, 0]
+    ub = np.full(n, np.inf) if bounds is None else np.asarray(bounds, float)[:, 1]
+    known = {"maxiter": "MaxIter", "maxfunevals": "MaxFunEvals", "tolfun": "TolFun", "tolx": "TolX"}
+    opts = {}
+    for k, v in oo.items():
+        kk = known.get(str(k).lower())
+        if kk is not None:
+            opts[kk] = float(v)
+        elif str(k).lower() in ("display", "finitedifferencetype", "algorithm", "verbosity"):
+            if str(k).lower() == "algorithm" and opt_algo == 7:
+                raise NotImplementedError("optim: Algorithm with opt_algo=7 is not supported")
+        else:
+            raise NotImplementedError(f"optim: {k!r} with opt_algo={opt_algo} is not supported")
+    if opt_algo == 7:
+        from .fminsearch import fminsearch as _fminsearch
+        nm = {"MaxIter": 6000, "MaxFunEvals": 1000000, "TolFun": 1e-8, "TolX": 1e-6, **opts}
+        xs, fs, flag, out_ = _fminsearch(f, x0, tol_x=nm["TolX"], tol_f=nm["TolFun"], max_fun_evals=nm["MaxFunEvals"],
+                                         max_iter=nm["MaxIter"])
+        return SimpleNamespace(x=np.asarray(xs, float), fval=float(fs), retcode=int(flag), iterations=out_["iterations"],
+                               func_count=out_["funcCount"], message=out_["message"].strip())
+    names = {1: ("SLSQP", "fmincon"), 3: ("BFGS", "fminunc"), 8: ("Nelder-Mead", "Dynare's simplex routine"),
+             9: ("differential_evolution", "CMA-ES (cmaes.m)")}
+    name, matlab = names[opt_algo]
+    warnings.warn(f"osr opt_algo={opt_algo}: Dynare uses {matlab}; pydyn uses scipy's {name}, an equivalent method and not a "
+                  "port: the path and possibly the local optimum differ")
+    central = str(oo.get("FiniteDifferenceType", "forward")).lower() == "central"
+    jac = None
+    if analytic and not prob.use_planner:
+        def jac(x):
+            g, bad = prob.gradient(np.asarray(x, float))
+            return g if not bad else optimize.approx_fprime(np.asarray(x, float), f, 1e-7)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if opt_algo == 9:
+            half = 10 * np.maximum(np.abs(x0), 1.0)
+            lo = np.where(np.isfinite(lb), lb, x0 - half)
+            hi = np.where(np.isfinite(ub), ub, x0 + half)
+            w = hi - lo
+            lo, hi = lo + 1e-10 * w, hi - 1e-10 * w
+            rng = np.random.default_rng(0)
+            init = lo + (hi - lo) * rng.random((15 * n, n))
+            init[0] = np.clip(x0, lo, hi)
+            r = optimize.differential_evolution(f, list(zip(lo, hi)), maxiter=int(opts.get("MaxIter", 1000)),
+                                                tol=1e-4 * float(opts.get("TolFun", 1e-8)), init=init, polish=False, seed=0)
+            r2 = optimize.minimize(f, r.x, method="L-BFGS-B", bounds=list(zip(lo, hi)), jac="3-point",
+                                   options={"ftol": 1e-15, "gtol": 1e-10, "maxiter": 1000, "finite_diff_rel_step": 1e-5})
+            res = r2 if r2.fun < r.fun else r
+        elif opt_algo == 1:
+            width = np.where(np.isfinite(ub - lb), ub - lb, 1.0)
+            bnd = [(lo + 1e-10 * w if np.isfinite(lo) else None, hi - 1e-10 * w if np.isfinite(hi) else None)
+                   for lo, hi, w in zip(lb, ub, width)]
+            res = optimize.minimize(f, x0, jac=jac if jac else ("3-point" if central else None), method="SLSQP", bounds=bnd,
+                                    options={"maxiter": int(opts.get("MaxIter", 400)), "ftol": float(opts.get("TolFun", 1e-8)),
+                                             "eps": 1e-7})
+        elif opt_algo == 3:
+            res = optimize.minimize(f, x0, jac=jac if jac else ("3-point" if central else None), method="BFGS",
+                                    options={"maxiter": int(opts.get("MaxIter", 400)),
+                                             "gtol": float(opts.get("TolFun", 1e-8)) * 10, "eps": 1e-7})
+        else:
+            sopt = {"maxiter": int(opts.get("MaxIter", 6000)), "xatol": float(opts.get("TolX", 1e-6)),
+                    "fatol": float(opts.get("TolFun", 1e-8)), "maxfev": int(opts.get("MaxFunEvals", 1000000)), "adaptive": True}
+            res = optimize.minimize(f, x0, method="Nelder-Mead", options=sopt)
+            for _ in range(5):                      # Dynare's routine restarts the simplex; do so until no gain
+                r2 = optimize.minimize(f, res.x, method="Nelder-Mead", options=sopt)
+                gain = res.fun - r2.fun
+                if r2.fun < res.fun:
+                    res = r2
+                if gain < float(opts.get("TolFun", 1e-8)):
+                    break
+    x = np.asarray(res.x, float)
+    if opt_algo in (1, 9) and bounds is not None:        # active set: a coordinate next to its bound goes to the bound if that is no worse
+        for i in range(n):
+            for b in (lb[i], ub[i]):
+                if np.isfinite(b) and abs(x[i] - b) <= 1e-3 * max(abs(b), 1.0) and x[i] != b:
+                    y = x.copy()
+                    y[i] = b
+                    if f(y) <= f(x):
+                        x = y
+    if f(x) > f(x0):                                # never worse than the start
+        x = np.asarray(x0, float)
+    return SimpleNamespace(x=x, fval=f(x), retcode=1 if bool(res.success) else 0, iterations=int(getattr(res, "nit", 0) or 0),
+                           func_count=nfev[0], message=str(res.message))
+
+
 def osr(model, param_names=None, opt_algo=None, order=None, bounds=None, maxit=None, tolf=None,
         optim_opt=None, print_results=False) -> OSRResult:
     """``osr`` (Dynare 7.2's osr.run / osr.objective): the values of ``osr_params`` that minimise the
@@ -1274,8 +1375,16 @@ def osr(model, param_names=None, opt_algo=None, order=None, bounds=None, maxit=N
     if bounds is not None and not (opt_algo in (1, 2, 5, 9) or isinstance(opt_algo, str)):
         raise OSRError("OSR: OSR with bounds on parameters requires a constrained optimizer, i.e. opt_algo= 1,2 or 9.")
     if opt_algo != 4:
-        raise NotImplementedError(f"osr with opt_algo={opt_algo}: pydyn has Dynare's default minimiser "
-                                  "(csminwel, opt_algo=4) only")
+        res = _osr_equivalent(prob, opt_algo, x0, bounds, oo, analytic)
+        model.params[prob.i_params] = res.x
+        dr, info = _resol(model, model.params, prob.order)
+        out = OSRResult(optim_params=dict(zip(prob.param_names, res.x.tolist())), objective_function=res.fval, x=res.x,
+                        initial_objective=loss0, exitflag=res.retcode, message=res.message, iterations=res.iterations,
+                        func_count=res.func_count, dr=dr, error_indicator=int(bool(info[0])))
+        if print_results:
+            print("\nOPTIMAL VALUE OF THE PARAMETERS\n" + "\n".join(f"{k:>12s} {v:10.6f}" for k, v in out.optim_params.items())
+                  + f"\n\nObjective function : {res.fval:16.6g}\n")
+        return out
     from .estimation import csminwel as _cw
     from types import SimpleNamespace
 

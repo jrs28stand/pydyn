@@ -16,7 +16,9 @@ from .matlab import _F
 from .perturbation import dr_ordering
 from .results import cellstr, col, empty, mat, row
 
-#: fields of Dynare's M_ that pydyn does not fill: reading one is refused (it is not "non-existent")
+#: fields of Dynare's M_ that pydyn does not fill: reading one is refused (it is not "non-existent").  The *_partitions
+#: fields are the exception: reading one from MATLAB code loads them on demand (results.getfield -> load_partitions,
+#: a second preprocessor run), so they are listed here only so that M_ without them is not "wrong"
 KNOWN_UNSUPPORTED = {
     "bvar", "xref1", "xref2", "osr", "instr_id", "endo_partitions", "param_partitions", "heterogeneity_aggregates",
     "database", "histval_dseries", "surprise_shocks", "learnt_shocks", "learnt_endval", "shock_paths", "heteroskedastic_shocks",

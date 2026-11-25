@@ -1,0 +1,19 @@
+r = ishandle(5);
+%%
+r = ishandle(0);
+%%
+r = ishandle([0 1 2.5; -0.3 7 0]);
+%%
+r = ishandle('a');
+%%
+r = ishandle([]);
+%%
+r = ishghandle([0 3]);
+%%
+r = isfigure([0 1 2]);
+%%
+r = isaxes([0 1 2]);
+%%
+r = ishandle({1, 2});
+%%
+r = isfigure('x');

@@ -297,10 +297,26 @@ def test_osr_csminwel_stops_near_dynare(case, rel, tmp_path):
     assert res.objective_function == pytest.approx(r["osr_f"], rel=rel)
 
 
+@pytest.mark.parametrize("algo", [1, 3, 7, 8, 9])
+def test_osr_other_optimisers(algo, tmp_path):
+    """opt_algo 1, 3, 8 and 9 are scipy equivalents (a warning says so), 7 is the ported fminsearch: on the corr problem
+    each ends at the loss csminwel finds, to 1e-4 relative (the loss is flat there)."""
+    r = ref("pol_osr_corr")
+    m = load(tmp_path, "pol_osr_corr")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        res = op.osr(m, opt_algo=algo, bounds=np.array([[-50.0, 50.0]] * 4) if algo == 9 else None)
+    assert (algo == 7) or any("not a port" in str(x.message) for x in w)
+    assert res.objective_function <= res.initial_objective
+    assert res.objective_function == pytest.approx(r["osr_f"], rel=1e-4)
+
+
 def test_osr_refusals(tmp_path):
     m = load(tmp_path, "pol_osr")
-    with pytest.raises(NotImplementedError, match="opt_algo=9"):
-        op.osr(m, opt_algo=9)
+    with pytest.raises(NotImplementedError, match="opt_algo=2"):
+        op.osr(m, opt_algo=2)
+    with pytest.raises(op.OSRError, match="does not support opt_algo=5"):
+        op.osr(m, opt_algo=5)
     with pytest.raises(op.OSRError, match="constrained optimizer"):
         op.osr(m, bounds=np.array([[0, 1]] * 4))
     with pytest.raises(op.OSRError, match="only supports order=1"):

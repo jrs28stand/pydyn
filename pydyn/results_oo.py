@@ -246,7 +246,7 @@ class CommandsMixin:
             except (BlanchardKahnError, SteadyStateError) as exc:
                 if self.opt_flag("noprint"):      # stoch_simul.m: print_info(info, options_.noprint) is silent and stoch_simul returns
                     return
-                raise R.ResultsError(f"stoch_simul: {exc}") from None
+                raise R.ResultsError(f"stoch_simul: {exc}", matlab_message=str(exc)) from None
             except KOrderError as exc:
                 raise R.ResultsError(f"stoch_simul: {exc}") from None
         if loglinear and order > 1:

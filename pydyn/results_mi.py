@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .matlab import MatlabError, Unsupported, farr
+from .matlab import MatlabError, Struct, Unsupported, farr
 
 
 def _R():
@@ -56,8 +56,6 @@ _MISSING = {
                    "about 1,800 lines) is not ported",
     "surgibbs": "Dynare's surgibbs (235 lines, on top of the equation parser of dyn_ols) is not ported",
     "olsgibbs": "Dynare's olsgibbs (278 lines, on top of the equation parser of dyn_ols) is not ported",
-    "var_list_": "var_list_ is a char matrix (one padded row per variable) in Dynare, and pydyn's interpreter has no char "
-                 "matrices",
 }
 
 
@@ -81,11 +79,34 @@ class BayesTopt(DynareObject):
 
 
 class MiMixin:
+    def load_partitions(self):
+        """``M_.exo_partitions``, ``endo_partitions``, ``param_partitions`` (the attributes of the declarations, written by the
+        preprocessor's driver: the second run of :mod:`pydyn.submodels`) and ``M_.observed_exo_names``
+        (set_observed_exogenous_variables.m).  Returns the new ``M_``."""
+        if not getattr(self, "_mi_partitions", False):
+            self._ensure_submodels("M_.*_partitions")
+            self._mi_partitions = True
+            M = self.M_
+            ep = M.get("exo_partitions")
+            if isinstance(ep, Struct) and "status" in ep:                      # observed exogenous variables
+                names = list(M["exo_names"].items)
+                st = ep["status"].items
+                M["observed_exo_names"] = _R().cellstr([n for n, s in zip(names, st) if str(s).lower() == "observed"])
+        return self.M_
+
     def _mi_install(self):
         """The Dynare globals estim_params_ and bayestopt_ that the estimation drivers declare."""
         self.I.globals["estim_params_"] = DynareObject("estim_params_", _WHY_ESTIM)
         self.I.globals["bayestopt_"] = BayesTopt(self)
         self.I.base.global_names |= {"estim_params_", "bayestopt_"}
+        m = self.model
+        if m.varobs:                                    # the driver's header: options_.varobs (cell column), options_.varobs_id (row)
+            self.set_options("varobs", _R().cellstr(list(m.varobs)))
+            self.set_options("varobs_id", _R().row([m._ie[v] + 1 for v in m.varobs]))
+        vx = [str(v) for v in m.raw.get("varexobs", [])]
+        if vx:                                          # observed exogenous variables (varexobs): names and declaration indices
+            self.set_options("varexobs", _R().cellstr(vx))
+            self.set_options("varexobs_id", _R().row([m._ix[v] + 1 for v in vx]))
 
     def _mi_layout(self):
         """The restricted state space of dynare_estimation_init (decision-rule order, 0-based): order_var, k2 (the union of the

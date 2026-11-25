@@ -108,6 +108,8 @@ def _diff(ref, ours, path, out, tol):
                 out.append((f"{path}.{n}", "extra"))
         return
     if isinstance(ref, np.ndarray) and ref.dtype == object:
+        if isinstance(ours, Struct) and not len(ours) and all(e is None for e in ref.ravel()):
+            return                      # Octave's struct() with no fields loads as an object array of None
         if not isinstance(ours, Cell) or tuple(ours.shape) != ref.shape:
             out.append((path, "cell shape"))
             return
