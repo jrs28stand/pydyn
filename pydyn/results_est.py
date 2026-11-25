@@ -1285,6 +1285,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         """[dr, info, params] = resol(check_flag, M_, options_, dr, ys, exo_steady_state, exo_det_steady_state):
         first-order rules at the parameters of the M_ passed (higher orders are refused)."""
         from .perturbation import first_order, BlanchardKahnError
+        from .steady import SteadyStateError
         R = _R()
         if len(args) < 6 or not isinstance(args[1], Struct):
             raise Unsupported("resol: unsupported argument list", "results")
@@ -1298,11 +1299,20 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                sol = first_order(m, qz_criterium=self._qz(), loglinear=bool(R.py_value(R.struct_get(ost, "loglinear"))))
+                ys0 = np.asarray(farr(args[4]), float).ravel(order="F")
+                if ys0.size != m.n_endo:
+                    ys0 = self._ss_start()
+                xs0 = np.asarray(farr(args[5]), float).ravel(order="F")
+                ys_, p_ = self._evaluate_ss(ys0, xs0 if xs0.size == m.n_exo else np.zeros(m.n_exo), True)   # resol.m line 75
+                sol = first_order(m, ys=ys_, params=p_, qz_criterium=self._qz(),
+                                  loglinear=bool(R.py_value(R.struct_get(ost, "loglinear"))))
             dr = self._make_dr(sol, sol.as_dr(), 1, self._qz())
             info = 0.0
         except BlanchardKahnError:
             dr, info = args[3], 3.0
+        except SteadyStateError as exc:
+            m.params[:] = saved
+            raise R.ResultsError(f"resol: {exc}") from None
         params = np.asarray(farr(Mst["params"]), float)
         m.params[:] = saved
         return [dr, _F(info), R.col(params.ravel(order="F"))][:max(nargout, 1)]
