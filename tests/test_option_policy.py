@@ -64,8 +64,8 @@ def test_classify(refused_simul_replic):
     assert P.classify("stoch_simul", "an_option_of_a_later_dynare") == "refused"      # unknown options are refused
     assert P.classify("plot_shock_decomposition", "plot_shock_decomp.colormap") == "harmless"
     assert P.classify("sensitivity", "rmse") is None                                   # not a statement pydyn runs
-    why = P.check_statement("estimation", {"particle.filter_algorithm": 1, "order": 1})
-    assert "particle.filter_algorithm" in why and "particle filters" in why and "order" not in why.split(";")[0]
+    why = P.check_statement("estimation", {"skewed_kalman.prune_tol": 1, "order": 1})
+    assert "skewed_kalman.prune_tol" in why and "skewed Kalman" in why and "order" not in why.split(";")[0]
 
 
 def test_refused_option_stops_the_statement(tmp_path, refused_simul_replic):

@@ -30,6 +30,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         R = _R()
         m = self.model
         self._smooth_res = res                      # what forecasts.run(..., 'smoother') starts from
+        sel = self._selected_variables()            # None, or (names, declaration-order columns of the k-step arrays)
         for f in ("Smoother", "SmoothedVariables", "UpdatedVariables", "FilteredVariables",
                   "FilteredVariablesKStepAhead", "FilteredVariablesShockDecomposition",
                   "FilteredVariablesKStepAheadVariances", "SmoothedShocks", "SmoothedMeasurementErrors"):
@@ -44,13 +45,14 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             trend[v] = R.col(res.Trend.get(v, np.zeros(res.nobs)))
         sm["Trend"] = trend
         const = R.rstruct("oo_.Smoother.Constant")
+        keep = set(sel[0]) | set(m.varobs) if sel else None          # the observed variables' constants are always stored
         for v in m.endo_names:
-            if v in res.Constant:
+            if v in res.Constant and (keep is None or v in keep):
                 const[v] = R.col(res.Constant[v])
         sm["Constant"] = const
         init = R.rstruct("oo_.Smoother.Init_State")
         for v in m.endo_names:
-            if v in res.Init_State:
+            if v in res.Init_State and (sel is None or v in sel[0]):
                 init[v] = _F(float(res.Init_State[v]))
         sm["Init_State"] = init
         sm["Init_State_Vector"] = R.col(res.Init_State_Vector)
@@ -63,19 +65,28 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         for field, src in (("SmoothedVariables", res.SmoothedVariables), ("UpdatedVariables", res.UpdatedVariables)):
             s = R.rstruct("oo_." + field)
             for v in m.endo_names:
-                if v in src:
+                if v in src and (sel is None or v in sel[0]):
                     s[v] = R.col(src[v])
             self.set_oo(field, s)
         if nk_filtered and res.FilteredVariables:
             s = R.rstruct("oo_.FilteredVariables")
             for v in m.endo_names:
-                if v in res.FilteredVariables:
+                if v in res.FilteredVariables and (sel is None or v in sel[0]):
                     s[v] = R.col(res.FilteredVariables[v])
             self.set_oo("FilteredVariables", s)
             if res.FilteredVariablesKStepAhead is not None:     # (steps, n_endo, T + max step), declaration order
-                self.set_oo("FilteredVariablesKStepAhead", R.mat(res.FilteredVariablesKStepAhead))
-                if res.FilteredVariablesKStepAheadVariances is not None:
-                    self.set_oo("FilteredVariablesKStepAheadVariances", R.mat(res.FilteredVariablesKStepAheadVariances))
+                fk, fv = res.FilteredVariablesKStepAhead, res.FilteredVariablesKStepAheadVariances
+                if sel is not None:
+                    # store_smoother_results.m: the saved variables in decision-rule order, then A(:,p,:) = A with
+                    # p = sort permutation of their declaration positions (literally, as Dynare does)
+                    dec = np.array(sel[1], int)                              # declaration indices, ascending dr position
+                    p = np.argsort(dec, kind="stable")
+                    sub = fk[:, dec, :]
+                    fk = np.empty_like(sub)
+                    fk[:, p, :] = sub
+                self.set_oo("FilteredVariablesKStepAhead", R.mat(fk))
+                if fv is not None:
+                    self.set_oo("FilteredVariablesKStepAheadVariances", R.mat(fv))
             if self.opt_flag("filter_decomposition"):
                 self.refuse("oo_", ["FilteredVariablesShockDecomposition"], "filter_decomposition is not computed by pydyn")
         s = R.rstruct("oo_.SmoothedShocks")
@@ -87,6 +98,42 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             for v in res.varobs:
                 s[v] = R.col(res.SmoothedMeasurementErrors[v])
             self.set_oo("SmoothedMeasurementErrors", s)
+
+    def _refuse_selected_variables(self, est, mh_replic):
+        """selected_variables_only: the classical smoother (store_smoother_results.m) is reproduced; the posterior smoother's
+        draws (pm3.m on the saved subset) and the covariance arrays of the restricted state space are not."""
+        R = _R()
+        self._mh_eff = mh_replic if est.prior.is_bayesian else 0         # dynare_estimation_init.m: no priors, no Metropolis
+        sel = self._selected_variables()
+        if sel is None:
+            return
+        bayes = bool(np.any(np.asarray(est.prior.shape) > 0))
+        if bayes and (mh_replic > 0 or self.opt_flag("load_mh_file")) and (self.opt_flag("smoother") or self.opt_flag("filtered_vars")
+                                                                 or self.opt("filter_step_ahead")):
+            raise R.ResultsError("estimation: selected_variables_only with the posterior smoother or filtered variables "
+                                 "(the saved-variable subset of the posterior draws) is not supported by pydyn.dynare()")
+        if self.opt_flag("filter_covariance") or self.opt_flag("smoothed_state_uncertainty"):
+            raise R.ResultsError("estimation: selected_variables_only with filter_covariance or smoothed_state_uncertainty "
+                                 "is not supported by pydyn.dynare() (the covariance arrays of the restricted state space)")
+
+    def _selected_variables(self):
+        """options_.selected_variables_only (dynare_estimation_init.m): the variables of the estimation / calib_smoother
+        list (names; declaration indices in decision-rule order) that the smoother results keep, or None for all.
+        Classical forecasts without a posterior ignore the option."""
+        if not self.opt_flag("selected_variables_only"):
+            return None
+        if int(self.opt("forecast", 0) or 0) > 0 and int(getattr(self, "_mh_eff", None) if getattr(self, "_mh_eff", None) is not None
+                                                      else np.max(np.atleast_1d(self.opt("mh_replic", 0) or 0))) == 0 \
+                and not self.opt_flag("load_mh_file"):
+            return None
+        m = self.model
+        names = list(getattr(self, "_sel_vars", None) or [])
+        from .perturbation import dr_ordering
+        order_var = dr_ordering(m.lead_lag_incidence)[0]
+        inv = np.empty(m.n_endo, int)
+        inv[order_var] = np.arange(m.n_endo)
+        dec = sorted({m._ie[v] for v in names}, key=lambda i: inv[i])
+        return [m.endo_names[i] for i in dec], dec
 
     def _estimation_order(self, st, *kinds):
         """options_.order is a stoch_simul default (2) here; estimation and the smoothers work at the order the
@@ -135,6 +182,8 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         self._init_filter_options()
         self.pull()
         self._estimation_order(st, "calib_smoother", "estimation")
+        self._sel_vars = list(self._estimation_var_list(st))
+        self._mh_eff = None
         m = self.model
         self._refuse_unfaithful_smoother()
         try:
@@ -167,7 +216,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         self.compute_steady(command=False)
         sol = first_order(self.model, qz_criterium=self._qz(), loglinear=self.opt_flag("loglinear"))
         self.set_oo("dr", self._make_dr(sol, sol.as_dr(), 1, self._qz()))
-        self.refuse("oo_.dr", ["restrict_var_list", "restrict_columns"], "state-space restriction of dr1.m")
+        self._set_restrict_fields()
 
     # ------------------------------------------------------------------ estimation
     def st_estimation(self, st):
@@ -183,8 +232,15 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         mh_replic = int(np.max(np.atleast_1d(self.opt("mh_replic", 0) or 0)))
         h_fc = int(self.opt("forecast", 0) or 0)
         st_vars = self._estimation_var_list(st)
+        self._sel_vars = list(st_vars)
         self.vars["var_list_"] = R.cellstr([str(x) for x in (st.get("symbol_list") or [])])      # the driver's var_list_
-        for key in ("load_mh_file", "mh_recover", "particle.status",
+        ord_ = (st.get("options") or {}).get("order")
+        ord_ = int(float(ord_[0] if isinstance(ord_, (list, tuple)) else ord_)) if ord_ is not None else 1
+        particle = ord_ >= 2                                  # the preprocessor then writes options_.particle.status = true
+        if self.opt_flag("particle.status") and not particle:
+            raise R.ResultsError("estimation: options_.particle.status with order=1 selects Dynare's nonlinear likelihood "
+                                 "at a first-order approximation, which pydyn does not implement")
+        for key in ("load_mh_file", "mh_recover",
                     "mh_posterior_mode_estimation", "estimate_initial_states_endogenous_prior"):
             if self.opt_flag(key):
                 raise R.ResultsError(f"estimation option {key} is not supported by pydyn.dynare()")
@@ -193,7 +249,12 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                est = Estimation(m)
+                if particle:
+                    from .nonlinear_estimation import NonlinearEstimation
+                    est = NonlinearEstimation(m)
+                else:
+                    est = Estimation(m)
+                self._refuse_selected_variables(est, mh_replic)
                 self._initial_estimation_checks(est)
                 mc_ = est.options["mode_compute"]
                 mode_file = est.options["mode_file"]
@@ -256,6 +317,16 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             self.fig_prior_posterior(est)
         if mc is not None:
             self._posterior_analysis(est, mc, st_vars, st)
+        if particle:
+            # dynare_estimation_1.m: smoothed and filtered objects of a posterior sample need a particle smoother, which Dynare
+            # does not have; after the mode and the sample the function returns (no classical smoother, no forecast)
+            if mc is not None and (self.opt_flag("smoother") or self.opt("filter_step_ahead") or self.opt_flag("filtered_vars")
+                                   or h_fc > 0):
+                raise R.ResultsError("estimation: Particle Smoothers are not yet implemented.")
+            self._partial_dr(old_dr)
+            self.set_oo("gui", R.struct_set(self.oo_["gui"], "ran_estimation", np.bool_(True)))
+            self._est_ctx = {"est": est, "mode": mode, "mc": mc, "theta": theta}
+            return
         posterior_stats = mc is not None and (self.opt_flag("smoother") or bool(self.opt("filter_step_ahead"))
                                               or self.opt_flag("filtered_vars") or h_fc > 0)
         bayes_smoother = mc is not None and self.opt_flag("smoother")
@@ -505,7 +576,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
 
     def _partial_dr(self, old_dr):
         """oo_.dr when no smoother recomputes it: the dr before ``estimation`` (a Struct or []) with order_var and
-        inv_order_var (set_state_space) and restrict_var_list and restrict_columns (refused here)."""
+        inv_order_var (set_state_space) and restrict_var_list and restrict_columns."""
         R = _R()
         cur = self.oo_.get("dr")
         dr = R.rstruct("oo_.dr")
@@ -515,7 +586,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             if isinstance(cur, Struct) and k in cur:
                 dr[k] = cur[k]
         self.set_oo("dr", dr)
-        self.refuse("oo_.dr", ["restrict_var_list", "restrict_columns"], "state-space restriction of dr1.m")
+        self._set_restrict_fields()
 
     def _estimated_me_count(self, est):
         """estim_params_.nvn: the number of estimated standard deviations of measurement errors."""

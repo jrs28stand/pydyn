@@ -447,16 +447,47 @@ class CommandsMixin:
         if order >= 2:
             for k in ("ghxx", "ghuu", "ghxu", "ghs2"):
                 D[k] = R.mat(np.asarray(dr[k], float))
+        if order == 2 and not self.opt_flag("k_order_solver"):
+            D["fuu"] = R.col(self._dr_fuu(dr, sol))
         if order >= 3:
             for k in ("ghxxx", "ghxxu", "ghxuu", "ghuuu", "ghxss", "ghuss"):
                 D[k] = R.mat(np.asarray(dr[k], float))
         self.refused = {k: v for k, v in self.refused.items() if k[0] != "oo_.dr"}
-        if order == 2:
-            self.refuse("oo_.dr", ["fuu"], "second-order auxiliary matrix of dr2.m")
+        if order == 2 and self.opt_flag("k_order_solver"):
+            self.refuse("oo_.dr", ["fuu"], "only dyn_second_order_solver.m stores it (k_order_solver=true runs the C++ solver)")
         if order >= 3:
             self.refuse("oo_.dr", ["g_0", "g_1", "g_2", "g_3", "pruning"],
                         "k_order_perturbation's derivative tensors and pruned state space")
         return D
+
+    def _dr_fuu(self, dr, sol):
+        """oo_.dr.fuu (dyn_second_order_solver.m): the forward-looking terms of the second-order shock effect before the
+        mean correction, (g1(:,ilead) ghuu(klead,:) + g2(:,ilead,ilead) (ghu(klead,:) x ghu(klead,:))) vec(Sigma_e), by equation."""
+        m = self.model
+        n = m.n_endo
+        order_var, _, cnt = dr_ordering(m.lead_lag_incidence)
+        order_var = np.asarray(order_var, int)
+        ys = np.asarray(dr["ys"], float)
+        params = np.asarray(sol.params, float)
+        x = m.exo_steady()
+        klead = np.arange(cnt["nstatic"] + cnt["npred"], n)
+        ilead = 2 * n + order_var[klead]
+        g1 = m.dynamic_jac(np.tile(ys, 3), x, params, ys)
+        rows, cols, vals = m.dynamic_sparse_derivs(2, np.tile(ys, 3), x, params, ys)
+        nl = len(klead)
+        pos = {int(c): i for i, c in enumerate(ilead)}
+        Hl = np.zeros((n, nl, nl))
+        for r, (c1, c2), v in zip(rows, cols, vals):
+            i, j = pos.get(int(c1)), pos.get(int(c2))
+            if i is None or j is None:
+                continue
+            Hl[r, i, j] += v
+            if int(c1) != int(c2):
+                Hl[r, j, i] += v
+        Bu = np.asarray(dr["ghu"], float)[klead, :]
+        Sig = np.asarray(m.Sigma_e, float)
+        ghuu = np.asarray(dr["ghuu"], float)[klead, :]
+        return g1[:, ilead] @ (ghuu @ Sig.ravel(order="F")) + np.einsum("eij,ia,jb,ab->e", Hl, Bu, Bu, Sig)
 
     # ------------------------------------------------------------------ moments
     def _moments(self, dr, names, ivar, order, pruning, shocks_used):

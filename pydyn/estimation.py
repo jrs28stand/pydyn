@@ -915,7 +915,7 @@ def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations,
 # ====================================================================== the estimation object
 _DEFAULTS = dict(
     datafile=None, first_obs=1, nobs=None, loglinear=False, logdata=False, prefilter=0, presample=0,
-    lik_init=1, diffuse_filter=False, kalman_algo=0, kalman_tol=1e-10, diffuse_kalman_tol=1e-6,
+    lik_init=1, diffuse_filter=False, kalman_algo=0, fast_kalman_filter=False, conditional_likelihood=False, kalman_tol=1e-10, diffuse_kalman_tol=1e-6,
     riccati_tol=1e-6, qz_criterium=None, qz_zero_threshold=None, prior_trunc=0.0, Harvey_scale_factor=10.0,
     lyapunov_complex_threshold=1e-15, rescale_prediction_error_covariance=False,
     gstep=(1e-2, 1.0), order=1, use_univariate_filters_if_singularity_is_detected=True,
@@ -943,7 +943,7 @@ _DEFAULTS = dict(
     dsge_var=None, dsge_varlag=4,
 )
 #: names used in the preprocessor's JSON (or old names) -> option names of the manual used here
-_ALIASES = {"mh_nblocks": "mh_nblck", "harvey_scale_factor": "Harvey_scale_factor",
+_ALIASES = {"conditional_likelihood.status": "conditional_likelihood", "mh_nblocks": "mh_nblck", "harvey_scale_factor": "Harvey_scale_factor",
             "MCMC_jumping_covariance": "mcmc_jumping_covariance", "optim_opt": "optim",
             "hessian.use_penalized_objective": "use_penalized_objective_for_hessian",
             "convergence.geweke.geweke_interval": "geweke_interval", "convergence.geweke.taper_steps": "taper_steps",
@@ -1113,6 +1113,8 @@ class Estimation:
             if opts["lik_init"] == 2:
                 raise EstimationError("options diffuse_filter, lik_init and/or kalman_algo have contradictory settings")
             opts["lik_init"] = 3
+        if opts["fast_kalman_filter"] and opts["kalman_algo"] not in (0, 1, 3):
+            raise EstimationError("estimation option conflict: fast_kalman_filter is only available with kalman_algo = 0, 1 or 3")
         if opts["kalman_algo"] not in (0, 1, 2, 3, 4):
             raise NotImplementedError(f"kalman_algo={opts['kalman_algo']} is not implemented")
         if opts["kalman_algo"] in (1, 2) and opts["lik_init"] == 3:
@@ -1578,6 +1580,8 @@ class Estimation:
         trend = self._trend(params, self.nobs)
         if trend is not None:
             Y = Y - trend
+        if o["conditional_likelihood"]:
+            return self._conditional_minus_loglik(T, R, Q, Hm, z, Y, pre=int(o["presample"]), return_lik=return_lik)
         QQ = R @ Q @ R.T
         QQf = self._heteroskedastic_QQ(R, Q)          # QQ, or its (mm, mm, nobs + 1) path
         mm = T.shape[0]
@@ -1662,7 +1666,18 @@ class Estimation:
         lik = None
         if QQf.ndim == 3:
             QQ = QQf[:, :, dp:]
-        if algo in (1, 3):
+        fast = bool(o["fast_kalman_filter"]) and algo in (1, 3) and di is None and QQf.ndim == 2
+        if fast:
+            # dsge_likelihood.m: Chandrasekhar recursions (kalman_filter_fast.m); not with missing data, and diffuse periods
+            # are penalised (info 55)
+            if dp > 0:
+                raise _Rejected("fast_kalman_filter with diffuse periods (info 55)", 55, 0.1)
+            LIK, lik = kalman.kalman_filter_fast(Y, a, P, T, Hm, z, kalman_tol=o["kalman_tol"], presample=pre)
+            if np.isinf(LIK):
+                if not o["use_univariate_filters_if_singularity_is_detected"]:
+                    raise _Rejected("the forecast-error covariance is singular (info 50)", 50)
+                algo = 2 if algo == 1 else 4
+        elif algo in (1, 3):
             out = kalman.kalman_filter(Y[:, dp:], a, P, T, QQ, Hm, z, diffuse_periods=dp, data_index=di,
                                        no_more_missing=nmm, return_lik=True,
                                        rescale=bool(o["rescale_prediction_error_covariance"]), **kw)
@@ -1688,6 +1703,42 @@ class Estimation:
         if return_lik:
             return LIK, np.concatenate([dlik, lik])[pre:]
         return LIK
+
+    def _conditional_minus_loglik(self, T, R, Q, Hm, z, Y, pre, return_lik=False):
+        """``dsge_conditional_likelihood_1.m``: the likelihood of the data conditional on a zero initial state, with the shocks
+        recovered from the observations (as many shocks as observed variables, no measurement error, no missing data)."""
+        if np.any(Hm != 0) or self._groups["cn"] or self._groups["cx"]:
+            raise EstimationError("Option conditional_likelihood does not support declaration of measurement errors. "
+                                  "You can specify the measurement errors in the model block directly by adding "
+                                  "measurement equations.")
+        if self.missing:
+            raise EstimationError("Option conditional_likelihood is not compatible with missing observations.")
+        pp, rr = Y.shape[0], Q.shape[0]
+        if pp != rr:
+            raise EstimationError("With conditional_likelihood the number of innovations must be equal to the number of "
+                                  "observed varilables!")
+        A = R[z, :]
+        sign, logabs = np.linalg.slogdet(A)
+        if sign == 0 or not np.isfinite(logabs):
+            raise _Rejected("R(Z,:) is singular (info 50)", 50)
+        iQc = np.linalg.cholesky(np.linalg.inv(Q)).T                       # chol(inv(Q)), upper
+        const = -0.5 * rr * np.log(2 * np.pi) - logabs + np.sum(np.log(np.diag(iQc)))
+        Ytild = np.linalg.solve(A, Y)
+        Ttild = np.linalg.solve(A, T[z, :])
+        S = np.zeros(T.shape[0])
+        llik = np.zeros(Y.shape[1])
+        for t in range(Y.shape[1]):
+            eps = Ytild[:, t] - Ttild @ S
+            S = T @ S + R @ eps
+            if t >= pre:
+                u = iQc @ eps
+                llik[t] = const - 0.5 * (u @ u)
+        LIK = -float(np.sum(llik))
+        if np.isinf(LIK):
+            raise _Rejected("the likelihood is infinite (info 50)", 50)
+        if np.isnan(LIK):
+            raise _Rejected("the likelihood is NaN (info 45)", 45)
+        return (LIK, -llik) if return_lik else LIK
 
     def _dsge_var_minus_loglik(self, theta, return_lik=False):
         """``dsge_var_likelihood.m`` (pydyn.dsge_var) in place of the Kalman-filter likelihood."""
