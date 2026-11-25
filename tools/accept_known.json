@@ -28,12 +28,12 @@
   "note": "Dynare's stored oo_.steady_state is not a steady state of the model at the final parameters (estimation/optimizer ended away from where the stored steady state was computed, or initval never solved); its rules, moments, IRFs and likelihood come from that point, so they are not reproducible from the parameters. pydyn's own steady state solves the static model to rounding"
  },
  "kalman_filter_smoother/compare_results_simulation/fs2000_ML": {
-  "class": "Dynare quirk",
-  "note": "Dynare's stored oo_.steady_state is not a steady state of the model at the final parameters (estimation/optimizer ended away from where the stored steady state was computed, or initval never solved); its rules, moments, IRFs and likelihood come from that point, so they are not reproducible from the parameters. pydyn's own steady state solves the static model to rounding"
+  "class": "Dynare quirk (optimiser end point)",
+  "note": "ML estimation without priors on a nearly degenerate likelihood (psi -> 1, steady state of P, c, W and k explodes). The end point of newrat depends on rounding: a 1e-7 change of the initial alp moves pydyn's end point from alp=0.683, rho=-0.40 to alp=0.707, rho=0.735 (Dynare's: 0.726, 0.730), so oo_.dr and the smoothed variables at the mode are not reproducible. The .mod file's own check (simulate the smoothed shocks from the smoothed initial state and compare with the data and the smoother) passes in pydyn"
  },
  "kalman_filter_smoother/compare_results_simulation/fs2000_ML_loglinear": {
-  "class": "Dynare quirk",
-  "note": "Dynare's stored oo_.steady_state is not a steady state of the model at the final parameters (estimation/optimizer ended away from where the stored steady state was computed, or initval never solved); its rules, moments, IRFs and likelihood come from that point, so they are not reproducible from the parameters. pydyn's own steady state solves the static model to rounding"
+  "class": "Dynare quirk (optimiser end point)",
+  "note": "ML estimation without priors on a nearly degenerate likelihood (psi -> 1, steady state of P, c, W and k explodes). The end point of newrat depends on rounding: a 1e-7 change of the initial alp moves pydyn's end point from alp=0.683, rho=-0.40 to alp=0.707, rho=0.735 (Dynare's: 0.726, 0.730), so oo_.dr and the smoothed variables at the mode are not reproducible. The .mod file's own check (simulate the smoothed shocks from the smoothed initial state and compare with the data and the smoother) passes in pydyn"
  },
  "estimation/conditional-likelihood/1/fs2000_estimation_conditional": {
   "class": "Dynare quirk",

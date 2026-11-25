@@ -831,9 +831,6 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         order = int(self.opt("order", 2))
         if self.opt_flag("linear"):
             order = 1
-        if order > 1:
-            raise R.ResultsError("forecast at order > 1 draws random numbers, which pydyn.dynare() does not "
-                                 "reproduce from Dynare's stream")
         sopts = st.get("options") or {}
         # forecasts.run ('simul'): horizon = options_.periods (the statement's own, else that of an earlier stoch_simul), 5 if 0
         periods = int(self.opt("periods", 0) or 0) or 5
@@ -853,7 +850,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 fc = forecast(m, var_list or None, periods=periods, order=order,
-                              pruning=self.opt_flag("pruning"), **kw)
+                              pruning=self.opt_flag("pruning"), rng=self.rng, **kw)
         except (NotImplementedError, ValueError) as exc:
             raise R.ResultsError(f"forecast: {exc}") from None
         out = R.rstruct("oo_.forecast")
@@ -1377,7 +1374,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
                 ys_, p_ = self._evaluate_ss(ys0, xs0 if xs0.size == m.n_exo else np.zeros(m.n_exo), True)   # resol.m line 75
                 sol = first_order(m, ys=ys_, params=p_, qz_criterium=self._qz(),
                                   loglinear=bool(R.py_value(R.struct_get(ost, "loglinear"))))
-            dr = self._make_dr(sol, sol.as_dr(), 1, self._qz())
+            dr = self._make_dr(sol, sol.as_dr(), 1, self._qz(), ys=ys_)
             info = 0.0
         except BlanchardKahnError:
             dr, info = args[3], 3.0
