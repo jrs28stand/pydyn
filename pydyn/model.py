@@ -47,6 +47,9 @@ def _pairs(items, key_a, key_b):
     return [(d[key_a], d[key_b]) for d in items]
 
 
+_OSR_STICKY = ("optim_opt", "osr.opt_algo", "osr.maxit", "osr.tolf", "analytic_derivation")
+
+
 class ModelError(Exception):
     pass
 
@@ -567,6 +570,13 @@ class Model:
             # optimal policy: read by pydyn.optimal_policy (ramsey_policy and discretionary_policy also act
             # as stoch_simul, whose options they take)
             self.options[kind] = st.get("options", {}) if kind not in ("osr_params", "optim_weights", "osr_params_bounds") else st
+            if kind == "osr":
+                # these options live in options_ and stay for the next osr: ``osr(optim=('TolFun',1e-20))`` also governs
+                # the osr statements after it, as does analytic_derivation
+                kept = getattr(self, "_osr_sticky", {})
+                kept.update({k: v for k, v in self.options[kind].items() if k in _OSR_STICKY})
+                self._osr_sticky = kept
+                self.options[kind] = {**kept, **self.options[kind]}
             if kind == "osr_params_bounds":
                 self.options[kind] = {"bounds": [(d["parameter"], self._value(d["bounds"][0]), self._value(d["bounds"][1]))
                                                  for d in st.get("bounds", [])]}

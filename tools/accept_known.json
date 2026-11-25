@@ -162,5 +162,9 @@
  "filter_step_ahead/trend_cycle_decomposition": {
   "class": "Dynare quirk (optimiser end point, propagated by the chain)",
   "note": "After the fix of the repeated-draws correction of the kernel bandwidth (pydyn.posterior._repeated_draws_correction: runs of more than 4 equal draws were mis-counted; the density differed by up to 39), what remains differs at 1e-7 relative: the posterior mode differs by 8.8e-10 in alpha (0.96465378682 Dynare, 0.96465378767 pydyn, csminwel end points, below the 1e-8 mode rule), the replayed chain is shifted rigidly by that amount (posterior mean of alpha differs by 9.1e-10), and the smoothed stationary component z (|z| < 0.08) moves by 2e-10 per draw, i.e. 6e-8 relative; the kernel density values (peak 1.4e3) move by 1.6e-4. Accept/reject decisions, draws' order and the density grids agree (grid to 6e-10)"
+ },
+ "optimal_policy/OSR/osr_objective_correctness_anal_deriv": {
+  "class": "Dynare quirk (optimiser path)",
+  "note": "The analytic gradient is exact (pydyn.optimal_policy._osr_gradient against central differences to 4e-4 relative at the optimum, 1e-8 elsewhere) and the first two osr calls reproduce Dynare's optima (objective 0.442084811315 and 0.356971786749 on both sides; the second osr carries the first one's optim=('TolFun',1e-20), as in Dynare). The last two osr calls start from the 6-digit rounded optimum written in the .mod file, where the loss is flat to 1e-12: Dynare's csminwel makes 3 to 5 steps of 1e-6 (objective lower by 5e-12), pydyn's stops with a zero improvement; rule coefficients differ by 1e-6, dr, moments and IRFs follow"
  }
 }

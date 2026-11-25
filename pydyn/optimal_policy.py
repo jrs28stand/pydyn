@@ -1160,6 +1160,47 @@ class _OSRProblem:
         return loss, [0]
 
 
+def _osr_gradient(prob, x):
+    """The gradient of the OSR loss (``osr.objective`` with analytic_derivation, order 1, optim_weights): the loss is
+    ``sum(W .* Var_y)`` with ``Var_y = C P C' + D Sigma D'`` and ``P = A P A' + B Sigma B'``; its parameter derivatives
+    come from the analytic derivatives of the decision rules (:mod:`pydyn.params_derivs`)."""
+    from .moments import lyapunov_symm
+    from .params_derivs import perturbation_params_derivs
+    from .perturbation import dr_ordering
+    model = prob.model
+    p = prob.params0.copy()
+    p[prob.i_params] = x
+    dr, info = _resol(model, p, prob.order)
+    if info[0] or prob.use_planner:
+        return np.full(len(x), np.nan), True
+    D = perturbation_params_derivs(model, prob.i_params, (), (), ys=np.asarray(dr["ys"], float), params=p)
+    _, _, cnt = dr_ordering(model.lead_lag_incidence)
+    ns, nsp = cnt["nstatic"], cnt["npred"] + cnt["nboth"]
+    iv = dr_inv(dr)[prob.i_var]
+    Sigma = np.asarray(model.Sigma_e, float)
+    ghx, ghu = np.asarray(dr["ghx"], float), np.asarray(dr["ghu"], float)
+    A, B = ghx[ns:ns + nsp], ghu[ns:ns + nsp]
+    C, Du = ghx[iv], ghu[iv]
+    qz = prob.qz
+    vx, u = lyapunov_symm(A, B @ Sigma @ B.T, qz)
+    if u.shape[1] > 0:
+        raise OSRError("OSR(analytic_derivation): the model has unit roots; the analytic derivative is not provided")
+    P = vx
+    g = np.zeros(len(x))
+    for j in range(len(x)):
+        dA, dB = D["dghx"][ns:ns + nsp, :, j], D["dghu"][ns:ns + nsp, :, j]
+        dC, dD = D["dghx"][iv, :, j], D["dghu"][iv, :, j]
+        Q = dA @ P @ A.T + A @ P @ dA.T + dB @ Sigma @ B.T + B @ Sigma @ dB.T
+        dP, _ = lyapunov_symm(A, Q, qz)
+        dV = (dC @ P @ C.T + C @ dP @ C.T + C @ P @ dC.T + dD @ Sigma @ Du.T + Du @ Sigma @ dD.T)
+        nz = prob.W != 0
+        g[j] = float(np.sum(prob.W[nz] * dV[nz]))
+    return g, False
+
+
+_OSRProblem.gradient = _osr_gradient
+
+
 def _parse_optim_opt(text):
     """``optim=('Name',value,...)`` as the preprocessor writes it: ''Name'',value pairs."""
     import re
@@ -1199,9 +1240,7 @@ def osr(model, param_names=None, opt_algo=None, order=None, bounds=None, maxit=N
     there."""
     prob = _OSRProblem(model, param_names, order, opt_algo)
     opt_algo, st_opts = prob.opt_algo, prob.st_opts
-    if st_opts.get("analytic_derivation"):
-        raise NotImplementedError("osr(analytic_derivation): the analytic derivatives of the moments "
-                                  "(identification.get_perturbation_params_derivs) are not ported")
+    analytic = bool(st_opts.get("analytic_derivation"))
     if bounds is None:
         bl = model.options.get("osr_params_bounds", {}).get("bounds", [])
         if bl:
@@ -1245,7 +1284,8 @@ def osr(model, param_names=None, opt_algo=None, order=None, bounds=None, maxit=N
         return SimpleNamespace(fval=d["f"], x=np.asarray(d["x"], float), iterations=d["iterations"],
                                func_count=d["fcount"], retcode=d["retcode"], message=d["message"])
     H0 = oo.get("InitialInverseHessian")
-    res = csminwel(prob, x0, H0=None if H0 is None else np.asarray(H0, float),
+    grad = prob.gradient if analytic else None
+    res = csminwel(prob, x0, H0=None if H0 is None else np.asarray(H0, float), grad=grad,
                    crit=float(oo.get("TolFun", 1e-7)), nit=int(oo.get("MaxIter", 1000)),
                    method=int(oo.get("NumgradAlgorithm", 2)), epsilon=float(oo.get("NumgradEpsilon", 1e-6)))
     model.params[prob.i_params] = res.x

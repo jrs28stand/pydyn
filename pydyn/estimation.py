@@ -673,7 +673,7 @@ _CSMINWEL_MESSAGES = {0: "normal step", 1: "zero gradient", 2: "back and forth o
                       -1: "Bad initial parameter."}
 
 
-def csminwel(fcn, x0, H0=None, crit=1e-7, nit=1000, method=2, epsilon=1e-6, rand=None, verbose=False):
+def csminwel(fcn, x0, H0=None, crit=1e-7, nit=1000, method=2, epsilon=1e-6, rand=None, verbose=False, grad=None):
     """Christopher Sims's quasi-Newton minimiser with BFGS updates of the inverse Hessian, as shipped
     with Dynare 7.2 (``csminwel1.m``, Dynare's ``mode_compute=4``), with numerical gradients.
 
@@ -682,7 +682,8 @@ def csminwel(fcn, x0, H0=None, crit=1e-7, nit=1000, method=2, epsilon=1e-6, rand
     ``penalty`` (Dynare's ``penalty_objective_function``). ``H0`` is the initial inverse Hessian
     (default ``1e-4 * I``), ``crit`` the convergence criterion on the function value, ``nit`` the
     maximum number of iterations, ``method`` the gradient formula (2, 3 or 5 points; 13, 15) and
-    ``epsilon`` its step. When the line search hits a "cliff" the search direction is perturbed with
+    ``epsilon`` its step; ``grad(x) -> (g, badg)`` replaces the numerical gradient (Dynare's analytic-gradient mode,
+    where the objective returns its gradient). When the line search hits a "cliff" the search direction is perturbed with
     uniform random numbers: ``rand(n)`` supplies them (default: a numpy generator seeded with 0, so
     results are reproducible; Dynare uses MATLAB's stream).
 
@@ -703,6 +704,9 @@ def csminwel(fcn, x0, H0=None, crit=1e-7, nit=1000, method=2, epsilon=1e-6, rand
         return state["penalty"] + pen if code else fval
 
     def numgrad(f, x):
+        if grad is not None:                       # analytic gradient (Dynare's grad flag): no function evaluations
+            g_, badg_ = grad(np.asarray(x, float))
+            return np.asarray(g_, float).ravel(), bool(badg_), 0
         return _csm_numgrad(pfun, f, x, method, epsilon)
 
     out = {"f": None, "x": None, "g": None, "H": None, "iterations": 0, "fcount": 0, "retcode": None, "message": ""}
