@@ -1,0 +1,48 @@
+{"dynamic_model": {"model_local_variables": [], "external_functions_temporary_terms_": [], "temporary_terms_": [{"temporary_term": "T38", "value": "c^GAMMAC"}
+, {"temporary_term": "T42", "value": "c(1)^GAMMAC"}
+], 
+"residuals":[
+{"residual": {"lhs": "ec", "rhs": "c(1)"}}
+, {"residual": {"lhs": "c", "rhs": "y+b-R*b(-1)+v"}}
+, {"residual": {"lhs": "lb*occbin_borrcon_bind+(b-y*M)*(1-occbin_borrcon_bind)", "rhs": "0"}}
+, {"residual": {"lhs": "lb", "rhs": "1/c^GAMMAC-R*BETA/c(1)^GAMMAC"}}
+, {"residual": {"lhs": "log(y)", "rhs": "RHO*log(y(-1))+u"}}
+, {"residual": {"lhs": "c_hat", "rhs": "log(c)-log(STEADY_STATE(c))"}}
+, {"residual": {"lhs": "b_hat", "rhs": "log(b)-log(STEADY_STATE(b))"}}
+, {"residual": {"lhs": "y_hat", "rhs": "log(y)-log(STEADY_STATE(y))"}}
+
+]
+, "external_functions_temporary_terms_jacobian": [], "temporary_terms_jacobian": [{"temporary_term": "T74", "value": "get_power_deriv(c,GAMMAC,1)"}
+, {"temporary_term": "T75", "value": "(-T74)"}
+, {"temporary_term": "T81", "value": "get_power_deriv(c(1),GAMMAC,1)"}
+, {"temporary_term": "T83", "value": "(-(R*BETA*T81))"}
+], "jacobian": {"dims": [8, 26], "entries": [{"indices": [1, 18], "eq": 1, "var": "c", "shift": 1, "val": "(-1)"}
+, {"indices": [1, 11], "eq": 1, "var": "ec", "shift": 0, "val": "1"}
+, {"indices": [2, 1], "eq": 2, "var": "b", "shift": -1, "val": "R"}
+, {"indices": [2, 9], "eq": 2, "var": "b", "shift": 0, "val": "(-1)"}
+, {"indices": [2, 10], "eq": 2, "var": "c", "shift": 0, "val": "1"}
+, {"indices": [2, 13], "eq": 2, "var": "y", "shift": 0, "val": "(-1)"}
+, {"indices": [2, 26], "eq": 2, "var": "v", "shift": 0, "val": "(-1)"}
+, {"indices": [3, 9], "eq": 3, "var": "b", "shift": 0, "val": "1-occbin_borrcon_bind"}
+, {"indices": [3, 12], "eq": 3, "var": "lb", "shift": 0, "val": "occbin_borrcon_bind"}
+, {"indices": [3, 13], "eq": 3, "var": "y", "shift": 0, "val": "(1-occbin_borrcon_bind)*(-M)"}
+, {"indices": [4, 10], "eq": 4, "var": "c", "shift": 0, "val": "(-(T75/(T38*T38)))"}
+, {"indices": [4, 18], "eq": 4, "var": "c", "shift": 1, "val": "T83/(T42*T42)"}
+, {"indices": [4, 12], "eq": 4, "var": "lb", "shift": 0, "val": "1"}
+, {"indices": [5, 5], "eq": 5, "var": "y", "shift": -1, "val": "(-(RHO*1/y(-1)))"}
+, {"indices": [5, 13], "eq": 5, "var": "y", "shift": 0, "val": "1/y"}
+, {"indices": [5, 25], "eq": 5, "var": "u", "shift": 0, "val": "(-1)"}
+, {"indices": [6, 10], "eq": 6, "var": "c", "shift": 0, "val": "(-(1/c))"}
+, {"indices": [6, 14], "eq": 6, "var": "c_hat", "shift": 0, "val": "1"}
+, {"indices": [7, 9], "eq": 7, "var": "b", "shift": 0, "val": "(-(1/b))"}
+, {"indices": [7, 15], "eq": 7, "var": "b_hat", "shift": 0, "val": "1"}
+, {"indices": [8, 13], "eq": 8, "var": "y", "shift": 0, "val": "(-(1/y))"}
+, {"indices": [8, 16], "eq": 8, "var": "y_hat", "shift": 0, "val": "1"}
+]}, "external_functions_temporary_terms_hessian": [], "temporary_terms_hessian": [], "hessian": {"dims": [8, 26, 26], "entries": [{"indices": [4, 10, 10], "eq": 4, "var1": "c", "shift1": 0, "var2": "c", "shift2": 0, "val": "(-((T38*T38*(-(get_power_deriv(c,GAMMAC,2)))-T75*(T38*T74+T38*T74))/(T38*T38*T38*T38)))"}
+, {"indices": [4, 18, 18], "eq": 4, "var1": "c", "shift1": 1, "var2": "c", "shift2": 1, "val": "(T42*T42*(-(R*BETA*get_power_deriv(c(1),GAMMAC,2)))-T83*(T42*T81+T42*T81))/(T42*T42*T42*T42)"}
+, {"indices": [5, 5, 5], "eq": 5, "var1": "y", "shift1": -1, "var2": "y", "shift2": -1, "val": "(-(RHO*(-1)/(y(-1)*y(-1))))"}
+, {"indices": [5, 13, 13], "eq": 5, "var1": "y", "shift1": 0, "var2": "y", "shift2": 0, "val": "(-1)/(y*y)"}
+, {"indices": [6, 10, 10], "eq": 6, "var1": "c", "shift1": 0, "var2": "c", "shift2": 0, "val": "(-((-1)/(c*c)))"}
+, {"indices": [7, 9, 9], "eq": 7, "var1": "b", "shift1": 0, "var2": "b", "shift2": 0, "val": "(-((-1)/(b*b)))"}
+, {"indices": [8, 13, 13], "eq": 8, "var1": "y", "shift1": 0, "var2": "y", "shift2": 0, "val": "(-((-1)/(y*y)))"}
+]}, "external_functions_temporary_terms_third_derivative": [], "temporary_terms_third_derivative": [], "third_derivative": {"dims": [8, 26, 26, 26], "entries": []}}}

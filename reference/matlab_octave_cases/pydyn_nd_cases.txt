@@ -1,0 +1,975 @@
+r = zeros(2,3,4);
+%%
+r = ones(2,3,2);
+%%
+r = size(zeros(2,3,1));
+%%
+r = size(zeros(2,3,1,1));
+%%
+r = size(zeros([2 3 4]));
+%%
+r = size(ones(2,0,3));
+%%
+r = nan(2,1,2);
+%%
+r = NaN(1,2,3);
+%%
+r = Inf(2,2,2);
+%%
+r = true(2,1,2);
+%%
+r = false(1,1,3);
+%%
+r = size(zeros(1,1,1,5));
+%%
+r = ndims(zeros(2,3,4,5));
+%%
+r = ndims(zeros(2,3,1));
+%%
+r = numel(zeros(2,3,4));
+%%
+r = size(zeros(2,-1,3));
+%%
+r = cat(3, [1 2; 3 4], [5 6; 7 8]);
+%%
+r = cat(3, 1, 2, 3);
+%%
+r = size(cat(4, ones(2), zeros(2)));
+%%
+r = cat(3, [1 2], [3 4], [5 6]);
+%%
+r = cat(3, [], [1 2; 3 4]);
+%%
+r = cat(3, [1 2; 3 4], []);
+%%
+r = cat(3, [], [], [1 2]);
+%%
+r = cat(3, [1 2], [1 2 3]);
+%%
+r = cat(1, ones(2,2,2), zeros(1,2,2));
+%%
+r = cat(2, ones(2,2,2), zeros(2,1,2));
+%%
+r = [ones(2,2,2), zeros(2,1,2)];
+%%
+r = [ones(2,2,2); 2*ones(1,2,2)];
+%%
+r = [ones(2,2,2), ones(2,2)];
+%%
+r = [ones(2,2,2), []];
+%%
+r = islogical(cat(3, true(2), false(2)));
+%%
+r = islogical(cat(3, true(2), zeros(2)));
+%%
+r = size(cat(3, zeros(0,2), zeros(0,2)));
+%%
+r = size(repmat([1 2; 3 4], [1 1 3]));
+%%
+r = repmat([1 2; 3 4], 1, 2, 2);
+%%
+r = repmat(5, [2 1 3]);
+%%
+r = repmat(cat(3,1,2), 2, 2);
+%%
+r = size(repmat(ones(2,2,2), [1 1 1 2]));
+%%
+r = reshape(1:24, 2, 3, 4);
+%%
+r = reshape(1:24, [2 3 4]);
+%%
+r = reshape(1:24, 2, [], 4);
+%%
+r = size(reshape(1:24, 4, 3, 2, 1));
+%%
+r = reshape(1:24, 5, [], 2);
+%%
+r = reshape(reshape(1:12, 2, 3, 2), 3, 4);
+%%
+r = reshape(1:8, 2, 2, 2); r = r(:)';
+%%
+A = reshape(1:24,2,3,4); r = A(:,:,3);
+%%
+A = reshape(1:24,2,3,4); r = A(2,3,4);
+%%
+A = reshape(1:24,2,3,4); r = A(2,:,1);
+%%
+A = reshape(1:24,2,3,4); r = A(:,2,:);
+%%
+A = reshape(1:24,2,3,4); r = A(1,2,:);
+%%
+A = reshape(1:24,2,3,4); r = A(end);
+%%
+A = reshape(1:24,2,3,4); r = A(end,end,end);
+%%
+A = reshape(1:24,2,3,4); r = A(:,end);
+%%
+A = reshape(1:24,2,3,4); r = A(2,end);
+%%
+A = reshape(1:24,2,3,4); r = A(:,:,end-1);
+%%
+A = reshape(1:24,2,3,4); r = A(1, 7);
+%%
+A = reshape(1:24,2,3,4); r = A([1 2], [1 12]);
+%%
+A = reshape(1:24,2,3,4); r = A(13);
+%%
+A = reshape(1:24,2,3,4); r = A([1 5 24]);
+%%
+A = reshape(1:24,2,3,4); r = A([1 5; 6 24]);
+%%
+A = reshape(1:24,2,3,4); r = A(:);
+%%
+A = reshape(1:24,2,3,4); r = A(A > 20);
+%%
+A = reshape(1:24,2,3,4); r = A(:, [true false true], 2);
+%%
+A = reshape(1:24,2,3,4); r = A(2,3,5);
+%%
+A = reshape(1:24,2,3,4); r = A(25);
+%%
+A = reshape(1:24,2,3,4); r = A(1,2,3,1);
+%%
+A = reshape(1:24,2,3,4); r = A(1,2,3,2);
+%%
+A = reshape(1:24,2,3,4); r = A(:,:);
+%%
+A = reshape(1:24,2,3,4); r = A(:,:,:);
+%%
+A = reshape(1:24,2,3,4); r = A(:,:,[4 1]);
+%%
+A = [1 2; 3 4]; r = A(:,:,1);
+%%
+A = [1 2; 3 4]; r = A(2,1,1,1);
+%%
+A = [1 2; 3 4]; r = A(:,:,2);
+%%
+A = [1 2; 3 4]; r = A(:,:,[1 1]);
+%%
+x = 1:10; r = x(reshape(1:8,2,2,2));
+%%
+A = reshape(1:24,2,3,4); r = A(reshape([1 2 3 4 5 6 7 8], 2, 2, 2));
+%%
+A = reshape(1:24,2,3,4); r = size(A(:,[],:));
+%%
+A = reshape(1:24,2,3,4); r = A(logical(mod(A,2)));
+%%
+A = reshape(1:24,2,3,4); r = A(end, end);
+%%
+A = reshape(1:24,2,3,4); r = A(end-1, 2:end, end);
+%%
+A = zeros(2,2); A(:,:,2) = [1 2; 3 4]; r = A;
+%%
+A = []; A(:,:,2) = [1 2; 3 4]; r = A;
+%%
+A = zeros(2,3,4); A(2,3,4) = 7; r = A(:)';
+%%
+A = zeros(2,3,4); A(:,:,2) = 1; r = sum(A(:));
+%%
+A = zeros(2,3); A(1,1,3) = 5; r = size(A);
+%%
+A = zeros(2,3,4); A(3,1,1) = 1; r = size(A);
+%%
+A = zeros(2,3,4); A(1,1,6) = 1; r = size(A);
+%%
+A = zeros(2,3,4); A(:,:,2) = ones(3,2); r = A;
+%%
+A = zeros(2,3,4); A(:,:,2) = ones(1,6); r = A;
+%%
+A = zeros(2,3,2); A(1,:,:) = [1 2 3; 4 5 6]; r = A;
+%%
+A = zeros(2,3,2); A(1,:,:) = reshape(1:6, 3, 2); r = A;
+%%
+A = zeros(2,3,2); A(1,:,:) = reshape(1:6, 1, 3, 2); r = A;
+%%
+A = zeros(2,3,4); A(5) = 9; r = A(:,:,1);
+%%
+A = zeros(2,3,4); A(25) = 1; r = A;
+%%
+A = zeros(2,3,4); A(A == 0) = 3; r = sum(A(:));
+%%
+A = reshape(1:24,2,3,4); A(A > 12) = 0; r = A;
+%%
+A = zeros(2,3,4); A(:) = 1:24; r = A;
+%%
+A = zeros(2,3,4); A(:,:) = 1; r = A;
+%%
+A = zeros(2,3,4); A(:, 13) = 1; r = A;
+%%
+A = zeros(2,3,4); A(1, 2) = 5; r = A;
+%%
+A = zeros(2,3,4); A(:,:,:,2) = ones(2,3,4); r = size(A);
+%%
+A = []; A(2,3,2) = 1; r = A;
+%%
+A = []; A(:,:,:) = ones(2,3,4); r = size(A);
+%%
+A = []; A(:,1,:) = ones(2,1,3); r = size(A);
+%%
+A = []; A(:,:,2) = ones(1,3); r = size(A);
+%%
+A = []; A(:,2,:) = ones(3,2); r = size(A);
+%%
+A = []; A(1,:,:) = ones(3,2); r = size(A);
+%%
+clear A; A(2,2,2) = 3; r = A;
+%%
+A = true(2,2,2); A(1) = 0; r = A;
+%%
+A = true(2,2,2); A(1,1,1) = 5; r = islogical(A);
+%%
+A = zeros(2,2,2); A(:,:,2) = true(2); r = islogical(A);
+%%
+A = zeros(2,2,2); A(:,:,1) = []; r = size(A);
+%%
+A = reshape(1:8,2,2,2); A(:,1,:) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(2,:,:) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(:,:,:) = []; r = size(A);
+%%
+A = reshape(1:8,2,2,2); A(3) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(:) = []; r = size(A);
+%%
+A = reshape(1:8,2,2,2); A(:,:,3) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(1,1,:) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(:,[],:) = []; r = A;
+%%
+A = reshape(1:12,2,3,2); A(:,[1 3],:) = []; r = A;
+%%
+A = reshape(1:8,2,2,2); A(:,:,[true false]) = []; r = A;
+%%
+r = size(zeros(2,3,4), 3);
+%%
+r = size(zeros(2,3,4), 4);
+%%
+[a,b] = size(zeros(2,3,4)); r = [a b];
+%%
+[a,b,c,d] = size(zeros(2,3,4)); r = [a b c d];
+%%
+r = size(zeros(2,3,4), [1 3]);
+%%
+r = size(zeros(2,3,4), 2, 3);
+%%
+r = length(zeros(2,5,3));
+%%
+r = isempty(zeros(2,0,3));
+%%
+r = [isvector(zeros(1,1,3)), isscalar(zeros(1,1,3)), ismatrix(zeros(2,2,2)), isrow(zeros(1,3,2)), iscolumn(zeros(3,1,2)), issquare(zeros(2,2,2))];
+%%
+r = [ismatrix(zeros(2,3)), isvector(zeros(1,3)), issquare(zeros(3))];
+%%
+r = squeeze(ones(1,1,3));
+%%
+r = size(squeeze(ones(1,3,1,2)));
+%%
+r = size(squeeze(ones(2,1,3)));
+%%
+r = squeeze([1 2 3]);
+%%
+r = squeeze(reshape(1:6,1,2,3));
+%%
+r = permute(reshape(1:24,2,3,4), [3 1 2]);
+%%
+r = size(permute(zeros(2,3), [3 1 2]));
+%%
+r = permute([1 2; 3 4], [2 1]);
+%%
+r = ipermute(permute(reshape(1:24,2,3,4), [3 1 2]), [3 1 2]);
+%%
+r = permute(zeros(2,3,4), [1 2]);
+%%
+r = permute(zeros(2,3), [1 1]);
+%%
+r = size(permute(zeros(2,3,4), [2 1 3 4]));
+%%
+A = reshape(1:24,2,3,4); r = sum(A);
+%%
+A = reshape(1:24,2,3,4); r = sum(A, 2);
+%%
+A = reshape(1:24,2,3,4); r = sum(A, 3);
+%%
+A = reshape(1:24,2,3,4); r = sum(A, 4);
+%%
+r = sum(ones(1,1,3));
+%%
+A = reshape(1:24,2,3,4); r = mean(A, 3);
+%%
+A = reshape(1:24,2,3,4); r = prod(A(:,:,1:2), 3);
+%%
+A = reshape(1:24,2,3,4); r = max(A, [], 3);
+%%
+A = reshape(1:24,2,3,4); [m, i] = max(A, [], 3); r = i;
+%%
+A = reshape(1:24,2,3,4); [m, i] = min(A, [], 2); r = [m(:) i(:)];
+%%
+A = reshape(1:24,2,3,4); r = max(A);
+%%
+A = reshape(1:24,2,3,4); r = min(A, 10);
+%%
+A = cat(3, [1 NaN; 3 4], [NaN NaN; 0 5]); r = max(A, [], 3);
+%%
+A = reshape(1:24,2,3,4); r = cumsum(A, 3);
+%%
+A = reshape(1:24,2,3,4); r = cumsum(A);
+%%
+r = cumsum(ones(1,1,4));
+%%
+A = reshape(1:8,2,2,2); r = cumprod(A, 3);
+%%
+r = cumsum([1 2; 3 4], 2);
+%%
+r = cumsum([1 2; 3 4], 3);
+%%
+r = cumsum([]);
+%%
+A = reshape(1:24,2,3,4) > 10; r = any(A, 3);
+%%
+A = reshape(1:24,2,3,4) > 10; r = all(A, 3);
+%%
+A = reshape(1:24,2,3,4) > 10; r = any(A);
+%%
+r = all(zeros(2,0,3));
+%%
+r = sum(zeros(0,3,2));
+%%
+r = size(sum(zeros(2,3,0)));
+%%
+A = reshape(1:24,2,3,4); r = isequal(A, reshape(1:24,2,3,4));
+%%
+r = isequal(zeros(2,2,2), zeros(2,4));
+%%
+r = isequal(zeros(2,2), zeros(2,2,1));
+%%
+A = reshape(1:24,2,3,4); r = median(A, 3);
+%%
+A = reshape(1:24,2,3,4); r = std(A, 0, 3);
+%%
+A = reshape(1:24,2,3,4); r = var(A, 1, 3);
+%%
+A = reshape(1:8,2,2,2); r = A + 1;
+%%
+A = reshape(1:8,2,2,2); r = A .* A;
+%%
+A = reshape(1:8,2,2,2); r = A + [10; 20];
+%%
+A = reshape(1:8,2,2,2); r = A + [10 20];
+%%
+A = reshape(1:8,2,2,2); r = A + cat(3, 100, 200);
+%%
+A = reshape(1:8,2,2,2); r = A - reshape([1 2], 1, 1, 2);
+%%
+r = [1; 2] + reshape([10 20], 1, 1, 2);
+%%
+A = reshape(1:8,2,2,2); r = A + [1 2 3];
+%%
+A = reshape(1:8,2,2,2); r = A ./ 2;
+%%
+A = reshape(1:8,2,2,2); r = 2 .^ A;
+%%
+A = reshape(1:8,2,2,2); r = A > 4;
+%%
+A = reshape(1:8,2,2,2); r = A == A;
+%%
+A = reshape(1:8,2,2,2); r = ~(A > 4);
+%%
+A = reshape(1:8,2,2,2); r = (A > 2) & (A < 7);
+%%
+A = reshape(1:8,2,2,2); r = -A;
+%%
+A = reshape(1:8,2,2,2); r = A * 2;
+%%
+A = reshape(1:8,2,2,2); r = A * [1 2; 3 4];
+%%
+A = reshape(1:8,2,2,2); r = A';
+%%
+A = reshape(1:8,2,2,2); r = sqrt(A);
+%%
+A = reshape(1:8,2,2,2); r = mod(A, 3);
+%%
+A = reshape(1:8,2,2,2); r = abs(-A) + floor(A / 3);
+%%
+A = reshape(1:8,2,2,2); r = exp(log(A));
+%%
+A = reshape(1:8,2,2,2); r = isnan(A - A);
+%%
+A = reshape(1:8,2,2,2); r = max(A, cat(3, [5 5; 5 5], [1 1; 1 1]));
+%%
+A = reshape(1:8,2,2,2); r = A / 2;
+%%
+A = reshape(1:8,2,2,2); r = 2 \ A;
+%%
+A = reshape(1:8,2,2,2); r = A ^ 2;
+%%
+A = reshape(1:8,2,2,2); r = find(A > 5);
+%%
+r = find(ones(1,3,2));
+%%
+A = reshape(1:8,2,2,2); r = nnz(A > 3);
+%%
+r = sub2ind([2 3 4], 2, 3, 4);
+%%
+r = sub2ind([2 3 4], [1 2], [1 3], [1 4]);
+%%
+[i, j, k] = ind2sub([2 3 4], [1 17 24]); r = [i; j; k];
+%%
+[i, j] = ind2sub([2 3 4], 17); r = [i j];
+%%
+r = sub2ind([2 3 4], 3, 1, 1);
+%%
+k = 0; for v = reshape(1:12, 2, 3, 2), k = k + 1; end; r = [k v'];
+%%
+A = reshape(1:8,2,2,2); r = flip(A, 3);
+%%
+A = reshape(1:8,2,2,2); r = fliplr(A);
+%%
+A = reshape(1:8,2,2,2); r = flipud(A);
+%%
+A = reshape(1:8,2,2,2); r = double(A > 4);
+%%
+A = reshape(1:8,2,2,2); r = numel(A(:,:,1));
+%%
+A = zeros(2,2,2); for k = 1:2, A(:,:,k) = k * eye(2); end; r = A;
+%%
+A = zeros(2,3,4); A(:,:,end+1) = ones(2,3); r = size(A);
+%%
+A = zeros(2,3); A(:,:,end+1) = ones(2,3); r = size(A);
+%%
+A = reshape(1:24,2,3,4); B = A(:,:,2:3); r = B(end);
+%%
+A = reshape(1:24,2,3,4); r = squeeze(A(1,2,:))';
+%%
+A = reshape(1:24,2,3,4); r = squeeze(sum(sum(A,1),2))';
+%%
+A = reshape(1:24,2,3,4); r = mean(mean(A, 3), 2);
+%%
+r = repmat([1 2], [2 2 2]);
+%%
+A = ones(2,2,2); r = A(:,:,1) * [1; 2];
+%%
+A = reshape(1:8,2,2,2); r = A(:,:,1)';
+%%
+A = reshape(1:8,2,2,2); r = mean(A(:));
+%%
+A = reshape(1:24,2,3,4); r = A(:, :, [true false true false]);
+%%
+A = reshape(1:24,2,3,4); r = A([true false], :, 1);
+%%
+A = reshape(1:8,2,2,2); r = A(logical([1 0 1 0 1 0 1 0]));
+%%
+A = zeros(2,2,2); A(:,:,2) = []; r = size(A);
+%%
+A = zeros(2,2,2); A(:,:,1) = 5; A(:,:,2) = []; r = A;
+%%
+r = size(zeros(3,4,0));
+%%
+r = isempty(zeros(3,4,0));
+%%
+A = zeros(2,3,0); r = size(A(:,:));
+%%
+r = cat(3, zeros(2,2,0), ones(2,2));
+%%
+r = ones(2,2,2) & 1;
+%%
+r = any(isnan(cat(3, 1, NaN)));
+%%
+A = reshape(1:24,2,3,4); A(:,:,2:3) = 0; r = squeeze(sum(sum(A)))';
+%%
+A = reshape(1:24,2,3,4); A(1,:,:) = A(2,:,:); r = A;
+%%
+A = reshape(1:24,2,3,4); A(:,:,1) = A(:,:,4)'; r = A;
+%%
+A = reshape(1:24,2,3,4); r = A(:, 2, 3);
+%%
+A = reshape(1:6,1,2,3); r = A(2);
+%%
+A = reshape(1:6,1,2,3); r = A([1 2 3]);
+%%
+A = reshape(1:3,1,1,3); r = A(:)';
+%%
+A = zeros(2,2,2); A(:,:,1) = [1 2; 3 4]; r = A(:,:,1) + A(:,:,2);
+%%
+r = zeros(2,3,4) + zeros(2,3);
+%%
+A = reshape(1:8,2,2,2); r = size(A(:,:,[]));
+%%
+A = reshape(1:24, 2, 3, 4); s = 0; for k = 1:size(A, 3), s = s + trace(A(:, 1:2, k)); end; r = s;
+%%
+r = mean(reshape(1:8,2,2,2));
+%%
+r = all(reshape(1:8,2,2,2) > 0, 3);
+%%
+r = size(sum(zeros(2,3,4), 3));
+%%
+A = zeros(2,3,4); r = size(A(:,:,:,1));
+%%
+A = reshape(1:24,2,3,4); A(:,:,2) = A(:,:,2) * 10; r = A(:,:,2);
+%%
+A = reshape(1:24,2,3,4); A(2,:,:) = 0; r = sum(A(:));
+%%
+A = reshape(1:24,2,3,4); r = sum(A(:,:,[1 4]), 3);
+%%
+A = ones(2,2,2); A(:,:,3) = 2*ones(2); r = A;
+%%
+A = ones(2,2,2); A(3,:,:) = 5; r = A;
+%%
+A = ones(2,2,2); A(:,3,1) = [7; 8]; r = A;
+%%
+A = zeros(2,2,2); A(:,:,:) = 4; r = A;
+%%
+A = zeros(2,2,2); A(:,:,:) = reshape(1:8, 2, 2, 2); r = A;
+%%
+A = zeros(2,2,2); A(:,:,:) = 1:8; r = A;
+%%
+A = zeros(2,2,2); A(1:8) = 8:-1:1; r = A;
+%%
+A = zeros(2,2,2); A([1 8]) = [5 6]; r = A;
+%%
+A = zeros(2,2,2); A(:) = reshape(1:8, 4, 2); r = A;
+%%
+A = zeros(2,2,2); A(:, :, 2) = 1:4; r = A;
+%%
+A = zeros(2,2,2); A(1, :, 2) = [1; 2]; r = A;
+%%
+A = zeros(2,2,2); A(1, 1, :) = [1 2]; r = A;
+%%
+A = zeros(2,2,2); A(:, 1, 1:2) = [1 2; 3 4]; r = A;
+%%
+r = cat(3, [1 2; 3 4], [5 6; 7 8]) .* cat(3, 2, 3);
+%%
+r = sum(cat(3, [1 2; 3 4], [5 6; 7 8]), 3) ./ 2;
+%%
+r = max(max(max(reshape(1:24, 2, 3, 4))));
+%%
+r = min(reshape(1:24, 2, 3, 4), [], 1);
+%%
+[m, k] = max(reshape([3 1 4 1 5 9 2 6], 2, 2, 2)); r = cat(1, m, k);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = A(2, 3, 4, 5);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = A(:, :, 2, 3);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = size(A(1, :, :, 2));
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = A(2, 3, 13);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = A(1, end, end);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = size(sum(A, 3));
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = sum(sum(sum(A, 4), 3), 2)';
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = size(permute(A, [4 3 2 1]));
+%%
+A = reshape(1:120, 2, 3, 4, 5); B = permute(A, [4 3 2 1]); r = B(5, 4, 3, 2);
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = squeeze(A(1, 1, :, :));
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = size(squeeze(A(1, :, 1, :)));
+%%
+A = reshape(1:120, 2, 3, 4, 5); r = max(A, [], 4);
+%%
+A = reshape(1:24, 2, 3, 4); r = A + reshape(1:5, 1, 1, 1, 5);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A + reshape(1:5, 1, 1, 1, 5));
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A .* ones(2, 1));
+%%
+A = reshape(1:24, 2, 3, 4); r = A - mean(A, 3);
+%%
+A = reshape(1:24, 2, 3, 4); r = A ./ sum(A, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = bsxfun(@minus, A, mean(A, 3));
+%%
+A = zeros(2, 0, 3); r = size(A + 1);
+%%
+A = zeros(2, 0, 3); r = size(A(:, :, 2));
+%%
+A = zeros(2, 0, 3); r = size(A(:));
+%%
+A = zeros(2, 0, 3); r = size(max(A, [], 3));
+%%
+A = zeros(2, 0, 3); r = sum(A(:));
+%%
+r = size(cat(3, zeros(2, 0), zeros(2, 0)));
+%%
+r = size(cat(3, zeros(2, 0, 2), zeros(2, 0)));
+%%
+r = size([zeros(2, 0, 3), zeros(2, 1, 3)]);
+%%
+r = [zeros(1, 0), ones(2, 2, 2)];
+%%
+r = size([zeros(1, 0); ones(2, 2, 2)]);
+%%
+r = cat(3, [1 2], [], [3 4]);
+%%
+r = cat(3, [], []);
+%%
+r = cat(3, zeros(1, 0), [1 2]);
+%%
+r = cat(4, 1, 2);
+%%
+r = size(cat(5, ones(2), ones(2)));
+%%
+r = cat(3, [1; 2], [3; 4]);
+%%
+r = cat(3, cat(3, 1, 2), 3);
+%%
+r = cat(3, cat(3, 1, 2), [3 4]);
+%%
+A = []; A(:, :, 3) = 1; r = A;
+%%
+A = []; A(1, 1, :) = 1:3; r = size(A);
+%%
+A = []; A(:, :, 1) = 1:3; r = size(A);
+%%
+A = []; A(:, :, 2) = reshape(1:6, 2, 3); r = A;
+%%
+A = []; A(:, 1, 2) = [1; 2]; r = A;
+%%
+A = []; A(2, :, :) = reshape(1:6, 1, 2, 3); r = size(A);
+%%
+A = []; A(:, :, :) = 5; r = A;
+%%
+A = []; A(:, 2, :) = reshape(1:6, 2, 1, 3); r = size(A);
+%%
+A = zeros(0, 3); A(:, :, 2) = ones(0, 3); r = size(A);
+%%
+A = zeros(2, 2); A(:, :, 2) = 7; r = A;
+%%
+A = zeros(2, 2); A(3, 3, 2) = 1; r = A;
+%%
+A = 5; A(1, 1, 3) = 2; r = A;
+%%
+A = 1:3; A(1, :, 2) = 4:6; r = A;
+%%
+A = (1:3)'; A(:, :, 2) = 1:3; r = A;
+%%
+A = (1:3)'; A(:, 1, 2) = 1:3; r = A;
+%%
+A = zeros(2, 2, 2); A(:, :, 2) = [];  A(:, :, 2) = 1; r = A;
+%%
+A = true(2, 2); A(:, :, 2) = false; r = A;
+%%
+A = true(2, 2); A(:, :, 2) = 0.5; r = A;
+%%
+A = zeros(2, 2, 2) > 1; A(:, :, 2) = NaN; r = A;
+%%
+A = zeros(2, 2, 2); A(2, 2, 2, 2) = 1; r = size(A);
+%%
+A = zeros(2, 2, 2); A(:, :, end + 1) = []; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); A(:, :, end) = []; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); A(end) = []; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); A([1 2]) = []; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); A(9) = []; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); A(1, :, :) = []; A(1, :, :) = []; r = size(A);
+%%
+A = reshape(1:24, 2, 3, 4); A(:, :, [1 3]) = []; r = A;
+%%
+A = reshape(1:24, 2, 3, 4); A(:, :, logical([1 0 1 0])) = []; r = A;
+%%
+A = reshape(1:24, 2, 3, 4); A(:, :, 5) = []; r = A;
+%%
+A = reshape(1:24, 2, 3, 4); A(:, 1:3, :) = []; r = size(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(end, end, end - 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(end - 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A([end 1], end, [1 end]);
+%%
+A = reshape(1:24, 2, 3, 4); k = size(A, 3); r = A(:, :, k:-1:1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(:, :, end:-2:1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(:, :, 1:0);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A(:, :, 1:0));
+%%
+A = reshape(1:24, 2, 3, 4); r = A(2, :);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(:, [1 end]);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(true(2, 3, 4));
+%%
+A = reshape(1:24, 2, 3, 4); r = A(false(2, 3, 4));
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A(false(2, 3, 4)));
+%%
+A = reshape(1:24, 2, 3, 4); m = A > 100; r = size(A(m));
+%%
+A = reshape(1:24, 2, 3, 4); r = A(A(:, :, 1) > 3);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(reshape(1:4, 1, 4));
+%%
+A = reshape(1:24, 2, 3, 4); r = A(reshape(1:4, 4, 1));
+%%
+A = reshape(1:24, 2, 3, 4); r = A([]);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A(zeros(1, 0)));
+%%
+A = reshape(1:24, 2, 3, 4); r = A(1.5, 1, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(0, 1, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(1, 1, 1, 1, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(:, :, :, :);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A(:, :, :, [1 1]));
+%%
+A = reshape(1:24, 2, 3, 4); A(:, :, 2) = A(:, :, 2) + 100; r = A(:, :, 2);
+%%
+A = reshape(1:24, 2, 3, 4); A(:, 2, :) = []; A(1, 1, 1) = 0; r = A;
+%%
+A = reshape(1:24, 2, 3, 4); B = A; B(1) = -1; r = A(1);
+%%
+A = reshape(1:24, 2, 3, 4); r = numel(A(:, :, 2:3));
+%%
+A = reshape(1:24, 2, 3, 4); r = length(A);
+%%
+A = reshape(1:24, 2, 3, 4); [p, q, s] = size(A(:, :, 1)); r = [p q s];
+%%
+A = reshape(1:24, 2, 3, 4); [p, q] = size(A, [1 3]); r = [p q];
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A, [3 1 5]);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(A, 0);
+%%
+r = size(reshape([], 0, 3, 2));
+%%
+r = reshape(1:6, [], 1, 2);
+%%
+r = reshape(1:6, 3, 1, []);
+%%
+r = size(reshape(1:6, 1, 1, 6));
+%%
+r = reshape(1:6, [], []);
+%%
+r = reshape(1:6, 2, 2, []);
+%%
+r = reshape(true(1, 8), 2, 2, 2);
+%%
+r = islogical(reshape(true(1, 8), 2, 2, 2));
+%%
+r = repmat([1 2; 3 4], 2);
+%%
+r = repmat([1 2; 3 4], [2 1 2]);
+%%
+r = size(repmat(1, 0, 3, 2));
+%%
+r = size(repmat(ones(2, 2, 2), 2, 1));
+%%
+r = repmat(reshape(1:4, 1, 1, 4), 2, 1);
+%%
+r = permute(reshape(1:6, 1, 2, 3), [3 2 1]);
+%%
+r = size(permute(reshape(1:6, 1, 2, 3), [2 3 1]));
+%%
+r = permute(1:3, [2 1]);
+%%
+r = permute(1:3, [3 2 1]);
+%%
+r = permute(1:3, [1 2 4 3]);
+%%
+r = permute(zeros(2, 3, 4), [1 2 3 3]);
+%%
+r = permute(zeros(2, 3, 4), [0 1 2]);
+%%
+A = reshape(1:24, 2, 3, 4); r = ipermute(A, [2 3 1]);
+%%
+A = reshape(1:24, 2, 3, 4); r = isequal(ipermute(permute(A, [2 3 1]), [2 3 1]), A);
+%%
+r = squeeze(zeros(1, 1, 0));
+%%
+r = size(squeeze(zeros(1, 1, 0)));
+%%
+r = size(squeeze(zeros(1, 0, 3)));
+%%
+r = size(squeeze(zeros(2, 1, 1, 3)));
+%%
+r = squeeze(5);
+%%
+r = size(squeeze(ones(1, 1, 1, 4)));
+%%
+A = reshape(1:24, 2, 3, 4); r = prod(A, 3);
+%%
+A = reshape(1:24, 2, 3, 4); r = sum(A(:, :, :), 1);
+%%
+A = reshape(1:24, 2, 3, 4) > 12; r = sum(A, 3);
+%%
+A = reshape(1:24, 2, 3, 4) > 12; r = cumsum(A, 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = sum(A, 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = max(A, [], 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); [m, k] = min(A, [], 3); r = k;
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = mean(A, 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = any(A > 22, 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = all(A > 0, 3);
+%%
+A = reshape([1:23 NaN], 2, 3, 4); r = all(A, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = cumsum(A, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = cumsum(A, 5);
+%%
+A = reshape(1:24, 2, 3, 4); r = cumprod(A(:, :, 1:2) / 10, 3);
+%%
+A = reshape(1:24, 2, 3, 4); r = max(A, [], 5);
+%%
+A = reshape(1:24, 2, 3, 4); [m, k] = max(A, [], 5); r = k;
+%%
+A = reshape(1:24, 2, 3, 4); r = max(A, 12.5);
+%%
+A = reshape(1:24, 2, 3, 4); r = max(A, reshape(24:-1:1, 2, 3, 4));
+%%
+A = reshape(1:24, 2, 3, 4); r = mean(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = mean(A, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = median(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = var(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = std(A, 1, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = any(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = all(A > 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = nnz(A(:, :, 1) > 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = isequal(A(:, :, 1), [1 3 5; 2 4 6]);
+%%
+A = reshape(1:24, 2, 3, 4); r = isequal(A, A, A);
+%%
+A = reshape(1:24, 2, 3, 4); r = isequal(A, permute(A, [1 2 3]));
+%%
+A = reshape(1:24, 2, 3, 4); r = isequal(size(A), [2 3 4]);
+%%
+A = reshape(1:24, 2, 3, 4); r = A(:, :, 2) == A(:, :, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = A >= reshape(12, 1, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = A < reshape([5 10 15 20], 1, 1, 4);
+%%
+A = reshape(1:24, 2, 3, 4); r = (A > 5) | (A < 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = xor(A > 5, A > 10);
+%%
+A = reshape(1:24, 2, 3, 4); r = rem(A, 5);
+%%
+A = reshape(1:24, 2, 3, 4); r = round(A / 7);
+%%
+A = reshape(1:24, 2, 3, 4); r = A .^ 0.5;
+%%
+A = reshape(-11:12, 2, 3, 4); r = A .^ 0.5;
+%%
+A = reshape(1:24, 2, 3, 4); r = atan2(A, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = hypot(A, A);
+%%
+A = reshape(1:24, 2, 3, 4); r = power(A, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = plus(A, 1);
+%%
+A = reshape(1:24, 2, 3, 4); r = times(A, A);
+%%
+A = reshape(1:24, 2, 3, 4); r = +A;
+%%
+A = reshape(1:24, 2, 3, 4); r = A.';
+%%
+A = reshape(1:24, 2, 3, 4); r = transpose(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = find(A > 20)';
+%%
+A = reshape(1:24, 2, 3, 4); r = find(A > 20, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = find(A == 100);
+%%
+A = reshape(1:24, 2, 3, 4); r = size(find(A == 100));
+%%
+r = sub2ind([2 3 4], [1; 2], [3; 3], [4; 4]);
+%%
+r = sub2ind([2 3 4], 1, 13);
+%%
+r = sub2ind([2 3], 1, 2, 1);
+%%
+r = sub2ind([2 3], 1, 2, 2);
+%%
+[a, b] = ind2sub([2 3 4], 7:9); r = [a; b];
+%%
+[a, b, c, d] = ind2sub([2 3 4], 24); r = [a b c d];
+%%
+r = ind2sub([2 3 4], 24);
+%%
+[a, b] = ind2sub([2 3 4], 25); r = A;
+%%
+s = 0; for v = reshape(1:24, 2, 3, 4), s = s + v(2) * v(1); end; r = s;
+%%
+c = 0; for v = zeros(1, 2, 3), c = c + 1; end; r = c;
+%%
+A = reshape(1:24, 2, 3, 4); r = flip(A);
+%%
+A = reshape(1:24, 2, 3, 4); r = flip(A, 2);
+%%
+A = reshape(1:24, 2, 3, 4); r = flip(A, 4);
+%%
+r = flip(reshape(1:4, 1, 1, 4));
+%%
+r = flip([1 2 3]);
+%%
+r = flip([1 2; 3 4]);
+%%
+A = reshape(1:24, 2, 3, 4); r = abs(sin(A)) <= 1;
+%%
+A = reshape(1:24, 2, 3, 4); r = isinf(A ./ 0);
+%%
+A = reshape(1:24, 2, 3, 4); r = logical(mod(A, 2));
+%%
+A = reshape(0:23, 2, 3, 4); r = ~A;
+%%
+A = reshape(1:8, 2, 2, 2); B = A; B(:, :, 3) = 9; r = A;
+%%
+A = reshape(1:8, 2, 2, 2); B = A(:, :, 2); B(1) = 0; r = A(:, :, 2);
+%%
+A = zeros(2, 2, 2); A(:, :, 1) = eye(2); A(:, :, 2) = 2 * eye(2); r = A(:, :, 1) * A(:, :, 2);
+%%
+A = reshape(1:8, 2, 2, 2); r = inv(A(:, :, 1));
+%%
+A = reshape(1:8, 2, 2, 2); x = A(:, :, 2) \ [1; 2]; r = x;
+%%
+A = zeros(3, 3, 2); for t = 1:2, A(:, :, t) = t * ones(3) + eye(3); end; r = sum(A, 3);
+%%
+A = zeros(2, 3); A(:, :, 1) = []; r = A;
+%%
+r = zeros(2, 3, 'like', 1);
+%%
+r = eye(2, 2, 2);
+%%
+r = ones([2 3 4]) * 2;
+%%
+r = size(zeros(1, 1, 0, 2));
+%%
+r = ndims(zeros(1, 1, 0, 2));
+%%
+r = numel(zeros(1, 1, 0, 2));
+%%
+r = isempty(zeros(1, 1, 0, 2));
+%%
+r = zeros(2, 2, 2) + true;
+%%
+r = class(zeros(2, 2, 2) > 1);

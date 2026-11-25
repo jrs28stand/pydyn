@@ -22,6 +22,15 @@ from .perturbation import BlanchardKahnError
 from .steady import SteadyStateError
 
 
+_LOGLINEAR_REFUSAL = (
+    "loglinear is not supported with OccBin: Dynare 7.2 accepts it but gives incoherent results. +occbin builds the regime "
+                    "matrices from the level-model Jacobians evaluated at endo_steady_state (get_deriv.m), which under loglinear is the "
+                    "LOGGED steady state, while the base-regime rule oo_.dr is log-linearised. Octave 8.4 run, Dynare 7.2, borrcon model "
+                    "with stoch_simul(loglinear) then occbin_solver: a surprise shock of 0.02 gives error_flag 313 where the level model "
+                    "solves; with a shock of -0.5 the simulation 'solves' but returns a mixture of level and log quantities (the multiplier "
+                    "lb jumps to 85.3 against 0.70 in levels, 0.0082 steady state in levels but -4.81 logged)")
+
+
 class OccbinEstimation(Estimation):
     """Bayesian or maximum-likelihood estimation of an OccBin model.
 
@@ -102,7 +111,7 @@ class OccbinEstimation(Estimation):
         super().__init__(model, data, **options)
         o = self.options
         if o["loglinear"]:
-            raise NotImplementedError("loglinear is not supported with OccBin (Dynare's OccBin works in levels)")
+            raise NotImplementedError(_LOGLINEAR_REFUSAL)
         if o["lik_init"] == 3:
             raise NotImplementedError("the diffuse filter (lik_init = 3) is not available with OccBin")
         if o["kalman_algo"] in (2, 4) and not self._ivf_requested(occbin):
@@ -150,6 +159,18 @@ class OccbinEstimation(Estimation):
         if not (np.all(np.isfinite(ob.P)) and np.all(np.isfinite(ob.Q))):
             raise _Rejected("the decision rule contains NaN or Inf", 6)
         return ob
+
+    def occbin_forecast(self, theta, horizon, endo_histval=None, **kw):
+        """``occbin.forecast`` at ``theta``: the OccBin forecast (:func:`pydyn.occbin_forecast.occbin_forecast`)
+        from the state ``endo_histval`` (levels, declaration order, e.g. the smoothed state of the last period
+        plus the steady state; default: the steady state). The covariance matrix of the shocks is the one at
+        ``theta``; ``replic``, ``qmc``, ``rng``, ``shocks``, ``frcst_regimes``, ``maxit``, ``check_ahead_periods``
+        and ``conf_sig`` are passed on."""
+        from .occbin_forecast import occbin_forecast
+        theta = np.asarray(theta, float)
+        ob = self.occbin_at(theta)
+        kw.setdefault("sigma_e", self.covariances(theta)[0])
+        return occbin_forecast(ob, horizon, endo_histval, **kw)
 
     def _context(self, theta):
         theta = np.asarray(theta, float)

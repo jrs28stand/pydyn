@@ -127,7 +127,7 @@ def _ispd(A):
 def check_model(est):
     """``check_dsge_var_model.m`` and the other refusals of Dynare."""
     m, o = est.model, est.options
-    if getattr(est, "_groups", {}).get("vn") or getattr(est, "_groups", {}).get("cn") or m.measurement_errors:
+    if getattr(est, "_groups", {}).get("vn") or getattr(est, "_groups", {}).get("cn") or m.measurement_errors or getattr(m, "me_cov", None):
         raise ValueError("Estimation::DsgeVarLikelihood: Measurement errors are not allowed!")
     S = m.Sigma_e
     if getattr(est, "_groups", {}).get("cx") or (S.shape[0] > 1 and np.any(np.tril(S, -1) != 0)):

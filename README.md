@@ -171,6 +171,30 @@ or `stoch_simul` command (as `M_.params` does in Dynare), and `initval`/`endval`
 refer to other variables are evaluated as Dynare does (values set so far, zero if unset, the
 computed steady state after `steady`).
 
+## MATLAB-style results: `pydyn.dynare()`
+
+`pydyn.dynare("model.mod")` runs the statements of a .mod file in file order and fills `M_`, `options_` and `oo_` with Dynare's
+field names and shapes (`oo_.dr.ghx` in DR order, `oo_.steady_state` a column in declaration order, `oo_.irfs.y_e` a row,
+`oo_.endo_simul` n x T). MATLAB lines of the file see and may change the structs between commands, so Dynare's own self-checks and
+lines such as `irf1 = oo_.irfs.y_e;` run unchanged; `set_param_value`, `steady`, `check`, `stoch_simul` (also the functional form
+`[info, oo_, options_, M_] = stoch_simul(M_, options_, oo_, var_list)`), `perfect_foresight_setup` and `perfect_foresight_solver`
+re-run on the live workspace. Simulated paths use Octave's `randn` stream, so they equal Dynare's run under Octave; `rand`,
+`randn`, `randi`, `randperm`, `rng` and `set_dynare_seed` in the file's MATLAB code draw from that same stream (Octave 8.4's
+numbers bit for bit, not MATLAB's), in file order as Dynare does. `save file.mat vars` writes a MAT-file in the .mod file's own
+folder only (plain file names, no options; files pydyn did not write are never overwritten).
+`estimation` (mode, Metropolis-Hastings with Dynare's Octave random numbers, posterior statistics, classical smoother), `calib_smoother`, `forecast`, `occbin_setup`/`occbin_solver`, `ramsey_model`/`ramsey_policy`/`evaluate_planner_objective` and `osr` fill the matching `oo_` fields too, including the N-d ones (`oo_.conditional_variance_decomposition`,
+`oo_.Smoother.Variance`/`State_uncertainty`, `oo_.FilteredVariablesKStepAhead(Variances)`, and `oo_.shock_decomposition`,
+`oo_.initval_decomposition` and the realtime decompositions with `parameter_set=calibration`). A field pydyn does not compute (for example `oo_.dr.fuu`) is refused when read, never given a wrong value; statements not yet
+supported (estimation, forecast, OccBin, ...) stop the run with an error that names them. `pydyn.Model` is unchanged.
+Figures: with `nograph` unset, `pydyn.dynare()` writes IRF, forecast, conditional forecast, shock/initial-condition decomposition, prior,
+mode-check, classical-smoother, posterior-distribution, posterior-IRF, Brooks-Gelman, OccBin and `rplot` figures under `<fname>/graphs/`
+with Dynare's names (eps/pdf via matplotlib, imported lazily with the Agg backend; `graph_format`, `nograph` and `nodisplay` are honoured;
+a file pydyn did not write is never overwritten). Validated against Dynare's own plotting calls (arrays, titles, layout, names), not images.
+Also: `mode_compute=7` (Octave's `fminsearch`), `bayesian_irf`, `moments_varendo`, `discretionary_policy`, `oo_.convergence`,
+`mode_check` data, `save_params_and_steady_state` (byte-identical file) and `initial_estimation_checks`. Not done: `mode_compute=9`
+(CMA-ES; GPL-3.0-or-later, so portable, but not yet ported), `load_mh_file`, `mh_recover`, `trace_plot` statements.
+Validation: `tests/test_results.py` against `reference/oo/*.mat` (Dynare 7.2 under Octave 8.4).
+
 ## Dynare's shipped examples
 
 `tests/test_examples.py` loads Dynare 7.2's example `.mod` files unedited and compares with Dynare's
@@ -237,7 +261,7 @@ used by `moments`, the `simul_*` options of OccBin, the estimation and smoother 
 their modules, and `periods`, `tolf`, `maxit` for perfect foresight. Options a function does not
 act on are reported once in an `UnsupportedOptionWarning`; a few that would change the problem
 (for example OccBin constraints in linear estimation) raise an error instead.
-`docs/GAPS.md` is a command-by-command and option-by-option audit against the Dynare 7.2 manual.
+`docs/GAPS.md` lists what is still missing (the earlier option-by-option audit is in git history); `docs/ACCEPTANCE.md` reports how Dynare's own test suite fares.
 
 ## Performance
 
@@ -255,9 +279,13 @@ Time for one `set_param` + steady state + first-order solve (CPU, one thread): a
 
 ## Known limits
 
-- MATLAB inside `.mod` files: complex numbers, N-d arrays, struct arrays, classes (`dseries`,
-  dates), random numbers and file-system functions are not supported; see the section above.
-- Not handled: heterogeneous-agent models, measurement-error covariances, `dseries` objects,
+- MATLAB inside `.mod` files: complex numbers, struct arrays, N-d cell and char arrays, classes other than
+  Dynare's `dseries` and `dates`, random-number functions other than `rand`/`randn`/`randi`/`randperm` (and any random numbers in
+  steady-state files or helpers the solvers call), and file-system functions other than `load` and the
+  sandboxed `save` are not supported; see the section above. N-d numeric and logical arrays follow
+  MATLAB/Octave (indexing, growth, deletion, `end`, reductions along dimensions, `permute`, `reshape`,
+  `cat`, `repmat`, implicit expansion); functions that handle matrices only refuse them.
+- Not handled: heterogeneous-agent models,
   dates in `initval_file`/`histval_file`/`learnt_in`/controlled paths, LaTeX output
   (`write_latex_*` warns), `varexo_det` in perfect foresight.
 - Optimal policy: `osr` has Dynare's default minimiser only (csminwel, `opt_algo=4`); the other

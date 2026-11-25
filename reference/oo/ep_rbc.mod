@@ -1,0 +1,37 @@
+// extended path, order 0: statement form, then function form with given shocks and an initial condition, then a model with
+// a purely backward block (ep.periods forced to one)
+var y c k a;
+varexo e;
+parameters beta alpha delta rho sigma_e;
+beta = 0.99; alpha = 0.36; delta = 0.025; rho = 0.9;
+model;
+  c^(-1) = beta*c(+1)^(-1)*(alpha*exp(a(+1))*k^(alpha-1) + 1 - delta);
+  y = exp(a)*k(-1)^alpha;
+  k = y - c + (1-delta)*k(-1);
+  a = rho*a(-1) + e;
+end;
+initval;
+  a = 0; k = 20; c = 2; y = 3;
+end;
+steady;
+shocks;
+  var e; stderr 0.01;
+end;
+extended_path(periods=30);
+ts1 = Simulated_time_series.data;
+st1 = oo_.extended_path.status;
+endo1 = oo_.endo_simul;
+exo1 = oo_.exo_simul;
+x1 = randn(2, 2);
+oo0 = oo_;
+sh = 0.02*[1; -1; 0.5; 0; 0; -2; 1; 1; 0; 0]*ones(1,1);
+options_.ep.periods = 50;
+[ts2, oo_] = extended_path([], 10, sh, options_, M_, oo_);
+d2 = ts2.data;
+n2 = ts2.name;
+st2 = oo_.extended_path.status;
+endo2 = oo_.endo_simul;
+exo2 = oo_.exo_simul;
+y0 = oo0.steady_state*1.05;
+[ts3, oo3] = extended_path(y0, 6, sh, options_, M_, oo0);
+d3 = ts3.data;

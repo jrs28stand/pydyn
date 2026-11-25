@@ -101,8 +101,17 @@ def _mod(x, y):
 
 #: Python builtins visible to generated and evaluated code. Without an explicit "__builtins__" entry,
 #: eval/exec would insert the real builtins and model expressions could call exit(), input(), open()...
+def _restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+    # C code that emits warnings (numpy's RuntimeWarning, PyErr_WarnEx) imports "warnings" through the
+    # current frame's __builtins__; nothing else may be imported from generated or evaluated code.
+    if name == "warnings" and level == 0:
+        import warnings
+        return warnings
+    raise ImportError(f"import of {name!r} is not allowed in model code")
+
+
 SAFE_BUILTINS = {"float": float, "int": int, "bool": bool, "len": len, "range": range, "tuple": tuple,
-                 "list": list, "zip": zip}
+                 "list": list, "zip": zip, "__import__": _restricted_import}
 
 #: names available to generated code
 NAMESPACE = {

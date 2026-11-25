@@ -2,6 +2,7 @@
 # (korder/build.sh compiles it against a Dynare 7.2 source tree). The reference data and tests stay in the repository.
 include LICENSE NOTICE.md README.md
 recursive-include docs *.md
+recursive-include pydyn/data *.json
 recursive-include examples *.py
 include korder/build.sh korder/korder_capi.cc korder/stub/mex.h
 recursive-include tools *.py
