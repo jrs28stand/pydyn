@@ -295,9 +295,18 @@ Everything below is read from Dynare's *reference* run, never from the port, so 
    everything computed at the posterior mean once a chain ran (all but the mode fields and `prior.*`); Gibbs draws (`olsgibbs`, `surgibbs`);
    estimations on a random objective (particle filter; simulated method of moments, recognised from the reference log).  Order-1 IRFs and theoretical moments are now **compared** for every port (before, all `irfs` were treated as random).
 5. **Bookkeeping fields are never compared**: wall-clock (`runtime`, `elapsed`, `cputime`, `duration`, `time`, ...) and the optimiser's own `optimization_info.{iterations,funcCount,exitflag,message,...}`.
-6. **Heterogeneous-agent tests** get the verdict `excluded` (ids with a `heterogeneity` path component, or whose reference has `M_.heterogeneity` / `oo_.heterogeneity`), whatever the port reported;
-   they are left out of the totals, the folder table and the timing, and listed separately.  `--include-heterogeneity` compares them as normal once a port supports them.
+6. **Excluded (out of scope for a port).**  Heterogeneous-agent tests (ids with a `heterogeneity` path component, or whose reference has `M_.heterogeneity` / `oo_.heterogeneity`) get the verdict `excluded`
+   whatever the port reported (a built-in entry; `--include-heterogeneity` compares them as normal once a port supports them).  A port can park further Dynare features with its own scope file,
+   `--scope tools/accept_scope_<port>.json` (a per-port decision: another port may implement what this one parks):
+   `{"entries": [{"feature": "<the missing Dynare feature, in plain words>", "reason": "<why it is parked>", "ids": ["<test id or fnmatch pattern>", ...], "expect": "<optional regex the refusal message must match>"}]}`.
+   A listed test that the port **refuses** (status `refused`, message matching `expect` if given) is `excluded`, with the feature and the reason in the report; excluded tests are left out of the totals, the folder table and the timing,
+   and are listed in one section grouped by feature.  A listed test that the port **runs** is compared normally, never excluded, and flagged `now-runs: remove the scope entry`;
+   one refused with a message that does not match `expect`, or one that fails (`error`, `timeout`) instead of being refused, stays `refused` / `port-error` and is flagged `other-reason` / `not-a-refusal`.
+   Flags are listed in "Scope entries to review".  Without `--scope` only the heterogeneity entry applies.
 7. **Cells, struct arrays, cells of structs** (`oo_.occbin.simul.regime_history`, ...) are compared cell by cell and field by field.  A field the comparator cannot compare is `not-compared` (with the reason; counts like skipped), never an error of the port.
 8. **Comparator robustness**: any exception inside the comparator is a field-level `compare-error` and, if nothing else is wrong, the verdict `compare-error` (listed in its own section with the message); `port-error` is only
    for a port that failed, wrote nothing, or wrote an unreadable .mat.  `skewness`/`kurtosis` are no longer ignored (they are compared when deterministic, skipped when simulated).
-
+9. **Runner rule: a test never starts with its own Dynare outputs** (`tools/accept_pydyn.py`; a port's runner should do the same).  The files of an entry run in order in one scratch folder, so later files see what the port wrote for
+   the earlier ones; nothing is copied for the file about to run (a port that writes `<fname>/Output/<fname>_results.mat` and never overwrites files it did not write would otherwise refuse for a reason that is not its own).
+   Only if an earlier file of the entry did not complete are the Octave-written artifacts of that earlier file copied in, and only the paths not already present.  The timing repeat (second call of the same file) cannot turn a result into a
+   refusal: a file that consumes its own input (`load` then `delete`) fails on the repeat, and the json keeps the first result and records `second_run_error`.
