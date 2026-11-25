@@ -23,7 +23,7 @@ from pydyn.results_post import StructArray
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
          "est_smoother0", "est_mode4", "est_nm7", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
-         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst", "aim_oo", "hz_oo", "irf_shocks_oo",
+         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst", "aim_oo", "hz_oo", "irf_shocks_oo", "osr_ad_oo",
          "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
          "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal",
          "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk", "ll_ss", "sm2h",
@@ -40,7 +40,9 @@ CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo
 #: cf_mh, cf_ml: the conditional forecasts replay Dynare's draws exactly; they differ by the estimates' optimiser tolerance
 #: (cf_mh: mode 5e-6 in the parameters, 1e-4 in the largest forecast; cf_ml: flat likelihood as in est_ml, 1e-2 in the forecast of k).
 TOL = {"est_mode4": 1e-3, "est_nm7": 1e-5, "est_ml": 5e-2, "osr1": 5e-3, "est_mh": 2e-3, "est_fc_mode": 1e-3, "est_fc_mh": 2e-3, "est_fc_mh2": 2e-3,
-       "cf_mh": 5e-4, "cf_ml": 2e-2, "pe_t15": 5e-4}
+       "cf_mh": 5e-4, "cf_ml": 2e-2, "pe_t15": 5e-4,
+       # osr_ad_oo: the second osr (TolFun 1e-20 carried over) ends where the loss is flat to rounding: parameters agree to 1e-7
+       "osr_ad_oo": 1e-6}
 
 # Fields that are wall-clock time or a dseries object, or that pydyn refuses (see the test below).
 SKIP = {"oo_.time", "oo_.initval_series", "M_.aux_vars"}
