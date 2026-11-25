@@ -246,6 +246,11 @@ gap functionals stacked with the complementarity rows first (the `NewsOBC` order
 if only the gap and the states are needed.
 
 ## Cubature defaults and failure handling
+**Superseded (25 Nov) for the failure rule and the time limit:** the strict default below (`cubature_failure_tolerance=0.0`: raise on any failed point; `cubature_milp_time_limit=1.0`) is replaced by the rule in
+[OBC_CUBATURE_FAILURES.md](OBC_CUBATURE_FAILURES.md): class (a) (proven no solution) still raises by default, classes (b) and (c) are tolerated up to `cubature_undecided_tolerance` = 0.5% of a period's
+relevant points (never fewer than 3 points) with a warning and counts, and `cubature_milp_time_limit` is 0.1 s. `cubature_undecided_tolerance=0` restores the strict behaviour described here. The rest of this section
+(defaults `regions="all"`, `qmc_level=11`, the M diagnostic, the classification of failed points) is unchanged.
+
 Specification for `HigherOrderNews` with `cubature=True` (decisions of the project owner; implemented in pydyn/obc_ho.py; tests in tests/test_obc_ho.py).
 
 ### Defaults
@@ -254,7 +259,7 @@ Specification for `HigherOrderNews` with `cubature=True` (decisions of the proje
   returns is the wedge of the average path, not the average of the wedges; the full average changes results a great deal (NKM, full-average mean shift:
   -0.107 sd at level 9, -0.162 at level 11, -0.163 at level 13).
 * `qmc_level=11`: the first 2^12 - 1 = 4,095 Sobol points after the origin (symmetric set, mean exactly zero).
-* `cubature_milp_time_limit=1.0` (s per failed point), `cubature_failure_tolerance=0.0` (raise on any failed point), `m_diagnostic="s"`.
+* ~~`cubature_milp_time_limit=1.0`, `cubature_failure_tolerance=0.0` (raise on any failed point)~~ (superseded, see above: now 0.1 s and the split rule), `m_diagnostic="s"`.
 Explicit old settings (`regions=1`, `qmc_level=9` / 10) reproduce the stored baselines and the DynareOBC references (tests unchanged apart from passing them).
 
 ### Up-front M diagnostic

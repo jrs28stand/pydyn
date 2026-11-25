@@ -63,7 +63,8 @@ def cubature_warning(owner, dropped_cls, relevant, share_max, S):
     nper = int(owner._periods_with_drops)
     a, b, c = dropped_cls["a"], dropped_cls["b"], dropped_cls["c"]
     return (f"cubature: {tot} of {int(relevant)} relevant perturbed points ({100 * tot / max(1, relevant):.3f}%) were dropped in {nper} of {S} periods "
-            f"(by class: a={a} proven no solution, b={b} horizon too short, c={c} undecided; largest share in one period {100 * share_max:.2f}%). "
+            f"(by class: a={a} proven no solution, b={b} horizon too short, c={c} undecided; largest share in one period {100 * share_max:.2f}%; "
+            f"allowed: {100 * owner.undecided_tolerance:g}% of a period's relevant points, never fewer than {owner.undecided_min_points}). "
             "Classes (b) and (c) are tail points that the solver could not settle: they are NOT proven to have no solution. The remaining points are reweighted "
             "by 1/(points - dropped), which biases the average slightly towards benign states. To reduce them: a longer `horizon` for (b); a larger "
             "`cubature_milp_time_limit` for (c). `cubature_undecided_tolerance=0` makes any failed point an error. "

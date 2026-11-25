@@ -121,7 +121,7 @@ dropped 235).
 | bf (multi_equation) | | 1e-4 (O2 table) / refused | 1.6 (MILP 1 s) / refused | | 0.095 (cub 9), 0.37 (cub 11) |
 | sw | 5e-5 / refused | 5e-5 / refused | 1.1 (58% points fail) | 4.6 | |
 Without cubature the regime formulation costs 1.5-2.5x the LCP per period (order 1 and 2 alike; both are 20-70 microseconds). With cubature the cost of the failing points dominates: every point the
-batched iteration cannot settle goes through the complete search, and the integer programme runs up to `cubature_milp_time_limit` (1 s) on it. On nkm 7 of 18,445 points cost 4/5 of the time at level 11.
+batched iteration cannot settle goes through the complete search, and the integer programme runs up to `cubature_milp_time_limit` on it (1 s at the time of this table; default now 0.1 s, see section 8). On nkm 7 of 18,445 points cost 4/5 of the time at level 11.
 Optimisations taken (all bit-identical in results): the first iteration of the batched guess-and-verify is the relevance test (reused), the condition evaluation reuses one steady-state-filled buffer
 (`np.tile` was a third of the time), regime guesses are grouped so that each distinct sequence is one solve with many right-hand sides. Before/after on nkm level 11: 22.7 ms -> 14.1 ms per period
 (MILP limit 0.01 s). Not taken: batching the LP/MILP of failing points; evaluating the conditions through their affine form (they may be nonlinear in levels, the levels test is the point).
@@ -129,8 +129,7 @@ Structural for the Julia port: (i) the affine maps `Gall` (one adjoint recursion
 (iv) a small MILP limit for cubature points, (v) the shared condition buffer.
 
 ## 5. Open questions
-1. Default for `cubature_failure_tolerance` on approx-class models: the strict default (raise on one failed point) makes regime cubature on NKM unusable at level 11 (raises within a few periods); the LCP never fails there. Options for the user:
-tolerance of about 0.5% for regime cubature, or leave it explicit (nothing changed here).
+1. RESOLVED (25 Nov): the strict default made regime cubature on NKM unusable at level 11. Now: class (a) proven no solution raises; (b) and (c) are tolerated up to `cubature_undecided_tolerance` (see section 8 and docs/OBC_CUBATURE_FAILURES.md).
 2. The cubature perturbation of `Ycv` and `a` is confined to the retained gap-path directions (pruned gap covariance). A joint root over all acceptance quantities would add directions the gap path does not span.
 3. The levels test is on the expected path (certainty equivalent); the alternative equations are used linearised. A nonlinear alternative equation would need its second-order response.
 4. bf and sw are linear in levels (log-linear) as written, so order 2 changes nothing for them; the order-2 maps are validated on the nonlinear models only.
@@ -142,7 +141,29 @@ Whether the 0.01-0.05% failing points on approx models have an OccBin solution a
 
 ## 7. Checklist for the Julia port
 Port `HigherOrderRegime` after the order-1 regime solver: generalised `_affine_maps` (functional list in, `Gall`/`c0` out); the split of the regime step into `search(Ycv, a, tie_fn, base_fn)`; `lcp_from(a, base)` and `solve_lcp_core`; root on the gap-like rows in the LCP's row order (permutation `news_order`) plus `Ro = Cov(other, gap) pinv(R')`;
-relevance = bind test at z=0; batched guess-and-verify grouped by regime sequence; failure classes via the statuses; the equality tests against the LCP cubature and DynareOBC's `ref_o2*.mat`; tolerance semantics unchanged.
+relevance = bind test at z=0; batched guess-and-verify grouped by regime sequence; failure classes via the statuses; the equality tests against the LCP cubature and DynareOBC's `ref_o2*.mat`; tolerance semantics: see section 9.
+
+## 8. Failure rule, time limit and evidence (25 Nov; user page: docs/OBC_CUBATURE_FAILURES.md)
+Failure classes per perturbed point: (a) PROVEN no solution, (b) horizon too short, (c) undecided (MILP time limit, or no regime sequence that passes the levels test). In the regime formulation class (a) requires an LP-infeasibility proof
+(`OBCError.proof=True`, set in `_solve_lcp_core` where the LP relaxation is infeasible). A MILP-infeasible result is NOT a proof (big-M and linearised conditions; on approx-class models the LCP was feasible), so it counts as (c).
+Rule, per period with `nrel` relevant points, `n_a`, `n_b`, `n_c` failed points: a_lim = `cubature_failure_tolerance`*nrel; u = max(`cubature_undecided_tolerance`*nrel, `cubature_undecided_min_points`) if the tolerance is > 0 else 0;
+total_lim = max(a_lim, u). The period is acceptable iff n_a <= a_lim AND n_a+n_b+n_c <= total_lim. Otherwise `CubatureFailure` (with `lower_bound` true if the search stopped early). Defaults 0.0, 0.005, 3.
+`cubature_undecided_tolerance=0` gives the former strict rule (tested equal, allclose 1e-14). Dropped points are removed and the average is sum over solved points / (P - F).
+Time limit: classification (a/b/c counts) is identical from 0.05 s on nkm, zlb2m, borrcon (`MILPLIM2.jsonl`; at 0.02 s bf has 76 vs 74 class-c); bf batch failures 76 / 75 / 75 / 75 / 75 at 0.02 / 0.05 / 0.1 / 0.5 / 1.0 s, one point solved by the full search at >= 0.05 s.
+Default lowered 1.0 -> 0.1 s (2x margin over 0.05 s). Cost per period at level 9, 1.0 s -> 0.1 s: nkm 5.85 -> 5.94 ms, zlb2m 60.2 -> 13.0 ms, bf 1736 -> 281 ms, borrcon 179 -> 188 ms.
+0.5% rule (per-period distribution, `SHARE*.jsonl`): fine for nkm and the constructed approx model at levels 9, 11, 13 apart from small-count periods, which is why the floor of 3 points exists (nkm at level 11: 2 of 279 failing is 0.7%);
+too tight for bf-type tied-wedge models (per-period maximum 0.96%, 4 to 6 of 15 periods rejected at 0.5%): 1 to 2% would be needed there. Not changed.
+Bias (`BIAS.jsonl`, level 11): nkm 26 of 70,412 points dropped (20 of 100 periods): effect of dropping vs zero-fill 1.9e-5; default vs 5 s limit 1.8e-15; default vs LCP 2.1e-4; cubature effect 0.098; sign-pattern std 2.2e-3 (range 7.3e-3).
+nkocc (mismatch 0.5%): 47 of 87,161 dropped: 2.2e-5; 0; 2.6e-4; 0.030; 4.3e-4. Strict raises at period 4 (nkm) and 2 (nkocc).
+
+## 9. Port to Julia: exact semantics
+1. Per perturbed point classify failures: a = LP-infeasibility proof only; b = horizon_too_short; c = everything else (MILP time limit, MILP infeasible, no sequence passing the levels test).
+2. Relevant points: those whose reference path violates the bound (bind test at z=0). Non-relevant points contribute zero and are never counted.
+3. Per period: a_lim = failure_tolerance*nrel; u = max(undecided_tolerance*nrel, min_points) if undecided_tolerance > 0 else 0; total_lim = max(a_lim, u). Acceptable iff n_a <= a_lim and n_a+n_b+n_c <= total_lim. Defaults 0.0, 0.005, 3; milp_time_limit 0.1 s.
+4. Stop searching as soon as n_a > a_lim or n_a+n_b+n_c > total_lim; raise `CubatureFailure` with counts by class and a flag saying whether counts are complete or lower bounds.
+5. Acceptable periods: drop the failed points, average = sum of wedges over solved points / (P - F).
+6. Record per period (relevant, dropped_a, dropped_b, dropped_c, dropped) and totals; issue ONE warning per simulation (totals, largest per-period share, advice per class, the tolerance and floor, pointer to the user page).
+7. `undecided_tolerance=0` must reproduce the strict rule exactly. Tests: see tests/test_obc_regime_ho.py (`test_failure_rule_arithmetic`, `test_undecided_tolerance_zero_is_the_strict_rule`, `test_interaction_with_failure_tolerance`, `test_default_nkm_cubature_completes_with_warning_and_counts`).
 
 ## State / next step
 - Steps 1 to 4 done. tests/test_obc_regime_ho.py: 50 tests; `pytest tests -k "obc or occbin"`: 317 passed, 3 skipped. Next: the user decides open question 1 (cubature_failure_tolerance for approx-class models); Julia port per section 7.
