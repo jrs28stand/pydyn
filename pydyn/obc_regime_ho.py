@@ -29,7 +29,7 @@ class HigherOrderRegime(HigherOrderNews):
 
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
-                 max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic=False,
+                 max_cubature_dimension=128, cubature_milp_time_limit=0.1, cubature_failure_tolerance=0.0, m_diagnostic=False,
                  obc_formulation="regime", milp_time_limit=None, cubature_undecided_tolerance=0.005):
         from .korder import k_order
         self.model = model
@@ -481,7 +481,11 @@ class HigherOrderRegime(HigherOrderNews):
 
     @staticmethod
     def _cls_of(err):
-        return "b" if err.status == "horizon_too_short" else ("c" if err.status == "not_converged" else "a")
+        """Failure class of a point the full search could not solve.  (a) only when an infeasible linear programme certifies it (``err.proof``);
+        an infeasible integer programme over regime sequences (big-M constants, conditions linearised) is not a proof and counts as (c)."""
+        if err.status == "horizon_too_short":
+            return "b"
+        return "a" if (err.status == "no_solution" and getattr(err, "proof", False)) else "c"
 
     def news_wedges(self, a, Ycv, A, selection="occbin"):
         """Wedges for one period with cubature: the average over the perturbed acceptance paths ``(a, Ycv) + Ro xi_j`` (``xi`` the quasi-Monte-Carlo

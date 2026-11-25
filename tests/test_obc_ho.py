@@ -303,7 +303,7 @@ def test_cubature_defaults(nkm):
     m, _ = nkm
     h = HigherOrderNews(m, order=2, cubature=True)
     assert h.regions == "all" and h.qmc_level == 11 and h.xi.shape[1] == 2 ** 12 - 1
-    assert h.failure_tolerance == 0.0 and h.milp_time_limit == 1.0
+    assert h.failure_tolerance == 0.0 and h.milp_time_limit == 0.1
     assert HigherOrderNews(m, order=2).cubature is False
 
 

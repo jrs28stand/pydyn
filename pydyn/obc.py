@@ -41,9 +41,10 @@ class OBCError(Exception):
     """Failure of a news-shock solve. ``status`` is 'no_solution', 'horizon_too_short' or 'not_converged';
     ``period`` is the 1-based shock period."""
 
-    def __init__(self, message, status="no_solution", period=None):
+    def __init__(self, message, status="no_solution", period=None, proof=False):
         super().__init__(message)
         self.status, self.period = status, period
+        self.proof = bool(proof)          # True only when the failure is certified by an infeasible linear programme (a proof of no solution)
 
 
 class OBCClassError(ValueError):
@@ -1356,14 +1357,14 @@ class RegimeOBC:
                 raise OBCError(proof if feas.status == 2 else
                                no_milp if self.milp_time_limit <= 0 else
                                "no solution within the news horizon (the linear complementarity problem has none)",
-                               "no_solution")
+                               "no_solution", proof=feas.status == 2)
             zsol = y > 1e-9 * max(1.0, float(np.abs(y).max()))
         else:
             # relaxation without bounds: y >= 0, 0 <= z <= 1, q + M y + G z >= 0
             feas = linprog(np.zeros(2 * T), A_ub=-np.hstack([M, G]), b_ub=q,
                            bounds=[(0, None)] * T + [(0, 1)] * T)
             if feas.status == 2:
-                raise OBCError(proof, "no_solution")
+                raise OBCError(proof, "no_solution", proof=True)
             if self.milp_time_limit <= 0:
                 raise OBCError(no_milp, "no_solution")
             sc = max(np.abs(q).max(), 1e-12)

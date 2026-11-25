@@ -130,12 +130,22 @@ class HigherOrderNews:
 
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
-                 max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic="s",
+                 max_cubature_dimension=128, cubature_milp_time_limit=0.1, cubature_failure_tolerance=0.0, m_diagnostic="s",
                  obc_formulation="auto", cubature_undecided_tolerance=0.005):
         """Defaults when ``cubature`` is on: the full quasi-Monte Carlo average (``regions="all"``) over 2^(qmc_level+1) - 1 = 4,095
         points (``qmc_level=11``); ``regions=1`` (DynareOBC's default; its single mean point does not price tail risk) and
-        ``regions=k`` remain options. See docs/OBC_HO_PERF.md, "Cubature defaults and failure handling", for the failure semantics:
-        ``cubature_milp_time_limit`` (s per point, MILP proof step), ``cubature_failure_tolerance`` (0 = raise on any failed point),
+        ``regions=k`` remain options.
+
+        Failed cubature points (a perturbed path with no usable solution) are of three kinds: (a) PROVEN no solution, (b) the news horizon is too
+        short, (c) undecided (the integer programme hit ``cubature_milp_time_limit``, 0.1 s per point, or found no usable sequence).  A period
+        is acceptable iff  n_a <= cubature_failure_tolerance * n_rel  and
+        n_a + n_b + n_c <= max(cubature_failure_tolerance * n_rel, u),  with n_rel the number of relevant points of the period and
+        u = max(cubature_undecided_tolerance * n_rel, 1) when ``cubature_undecided_tolerance`` > 0 (default 0.005; at least one point, so that a
+        period with few relevant points is not an error because of one tail point), u = 0 otherwise.  Defaults: ``cubature_failure_tolerance=0``,
+        so any class-(a) point raises ``CubatureFailure``; (b) and (c) points are dropped within u, the average is renormalised by 1/(P - F), the
+        counts are returned per period (``dropped_a/b/c``) and one warning per simulation gives the totals.  ``cubature_undecided_tolerance=0``
+        restores the strict rule (any failed point raises).  A larger ``cubature_failure_tolerance`` covers all three kinds.  The search stops as soon
+        as the outcome of a period is decided.  See docs/OBC_CUBATURE_FAILURES.md (user guide) and docs/OBC_HO_PERF.md.
         ``m_diagnostic`` ("s": S-matrix test of M, "full": also the P-matrix tests, False: skip)."""
         from .korder import k_order
         self.model = model
