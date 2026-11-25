@@ -143,14 +143,20 @@ def _repeated_draws_correction(sorted_draws) -> float:
     d = np.asarray(sorted_draws, float)
     n = d.size
     tol = 2 * np.finfo(float).eps
-    j = np.searchsorted(d, d + tol, side="left")          # first j with d[j] >= d[i] + tol (approximately)
     idx = np.arange(n)
-    for _ in range(4):                                    # settle the comparison exactly as written in Dynare
+    # first guess from the sorted order, then settled exactly as written in Dynare: j_i is the first j > i with
+    # d_j - d_i >= tol (a run of equal draws is arbitrarily long: no cap on the number of corrections)
+    j = np.maximum(np.searchsorted(d, d + tol, side="left"), idx + 1)
+    while True:
         up = (j < n) & ((d[np.minimum(j, n - 1)] - d) < tol)
-        down = (j > idx + 1) & ~((d[np.maximum(j - 1, 0)] - d) < tol)
-        if not (up.any() or down.any()):
+        if not up.any():
             break
-        j = j + up - down
+        j = j + up
+    while True:
+        down = (j > idx + 1) & ((d[np.maximum(j - 1, 0)] - d) >= tol)
+        if not down.any():
+            break
+        j = j - down
     return float(np.sum(2 * (j - idx) - 1) / n)
 
 

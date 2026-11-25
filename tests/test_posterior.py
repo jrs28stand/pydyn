@@ -517,3 +517,22 @@ def test_sampler_statistics_agree_with_dynare_long_run(mod):
     np.testing.assert_allclose(b[3, :, 0], x[2300:2400].mean(axis=0))
     assert b.shape == (20, 2, 5) and np.all(b[:, :, 4] == 1)
     np.testing.assert_allclose(cmp.chain_stats(b)["mean"][0], x[2000:].mean(axis=0))
+
+
+def test_repeated_draws_correction_with_long_runs_of_equal_draws():
+    """correction_for_repeated_draws of mh_optimal_bandwidth.m, written as Dynare writes it (a loop on j from i while
+    draws(j) - draws(i) < 2 eps), for chains whose rejections repeat a draw many times (runs of 5 to 40 equal draws gave a
+    wrong, even negative, correction when the position of the end of a run was settled in a fixed number of steps)."""
+    def dynare(d):
+        n, tot, tol = len(d), 0, 2 * np.finfo(float).eps
+        for i in range(n):
+            j = i
+            while j < n and d[j] - d[i] < tol:
+                j += 1
+            tot += 2 * (j - i) - 1
+        return tot / n
+    rng = np.random.default_rng(7)
+    for run_max, scale, loc in ((8, 1e-3, 8.5), (40, 1e-3, 8.5), (30, 1e-17, 0.3), (30, 1e-16, 0.0)):
+        base = loc + rng.normal(size=60) * scale
+        d = np.sort(np.repeat(base, rng.integers(1, run_max, 60)))
+        assert posterior._repeated_draws_correction(d) == pytest.approx(dynare(d), rel=1e-13)

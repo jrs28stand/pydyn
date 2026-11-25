@@ -23,7 +23,7 @@ from pydyn.results_post import StructArray
 REF = Path(__file__).resolve().parent.parent / "reference" / "oo"
 CASES = ["rbc_oo", "rbc_oo_o2", "rbc_oo_o3", "rbc_oo_pf", "rbc_oo_loop", "rbc_oo_pfloop",
          "est_smoother0", "est_mode4", "est_nm7", "est_ml", "cs1", "fc1", "occ1", "ram1", "osr1", "est_mh", "rng_oo", "nd_oo", "nd_oo2",
-         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst",
+         "pfwee_oo", "pfwee_oo_dates", "pfwee_oo_hl", "pfwee_oo_ramst", "aim_oo", "hz_oo", "irf_shocks_oo",
          "est_fc_trend", "est_fc_mode", "est_fc_mh", "est_fc_mh2", "est_fc_mhx", "est_fc_mhs", "est_fc_early",
          "est_fc_nkp", "est_fc_nkm", "est_fc_mhj", "est_fc_cal",
          "cf_cal", "cf_hist", "cf_init", "cf_pad", "cf_mh", "cf_ml", "est_birf", "est_birf2", "est_conv", "disc_gali", "disc_nk", "ll_ss", "sm2h",
@@ -200,3 +200,11 @@ def test_self_check_error_propagates(tmp_path):
 
 def test_model_api_unchanged():
     assert "run_statements" in pydyn.Model.__init__.__code__.co_varnames
+
+
+def test_aim_solver_eigval_is_the_transition_matrix_spectrum_in_lapack_order(runs):
+    """AIM_first_order_solver.m: oo_.dr.eigval = eig(Gy) (nspred values, Octave's order), not the QZ spectrum with the explosive root."""
+    ref = loadmat(REF / "aim_oo.mat", struct_as_record=True)["oo_"]["dr"][0, 0]["eigval"][0, 0]
+    ours = np.asarray(runs["aim_oo"].oo_["dr"]["eigval"], complex).reshape(-1, 1)
+    assert ours.shape == ref.shape == (2, 1)
+    np.testing.assert_allclose(ours, ref, rtol=1e-12, atol=1e-14)
