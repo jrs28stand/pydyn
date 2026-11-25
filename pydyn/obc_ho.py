@@ -43,33 +43,64 @@ _DIAG_CACHE: dict = {}                                           # (digest of M,
 _SOBOL_CACHE: dict = {}                                          # (dim, level) -> read-only (dim, 2^(level+1)-1) normals
 
 
+PAGE = "docs/OBC_CUBATURE_FAILURES.md"
+
+
+def cubature_limits(nrel, failure_tolerance, undecided_tolerance):
+    """The rule for one period with ``nrel`` relevant points: (largest tolerated number of class-(a) points, largest tolerated total number of failed
+    points).  A period is acceptable iff  n_a <= failure_tolerance * nrel  and  n_a + n_b + n_c <= max(failure_tolerance * nrel, u),  where
+    u = max(undecided_tolerance * nrel, 1) if undecided_tolerance > 0 (at least one point, so that a period with few relevant points is not
+    an error because of a single tail point) and u = 0 otherwise.  With ``cubature_undecided_tolerance = 0`` this is the strict rule (no failed point
+    unless ``cubature_failure_tolerance`` > 0)."""
+    a_lim = failure_tolerance * nrel
+    u = max(undecided_tolerance * nrel, 1.0) if undecided_tolerance > 0 else 0.0
+    return a_lim, max(a_lim, u)
+
+
+def cubature_warning(owner, dropped_cls, relevant, share_max, S):
+    """The single warning of a simulation that dropped failed cubature points (not proven to have no solution, except class (a) under a user tolerance)."""
+    tot = sum(dropped_cls.values())
+    nper = int(owner._periods_with_drops)
+    a, b, c = dropped_cls["a"], dropped_cls["b"], dropped_cls["c"]
+    return (f"cubature: {tot} of {int(relevant)} relevant perturbed points ({100 * tot / max(1, relevant):.3f}%) were dropped in {nper} of {S} periods "
+            f"(by class: a={a} proven no solution, b={b} horizon too short, c={c} undecided; largest share in one period {100 * share_max:.2f}%). "
+            "Classes (b) and (c) are tail points that the solver could not settle: they are NOT proven to have no solution. The remaining points are reweighted "
+            "by 1/(points - dropped), which biases the average slightly towards benign states. To reduce them: a longer `horizon` for (b); a larger "
+            "`cubature_milp_time_limit` for (c). `cubature_undecided_tolerance=0` makes any failed point an error. "
+            f"See {PAGE}.")
+
+
 class CubatureFailure(OBCError):
-    """A perturbed (cubature) path without a usable solution, raised by ``HigherOrderNews.news_shocks``.
+    """The cubature average of a period cannot be formed under the failure rule (``cubature_limits``): too many perturbed (cubature) points without a
+    usable solution.  Raised by ``news_shocks`` / ``news_wedges``.
 
-    Attributes: ``period`` (1-based, set by ``simulate``), ``n_failed`` (points failed, in units of cubature points: a failed
-    region counts all its points), ``lower_bound`` (True when the search stopped at the first failure / when the tolerance was
-    exceeded, so ``n_failed`` is only a lower bound), ``n_relevant``, ``n_points``, ``counts`` = {'a','b','c'} (see
-    ``HigherOrderNews._classify``), ``n_active_set_failed`` (points on which the active-set iteration failed: an upper
-    bound on the failures when the whole batch was examined, else None), ``tolerance``, ``advice``."""
+    Attributes: ``period`` (1-based, set by ``simulate``), ``n_failed`` (points failed, in units of cubature points: a failed region counts all its
+    points), ``lower_bound`` (True when the search stopped as soon as the outcome was decided, so the counts are lower bounds), ``n_relevant``,
+    ``n_points``, ``counts`` = {'a','b','c'}: (a) proven no solution, (b) horizon too short, (c) undecided (see ``HigherOrderNews._classify``),
+    ``n_active_set_failed``, ``tolerance`` (``cubature_failure_tolerance``), ``undecided_tolerance``, ``advice``.  User guide: docs/OBC_CUBATURE_FAILURES.md."""
 
-    def __init__(self, status, n_failed, lower_bound, n_relevant, n_points, counts, n_active_set_failed, tolerance, limit):
+    def __init__(self, status, n_failed, lower_bound, n_relevant, n_points, counts, n_active_set_failed, tolerance, limit, undecided_tolerance=0.0):
         a, b, c = counts["a"], counts["b"], counts["c"]
         advice = []
-        if b:
-            advice.append("(b): the check-ahead rows cannot be met with wedges inside the news horizon; try a longer `horizon` "
-                          "(not proved to help)")
         if a:
-            advice.append("(a): proved no solution at this horizon (M is not an S-matrix or the path is outside its reach): "
-                          "the model has reachable states without an equilibrium; set cubature_failure_tolerance > 0 only to "
-                          "drop such points knowingly")
+            advice.append("(a) PROVEN no solution: the model has states that agents give weight to (through the shocks they expect) from which no equilibrium "
+                          "exists. This is a property of the model or its calibration, not of the solver; averaging over fewer points would hide it. "
+                          "Raise `cubature_failure_tolerance` only to drop such points knowingly")
+        if b:
+            advice.append("(b) horizon too short: the bound would still bind after the news horizon; try a longer `horizon` (not proved to help)")
         if c:
-            advice.append(f"(c): undecided at the MILP time limit ({limit:g} s); raise `cubature_milp_time_limit`")
+            advice.append(f"(c) undecided: the integer programme did not settle the point in {limit:g} s, or found a regime sequence that fails OccBin's test; "
+                          "try a larger `cubature_milp_time_limit` (this cannot make a point worse)")
+        advice.append("`cubature_undecided_tolerance` is the share of relevant points in a period that may be (b) or (c) and dropped; "
+                      f"see {PAGE}")
         msg = (f"cubature: {'at least ' if lower_bound else ''}{n_failed} of {n_relevant} relevant perturbed points "
                f"({n_points} in total) have no usable solution: a={a} b={b} c={c}"
-               + (f"; tolerance {tolerance:g}" if tolerance else "") + ". " + " ".join(advice))
+               + (f"; cubature_failure_tolerance={tolerance:g}" if tolerance else "")
+               + (f"; cubature_undecided_tolerance={undecided_tolerance:g}" if undecided_tolerance else "") + ". " + " ".join(advice))
         super().__init__(msg, status)
         self.n_failed, self.lower_bound, self.n_relevant, self.n_points = n_failed, lower_bound, n_relevant, n_points
         self.counts, self.n_active_set_failed, self.tolerance, self.advice = dict(counts), n_active_set_failed, tolerance, advice
+        self.undecided_tolerance = undecided_tolerance
 
 
 class HigherOrderNews:
@@ -100,7 +131,7 @@ class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
                  max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic="s",
-                 obc_formulation="auto"):
+                 obc_formulation="auto", cubature_undecided_tolerance=0.005):
         """Defaults when ``cubature`` is on: the full quasi-Monte Carlo average (``regions="all"``) over 2^(qmc_level+1) - 1 = 4,095
         points (``qmc_level=11``); ``regions=1`` (DynareOBC's default; its single mean point does not price tail risk) and
         ``regions=k`` remain options. See docs/OBC_HO_PERF.md, "Cubature defaults and failure handling", for the failure semantics:
@@ -144,6 +175,9 @@ class HigherOrderNews:
         self.failure_tolerance = float(cubature_failure_tolerance)
         if not 0.0 <= self.failure_tolerance < 1.0:
             raise ValueError("cubature_failure_tolerance must be in [0, 1)")
+        self.undecided_tolerance = float(cubature_undecided_tolerance)
+        if not 0.0 <= self.undecided_tolerance < 1.0:
+            raise ValueError("cubature_undecided_tolerance must be in [0, 1)")
         self.m_diag = None
         if self.cubature:
             self.R = self.conditional_root()
@@ -154,6 +188,7 @@ class HigherOrderNews:
                     warnings.warn("M is not an S-matrix: some paths can have no solution; cubature points may fail "
                                   "(see HigherOrderNews.m_diag)", UserWarning, stacklevel=2)
         self._dropped_last = self._relevant_last = 0
+        self._dropped_cls = dict(a=0, b=0, c=0)
         self._fac_cache = {}
         self.stats = dict(lcp=0, cubature_points=0, relevant_points=0)
 
@@ -493,9 +528,13 @@ class HigherOrderNews:
         """Solution at q; with cubature, the average over the perturbed paths q + R xi_j (see docs/OBC_HO_PERF.md, "Cubature
         defaults and failure handling"). With P points, F failed points (no usable solution), the result is
         (sum over solved relevant units of size * y) / (P - F): non-relevant points contribute y = 0, failed points are removed from
-        the sample. F = 0 gives the plain average sum / P. F > 0 is only allowed when ``cubature_failure_tolerance`` > 0 and
-        F <= tolerance * (number of relevant points); otherwise ``CubatureFailure`` is raised."""
+        the sample. F = 0 gives the plain average sum / P. Failed points are classified (a) proven no solution, (b) horizon too short, (c) undecided;
+        the period is acceptable iff  n_a <= cubature_failure_tolerance * n_rel  and
+        n_a + n_b + n_c <= max(cubature_failure_tolerance * n_rel, u),  u = max(cubature_undecided_tolerance * n_rel, 1) if that tolerance is
+        positive, else 0 (``cubature_limits``); otherwise ``CubatureFailure`` is raised, as soon as the outcome is decided (its ``lower_bound`` says
+        whether the counts are then incomplete). See docs/OBC_CUBATURE_FAILURES.md."""
         self._dropped_last = self._relevant_last = 0
+        self._dropped_cls = dict(a=0, b=0, c=0)
         if not self.cubature or self.R.shape[1] == 0:
             return self._solve(q)
         npts = self.xi.shape[1]
@@ -509,14 +548,14 @@ class HigherOrderNews:
         counts = dict(a=0, b=0, c=0)
         nfail = 0                                                    # failed points so far (region: all its points)
         n_as = None                                                  # active-set failures among all units, when known
-        limit_fail = tol * nrel                                      # failures allowed (0 = none)
+        a_lim, limit_fail = cubature_limits(nrel, tol, self.undecided_tolerance)
         acc = np.zeros(self.nws)
 
         def failed(cls, size):
             nonlocal nfail
             counts[cls] += size
             nfail += size
-            return nfail > limit_fail                                # True: stop (raise)
+            return counts["a"] > a_lim or nfail > limit_fail          # True: the outcome is decided (raise)
 
         unexamined = 0                                               # units not looked at when the search stopped early
         if self.regions == "all":                                    # plain quasi-Monte Carlo average
@@ -547,14 +586,17 @@ class HigherOrderNews:
                 elif failed(cls, g.size):
                     unexamined = len(groups) - i - 1
                     break
-        if nfail > limit_fail:
+        if counts["a"] > a_lim or nfail > limit_fail:
             self.stats["no_solution"] = self.stats.get("no_solution", 0) + 1
             status = "no_solution" if counts["a"] else ("horizon_too_short" if counts["b"] else "not_converged")
-            raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, n_as, tol, self.milp_time_limit)
+            raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, n_as, tol, self.milp_time_limit, self.undecided_tolerance)
         if nfail:
             self._dropped_last = nfail
+            self._dropped_cls = dict(counts)
             self.stats["dropped_points"] = self.stats.get("dropped_points", 0) + nfail
             self.stats["dropped_periods"] = self.stats.get("dropped_periods", 0) + 1
+            for k_, v_ in counts.items():
+                self.stats["class_" + k_] = self.stats.get("class_" + k_, 0) + v_
         return acc / (npts - nfail)
 
     def _split_regions(self, pr, k):
@@ -612,7 +654,8 @@ class HigherOrderNews:
     def simulate(self, shocks, init=None):
         """Simulate under unanticipated shocks. Returns a dict with levels (T, n) in declaration order:
         ``with_bound``, ``without_bound`` (the pruned simulation), the news shocks per period (``wedges``), and per period the
-        number of relevant cubature points (``relevant``) and of failed points dropped under ``cubature_failure_tolerance`` (``dropped``)."""
+        number of relevant cubature points (``relevant``) and of failed points dropped (``dropped`` in total; ``dropped_a``, ``dropped_b``, ``dropped_c`` by class),
+        under the rule of ``cubature_limits``; one warning states the totals."""
         ob, n = self.ob, self.n
         shocks = np.atleast_2d(np.asarray(shocks, float))
         S = shocks.shape[0]
@@ -627,6 +670,7 @@ class HigherOrderNews:
         prev_total += o
         with_b, without_b, wedges = np.empty((S, n)), np.empty((S, n)), np.zeros((S, self.nws))
         dropped, relevant = np.zeros(S, int), np.zeros(S, int)
+        dcls = {k_: np.zeros(S, int) for k_ in "abc"}
         for t in range(S):
             u = shocks[t]
             x1, x2 = y1[self.ist], y2[self.ist]
@@ -650,8 +694,12 @@ class HigherOrderNews:
             prev_total = base + o
             wedges[t] = y
             dropped[t], relevant[t] = self._dropped_last, self._relevant_last
+            for k_ in "abc":
+                dcls[k_][t] = self._dropped_cls[k_]
         if dropped.any():
-            warnings.warn(f"cubature_failure_tolerance={self.failure_tolerance:g}: {dropped.sum()} of {relevant.sum()} relevant perturbed "
-                          f"points ({100 * dropped.sum() / relevant.sum():.1f}%) were dropped in {int((dropped > 0).sum())} of {S} periods; "
-                          f"the remaining points are reweighted by 1/(points - dropped)", UserWarning, stacklevel=2)
-        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges, dropped=dropped, relevant=relevant)
+            self._periods_with_drops = int((dropped > 0).sum())
+            share = dropped / np.maximum(relevant, 1)
+            warnings.warn(cubature_warning(self, {k_: int(v.sum()) for k_, v in dcls.items()}, relevant.sum(), float(share.max()), S),
+                          UserWarning, stacklevel=2)
+        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges, dropped=dropped, relevant=relevant,
+                    dropped_a=dcls["a"], dropped_b=dcls["b"], dropped_c=dcls["c"])

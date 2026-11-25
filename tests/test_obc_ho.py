@@ -226,7 +226,8 @@ def test_two_constraints_cubature_and_batch_equal_scalar(zlb2):
     c = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, cubature=True, Sigma_e=tiny, qmc_level=5).simulate(S[:60])
     b = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, Sigma_e=tiny).simulate(S[:60])
     np.testing.assert_allclose(c["with_bound"], b["with_bound"], atol=1e-9)
-    h = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, cubature=True, qmc_level=6, regions="all")
+    h = HigherOrderNews(m, order=2, horizon=20, check_ahead=20, cubature=True, qmc_level=6, regions="all",
+                         cubature_undecided_tolerance=0)
     assert h.R.shape[0] == 2 * h.N
     qs, h1 = [], HigherOrderNews(m, order=2, horizon=20, check_ahead=20)       # realistic gap paths from a simulation
     orig = h1.news_shocks
@@ -327,7 +328,7 @@ def test_raise_by_default_with_classified_counts(borrcon, sw_cp):
     m, S = borrcon                                    # failures are class (b): the check-ahead rows
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5)
+        h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, cubature_undecided_tolerance=0)
         with pytest.raises(CubatureFailure) as ei:
             h.simulate(S)
         e = ei.value
@@ -346,7 +347,7 @@ def test_raise_by_default_with_classified_counts(borrcon, sw_cp):
 
 def test_tolerance_drops_and_renormalises(borrcon):
     m, S = borrcon
-    kw = dict(order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False)
+    kw = dict(order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False, cubature_undecided_tolerance=0)
     h = HigherOrderNews(m, cubature_failure_tolerance=0.9, **kw)
     with pytest.warns(UserWarning, match="dropped") as rec:
         r = h.simulate(S[:12])
@@ -382,7 +383,7 @@ def test_tolerance_drops_and_renormalises(borrcon):
 
 def test_milp_time_limit_gives_undecided_class(borrcon):
     m, S = borrcon
-    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False)
+    h = HigherOrderNews(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, m_diagnostic=False, cubature_undecided_tolerance=0)
     q = _qs(m, S[:3], 32)[0]
     idx = h._relevant_points(q)
     pr = q[:, None] + h.R @ h.xi[:, idx]

@@ -18,7 +18,7 @@ import warnings
 import numpy as np
 
 from .obc import OBCError, RegimeOBC, _functional_rows, _solve_checked, check_selection, constraint_objects
-from .obc_ho import CubatureFailure, HigherOrderNews
+from .obc_ho import CubatureFailure, HigherOrderNews, cubature_limits, cubature_warning
 from .occbin import Occbin
 
 __all__ = ["HigherOrderRegime"]
@@ -30,7 +30,7 @@ class HigherOrderRegime(HigherOrderNews):
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
                  max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic=False,
-                 obc_formulation="regime", milp_time_limit=None):
+                 obc_formulation="regime", milp_time_limit=None, cubature_undecided_tolerance=0.005):
         from .korder import k_order
         self.model = model
         self.order = int(order)
@@ -68,6 +68,10 @@ class HigherOrderRegime(HigherOrderNews):
         self.failure_tolerance = float(cubature_failure_tolerance)
         if not 0.0 <= self.failure_tolerance < 1.0:
             raise ValueError("cubature_failure_tolerance must be in [0, 1)")
+        self.undecided_tolerance = float(cubature_undecided_tolerance)
+        if not 0.0 <= self.undecided_tolerance < 1.0:
+            raise ValueError("cubature_undecided_tolerance must be in [0, 1)")
+        self._dropped_cls = dict(a=0, b=0, c=0)
         self.m_diag = None
         if self.cubature:
             self._init_cubature()
@@ -268,6 +272,7 @@ class HigherOrderRegime(HigherOrderNews):
         prev_total += o
         with_b, without_b, wedges = np.empty((S, n)), np.empty((S, n)), np.zeros((S, self.nws))
         dropped, relevant = np.zeros(S, int), np.zeros(S, int)
+        dcls = {k_: np.zeros(S, int) for k_ in "abc"}
         regimes, used = [], []
         for t in range(S):
             u = shocks[t]
@@ -299,11 +304,14 @@ class HigherOrderRegime(HigherOrderNews):
             regimes.append(None if z is None else z[:self.T].copy())
             used.append(info.get("used"))
             dropped[t], relevant[t] = self._dropped_last, self._relevant_last
+            for k_ in "abc":
+                dcls[k_][t] = self._dropped_cls[k_]
         if dropped.any():
-            warnings.warn(f"cubature_failure_tolerance={self.failure_tolerance:g}: {dropped.sum()} of {relevant.sum()} relevant perturbed "
-                          f"points ({100 * dropped.sum() / relevant.sum():.1f}%) were dropped in {int((dropped > 0).sum())} of {S} periods; "
-                          f"the remaining points are reweighted by 1/(points - dropped)", UserWarning, stacklevel=2)
-        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges, dropped=dropped, relevant=relevant, regimes=regimes, solver=used)
+            self._periods_with_drops = int((dropped > 0).sum())
+            share = dropped / np.maximum(relevant, 1)
+            warnings.warn(cubature_warning(self, {k_: int(v.sum()) for k_, v in dcls.items()}, relevant.sum(), float(share.max()), S),
+                          UserWarning, stacklevel=2)
+        return dict(with_bound=with_b, without_bound=without_b, wedges=wedges, dropped=dropped, relevant=relevant, dropped_a=dcls["a"], dropped_b=dcls["b"], dropped_c=dcls["c"], regimes=regimes, solver=used)
 
     # ------------------------------------------------------------------------------------------------ cubature
     def _news_order(self):
@@ -481,6 +489,7 @@ class HigherOrderRegime(HigherOrderNews):
         F failed points (class a/b/c as in ``HigherOrderNews``): (sum over solved relevant units of size * w) / (P - F); ``CubatureFailure`` unless
         F <= ``cubature_failure_tolerance`` * (number of relevant points).  Returns (w, z, info) with z None."""
         self._dropped_last = self._relevant_last = 0
+        self._dropped_cls = dict(a=0, b=0, c=0)
         rb, nb, N, T, k = self.rb, self.nb, self.N, self.T, len(self.rb._cv)
         npts = self.xi.shape[1]
         Ro = self._other_roots()
@@ -498,7 +507,7 @@ class HigherOrderRegime(HigherOrderNews):
         nrel, tol = rel.size, self.failure_tolerance
         counts = dict(a=0, b=0, c=0)
         nfail = 0
-        limit_fail = tol * nrel
+        a_lim, limit_fail = cubature_limits(nrel, tol, self.undecided_tolerance)
         acc = np.zeros(self.nws)
         unexamined = 0
         old_limit = rb.milp_time_limit
@@ -508,6 +517,7 @@ class HigherOrderRegime(HigherOrderNews):
             ap = Ap[:, :T].ravel()
             try:
                 z, w, _info = self.solve_inputs(ap, Yp, Ap, selection=selection)
+                self.stats["full_search_solved"] = self.stats.get("full_search_solved", 0) + 1
                 return w, None
             except OBCError as err:
                 return None, self._cls_of(err)
@@ -516,8 +526,7 @@ class HigherOrderRegime(HigherOrderNews):
             nonlocal nfail
             counts[cls] += size
             nfail += size
-            self.stats["class_" + cls] = self.stats.get("class_" + cls, 0) + size
-            return nfail > limit_fail
+            return counts["a"] > a_lim or nfail > limit_fail
 
         try:
             if self.regions == "all":
@@ -561,11 +570,14 @@ class HigherOrderRegime(HigherOrderNews):
                         break
         finally:
             rb.milp_time_limit = old_limit
-        if nfail > limit_fail:
+        if counts["a"] > a_lim or nfail > limit_fail:
             self.stats["no_solution"] = self.stats.get("no_solution", 0) + 1
             status = "no_solution" if counts["a"] else ("horizon_too_short" if counts["b"] else "not_converged")
-            raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, None, tol, self.milp_time_limit)
+            raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, None, tol, self.milp_time_limit, self.undecided_tolerance)
         if nfail:
+            self._dropped_cls = dict(counts)
+            for k_, v_ in counts.items():
+                self.stats["class_" + k_] = self.stats.get("class_" + k_, 0) + v_
             self._dropped_last = nfail
             self.stats["dropped_points"] = self.stats.get("dropped_points", 0) + nfail
             self.stats["dropped_periods"] = self.stats.get("dropped_periods", 0) + 1

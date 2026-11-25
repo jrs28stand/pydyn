@@ -200,12 +200,12 @@ def test_cubature_exact_class_failures_and_tolerance_equal_lcp():
     from pydyn.obc_ho import CubatureFailure
     for mk in (lambda **k: HigherOrderRegime(m, **k), lambda **k: _lcp(m, **k)):
         with pytest.raises(CubatureFailure) as ei:
-            mk(**kw).simulate(S)
+            mk(cubature_undecided_tolerance=0, **kw).simulate(S)
         assert ei.value.period == 1 and ei.value.counts["b"] == 1 and ei.value.status == "horizon_too_short"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        a = HigherOrderRegime(m, cubature_failure_tolerance=0.01, **kw).simulate(S)
-        b = _lcp(m, cubature_failure_tolerance=0.01, **kw).simulate(S)
+        a = HigherOrderRegime(m, cubature_failure_tolerance=0.01, cubature_undecided_tolerance=0, **kw).simulate(S)
+        b = _lcp(m, cubature_failure_tolerance=0.01, cubature_undecided_tolerance=0, **kw).simulate(S)
     np.testing.assert_array_equal(a["dropped"], b["dropped"])
     assert a["dropped"].sum() >= 1
     np.testing.assert_allclose(a["with_bound"], b["with_bound"], rtol=0, atol=1e-12)
