@@ -263,10 +263,14 @@ def test_cubature_batch_equals_point_by_point_search():
         a, Y, A = h.inputs_from_state(tr["y1"], tr["y2"], tr["o_pre"], tr["prev"], tr["u"])
         pY = (Y.reshape(-1)[:, None] + Ro[nb * N:] @ h.xi).T.reshape(-1, N, k)
         pA = (A.reshape(-1)[:, None] + Ro[:nb * N] @ h.xi).T.reshape(-1, nb, N)
-        rel = np.flatnonzero(h._relevant(pY))[:40]
+        relmask, vb_all = h._relevant(pY)
+        rel = np.flatnonzero(relmask)[:40]
         if not rel.size:
             continue
-        W, ok = h._guess_verify_many(pA[rel][:, :, :T].reshape(len(rel), -1), pY[rel])
+        W, ok = h._guess_verify_many(pA[rel][:, :, :T].reshape(len(rel), -1), pY[rel], vb0=vb_all[rel])
+        W2, ok2 = h._guess_verify_many(pA[rel][:, :, :T].reshape(len(rel), -1), pY[rel])       # without the shortcut: the same
+        np.testing.assert_array_equal(ok, ok2)
+        np.testing.assert_allclose(W[ok], W2[ok2], rtol=0, atol=1e-13)
         for j, i in enumerate(rel):
             try:
                 z, w, _ = h.solve_inputs(pA[i][:, :T].ravel(), pY[i], pA[i])
@@ -277,3 +281,63 @@ def test_cubature_batch_equals_point_by_point_search():
                 np.testing.assert_allclose(W[j], w, rtol=0, atol=1e-11 * max(1.0, np.abs(w).max()))
                 checked += 1
     assert checked > 100
+
+
+# ------------------------------------------------------------------------------------------------ routing and approx class
+def test_higher_order_news_routes_by_obc_formulation():
+    nkm, zlb, bf = model("nkm"), model("zlb"), model("bf")
+    assert type(HigherOrderNews(nkm, order=1)) is HigherOrderRegime                      # approx class: 'auto' is the regime formulation
+    assert type(HigherOrderNews(nkm, order=1, obc_formulation="lcp")) is HigherOrderNews
+    assert type(HigherOrderNews(zlb, order=1, horizon=20, check_ahead=20)) is HigherOrderNews       # exact class: unchanged
+    assert type(HigherOrderNews(zlb, order=1, horizon=20, check_ahead=20, obc_formulation="regime")) is HigherOrderRegime
+    assert type(HigherOrderNews(bf, order=1)) is HigherOrderRegime                         # multi_equation: was refused
+    with pytest.raises(ValueError, match="complementary pair"):
+        HigherOrderNews(bf, order=1, obc_formulation="lcp")
+    with pytest.raises(ValueError, match="unknown obc_formulation"):
+        HigherOrderNews(zlb, order=1, obc_formulation="hybrid")
+
+
+def test_exact_class_auto_is_bit_identical_to_lcp():
+    m, S, hz = model("nk"), shocks("nk"), 32
+    a = HigherOrderNews(m, order=2, horizon=hz, check_ahead=hz).simulate(S)
+    b = HigherOrderNews(m, order=2, horizon=hz, check_ahead=hz, obc_formulation="lcp").simulate(S)
+    # same class, same code path.  (Not array_equal: two builds of the same model differ by ~1e-20 in ghxx, a property of k_order that predates this work.)
+    assert type(HigherOrderNews(m, order=2, horizon=hz, check_ahead=hz)) is HigherOrderNews
+    np.testing.assert_allclose(a["with_bound"], b["with_bound"], rtol=0, atol=1e-15)
+
+
+def test_sw_cubature_raises_with_class_a_and_bf_tolerance_mode():
+    """sw (multi_equation): reachable states without a solution, so cubature raises at once with class (a) points; bf drops class (c) points when allowed."""
+    from pydyn.obc_ho import CubatureFailure
+    m = model("sw")
+    h = HigherOrderRegime(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5, cubature_milp_time_limit=0.02)
+    with pytest.raises(CubatureFailure) as ei:
+        h.simulate(shocks("sw", T=10))
+    assert ei.value.counts["a"] >= 1 and ei.value.status == "no_solution"
+
+
+def _zlbm(d, tmp):
+    sys.path.insert(0, str(ROOT / "soak" / "approx"))
+    sys.path.insert(0, str(ROOT / "soak"))
+    import gen
+    p = Path(tmp) / "tf_approx.mod"
+    p.write_text(gen.zlbm(d))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pydyn.Model(pydyn.run_preprocessor(p, extra_args=("output=second",)))
+
+
+@pytest.mark.parametrize("d,max_periods", [(0.0, 0), (1e-3, 0), (1e-2, 5)])
+def test_approx_class_family_regime_vs_lcp_order_two(tmp_path, d, max_periods):
+    """Constructed approx-class model (docs/OBC_ESTIMATION.md): order-2 regime vs order-2 LCP differ at knife-edge periods only, and
+    the d = 0 control (additive shock) is exact; the regime path is accepted by OccBin's test in every period."""
+    m = _zlbm(d, tmp_path)
+    S = np.random.default_rng(4).normal(size=(300, m.n_exo)) * np.sqrt(np.diag(m.Sigma_e)) * 1.6
+    h = HigherOrderRegime(m, order=2)
+    h.trace = []
+    a = h.simulate(S)
+    b = HigherOrderNews(m, order=2, obc_formulation="lcp").simulate(S)
+    dd = np.abs(a["with_bound"] - b["with_bound"]).max(axis=1)
+    assert binds(a) >= 10
+    assert (dd > 1e-8).sum() <= max_periods and dd.max() < 1e-3
+    assert len(h.trace) == len(S)

@@ -526,4 +526,4 @@ Consequences seen when the default changed:
 - The regime formulation can need a longer horizon than the LCP: at the extreme vector of
   `tests/test_obc_horizon_cause.py` the LCP recovers OccBin's value with horizon 80, the regime formulation needs
   160 (it fails with `horizon_too_short` at period 92 with 80). `obc_horizon_max=160` covers both.
-- Higher order and cubature (`HigherOrderNews`) still use the LCP for approx-class models.
+- Higher order and cubature: see docs/OBC_REGIME_HO.md (`HigherOrderNews(..., obc_formulation='auto')` now routes approx-class and multi-equation models to the regime formulation).

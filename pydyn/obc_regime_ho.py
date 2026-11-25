@@ -388,10 +388,13 @@ class HigherOrderRegime(HigherOrderNews):
         vb = np.empty((P, N, self.n_c), bool)
         vr = np.empty((P, N, self.n_c), bool)
         step = max(1, 200000 // N)
+        buf = self.__dict__.get("_zl_buf")
+        if buf is None or buf.shape[0] < min(P, step) * N:
+            buf = self._zl_buf = np.tile(ob.ys, (min(P, step) * N, 1))          # filled with the steady state once; only the condition columns change
         for s0 in range(0, P, step):
             sl = slice(s0, min(P, s0 + step))
             m = sl.stop - sl.start
-            zl = np.tile(ob.ys, (m * N, 1))
+            zl = buf[:m * N]
             zl[:, rb._cv] = pcv[sl].reshape(m * N, -1) + ob.ys[rb._cv]
             for j, ev in enumerate(ob._cons):
                 ib, _eb, ir, _er = ev(zl, ob.params, ob.ys)
@@ -401,7 +404,7 @@ class HigherOrderRegime(HigherOrderNews):
                 vr[sl, :, j] = r & Z[sl, :, j]
         return vb, vr
 
-    def _guess_verify_many(self, pa, pY, maxit=60):
+    def _guess_verify_many(self, pa, pY, maxit=60, vb0=None):
         """OccBin's guess-and-verify iteration (``RegimeOBC._iterate``) on P perturbed points at once, from the reference regime:
         pa (P, nb*T), pY (P, N, k).  Points are grouped by their guess so that each distinct regime sequence needs one linear solve with
         many right-hand sides.  Returns (W (P, nb*T), solved (P,) bool); an unsolved point is one the iteration could not settle (it cycles,
@@ -414,7 +417,14 @@ class HigherOrderRegime(HigherOrderNews):
         seen = [set() for _ in range(P)]
         if "_rscale" not in rb.__dict__:
             rb._rscale = float(np.abs(rb.R).max())
-        for it in range(maxit):
+        first = 0
+        if vb0 is not None:                                # iteration 0 is the relevance test: z = 0, no wedges, violations vb0
+            zero_key = Z[0].tobytes()
+            for i in range(P):
+                seen[i].add(zero_key)
+            Z = vb0.copy()
+            first = 1
+        for it in range(first, maxit):
             act = np.flatnonzero(state == 0)
             if not act.size:
                 break
@@ -459,7 +469,7 @@ class HigherOrderRegime(HigherOrderNews):
         """Points whose reference-regime path (no wedges anywhere) fails OccBin's bind test: the paths that need a regime change."""
         P, N = pY.shape[0], self.N
         vb, _vr = self._viol_many(np.zeros((P, N, self.n_c), bool), pY)
-        return vb.any(axis=(1, 2))
+        return vb.any(axis=(1, 2)), vb
 
     @staticmethod
     def _cls_of(err):
@@ -478,7 +488,8 @@ class HigherOrderRegime(HigherOrderNews):
         A0 = A.reshape(-1)
         Y0 = Ycv.reshape(-1)
         pY_all = (Y0[:, None] + RY @ self.xi).T.reshape(npts, N, k)          # perturbed condition paths of every point
-        rel = np.flatnonzero(self._relevant(pY_all))
+        relmask, vb_all = self._relevant(pY_all)
+        rel = np.flatnonzero(relmask)
         self.stats["cubature_points"] += npts
         self.stats["relevant_points"] += rel.size
         self._relevant_last = rel.size
@@ -505,6 +516,7 @@ class HigherOrderRegime(HigherOrderNews):
             nonlocal nfail
             counts[cls] += size
             nfail += size
+            self.stats["class_" + cls] = self.stats.get("class_" + cls, 0) + size
             return nfail > limit_fail
 
         try:
@@ -512,7 +524,7 @@ class HigherOrderRegime(HigherOrderNews):
                 xr = self.xi[:, rel]
                 pA = (A0[:, None] + RA @ xr).T.reshape(nrel, nb, N)
                 pa = pA[:, :, :T].reshape(nrel, nb * T)
-                W, ok = self._guess_verify_many(pa, pY_all[rel])
+                W, ok = self._guess_verify_many(pa, pY_all[rel], vb0=vb_all[rel])
                 acc = W[ok].sum(axis=0)
                 self.stats["batch_fail"] = self.stats.get("batch_fail", 0) + int((~ok).sum())
                 bad = np.flatnonzero(~ok)
@@ -539,7 +551,7 @@ class HigherOrderRegime(HigherOrderNews):
                     xm = xr[:, g].mean(axis=1)
                     Ap = (A0 + RA @ xm).reshape(nb, N)
                     Yp = (Y0 + RY @ xm).reshape(N, k)
-                    if not self._relevant(Yp[None])[0]:                       # the region's mean point needs no wedge
+                    if not self._relevant(Yp[None])[0][0]:                       # the region's mean point needs no wedge
                         continue
                     w, cls = full_search(Ap, Yp)
                     if cls is None:

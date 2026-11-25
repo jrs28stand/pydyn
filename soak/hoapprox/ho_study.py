@@ -108,7 +108,44 @@ def cub(name, T=100, level=9, tol=0.9, hz=None, scale=None):
     return row
 
 
+def cost(name, T=40, milp=1.0):
+    """Seconds per period: order 1 / order 2 (no cubature) and cubature levels 9 and 11, regime vs LCP (tolerance 0.9 so that failing points do not stop the run)."""
+    m = load(name)
+    sc, hz = CFG.get(name, (1.0, 40))
+    S = shocks(name, m, T)
+    row = dict(model=name, T=T, milp_limit=milp)
+    for label, kw in (("o1", dict(order=1)), ("o2", dict(order=2)), ("cub9", dict(order=2, cubature=True, qmc_level=9)),
+                      ("cub11", dict(order=2, cubature=True, qmc_level=11))):
+        for nm, mk in (("regime", lambda **k: HigherOrderRegime(m, **k)), ("lcp", lambda **k: HigherOrderNews(m, obc_formulation="lcp", **k))):
+            kk = dict(horizon=hz, check_ahead=hz, **kw)
+            if "cubature" in kw:
+                kk.update(regions="all", cubature_failure_tolerance=0.9, cubature_milp_time_limit=milp)
+            try:
+                h = mk(**kk)
+            except ValueError:
+                row[f"{label}_{nm}"] = None
+                continue
+            reps = 5 if label in ("o1", "o2") else 1
+            best = 1e9
+            for _ in range(reps):
+                t = time.perf_counter()
+                try:
+                    r = h.simulate(S if label in ("cub9", "cub11") else np.tile(S, (5, 1)))
+                except OBCError as e:
+                    best = None; break
+                best = min(best, (time.perf_counter() - t) / (len(S) * (1 if label.startswith("cub") else 5)))
+            row[f"{label}_{nm}"] = best
+            if label.startswith("cub") and best is not None:
+                row[f"{label}_{nm}_dropped_share"] = float(r["dropped"].sum() / max(1, r["relevant"].sum()))
+    return row
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "COST":
+        import os
+        for nm in sys.argv[2:]:
+            print(json.dumps(cost(nm, T=int(os.environ.get("T", 40)), milp=float(os.environ.get("MILP", 1.0))), default=str), flush=True)
+        sys.exit()
     what, names = sys.argv[1], sys.argv[2:]
     for nm in names:
         try:
