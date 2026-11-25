@@ -81,6 +81,8 @@ class OccbinEstimation(Estimation):
 
     #: seconds the news solver's integer programme may use at one trial point of the inversion filter (None: its default)
     obc_milp_time_limit = None
+    obc_horizon_max = None              # opt-in: retry a trial point that fails with horizon_too_short with the horizon doubled, up to this
+    last_failure = None                 # news solver: dict(period, primary, counts, horizon, advice) of the last failed filter run, else None
 
     def __init__(self, model, data=None, occbin=None, obc_method=None, obc_horizon=None, obc_selection=None, **options):
         if not getattr(model, "occbin_constraints", None):
@@ -189,6 +191,7 @@ class OccbinEstimation(Estimation):
         :class:`pydyn.occbin_filter.InversionFilterResult` or :class:`~pydyn.occbin_filter.PKFResult`
         (with ``.occbin`` the model at ``theta``). Raises ``_Rejected`` when the filter fails."""
         theta = np.asarray(theta, float)
+        self.last_failure = None
         Q, Hm = self.covariances(theta)
         if self._groups["cx"] and not _ispd(Q[np.ix_(self._Q_check, self._Q_check)]):
             raise _Rejected("covariance matrix of the structural shocks is not positive definite (info 43)", 43)
@@ -199,7 +202,9 @@ class OccbinEstimation(Estimation):
                                        solver=solver)
             ivf.occbin = ob
             if ivf.error_code:
-                raise _Rejected(f"inversion filter failed in period {ivf.error_period} (info {ivf.error_code})",
+                self.last_failure = ivf.failure_info
+                extra = f"; news solver: {ivf.failure_info['primary']} ({ivf.failure_info['advice']})" if ivf.failure_info else ""
+                raise _Rejected(f"inversion filter failed in period {ivf.error_period} (info {ivf.error_code}){extra}",
                                 ivf.error_code, 1000.0)
             try:
                 like, lik = _of.inversion_filter_loglik(ivf, self.data, self._obs_decl, Q, self.ivf_mapping,
@@ -231,7 +236,7 @@ class OccbinEstimation(Estimation):
             return None
         from .obc_filter import NewsFilterSolver
         self.last_news_solver = NewsFilterSolver(ob, horizon=self._obc_horizon, selection=self._obc_selection,
-                                                 milp_time_limit=self.obc_milp_time_limit)
+                                                 milp_time_limit=self.obc_milp_time_limit, horizon_max=self.obc_horizon_max)
         return self.last_news_solver
 
     def _minus_loglik(self, theta, return_lik=False):

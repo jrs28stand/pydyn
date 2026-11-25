@@ -375,6 +375,7 @@ class InversionFilterResult:
     regime_history: list             # per period: regime
     error_code: int = 0
     error_period: int = 0
+    failure_info: dict | None = None     # news solver: why the failing period failed (obc_filter.NewsFilterSolver.failure_info)
 
 
 def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None, solver=None) -> InversionFilterResult:
@@ -421,6 +422,8 @@ def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None, solver=
         inan = ~np.isnan(data[t])
         cur = data[t, inan]
         oi, ep = obs_idx[inan], err_index[inan]
+        if hasattr(solver, "begin_period"):
+            solver.begin_period(t + 1)
         match = make_match(cur, oi, ep, init.copy())
         x0 = np.zeros(int(inan.sum()))
         f0, g0 = match(x0)[:2]
@@ -429,11 +432,11 @@ def inversion_filter(ob: Occbin, data, obs_idx, err_index, options=None, solver=
         else:
             x, rc = csolve(lambda e: match(e)[0], x0, lambda e: match(e)[:2], tolf, maxit_solve)
         if rc != 0:
-            return InversionFilterResult(errs, resids, Emat, stateval, regimes, 304, t + 1)
+            return InversionFilterResult(errs, resids, Emat, stateval, regimes, 304, t + 1, getattr(solver, "failure_info", lambda: None)())
         errs[t, inan] = x
         r_, _, state, E, res = match(x)
         if res is None:
-            return InversionFilterResult(errs, resids, Emat, stateval, regimes, 304, t + 1)
+            return InversionFilterResult(errs, resids, Emat, stateval, regimes, 304, t + 1, getattr(solver, "failure_info", lambda: None)())
         resids[t, inan] = r_
         stateval[t] = state
         Emat[t][:, inan] = E
