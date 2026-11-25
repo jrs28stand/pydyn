@@ -17,8 +17,8 @@ condition, collinearity and "weak identification" results that Dynare stores in 
 (:func:`checks`, :func:`checks_via_subsets`).  Matrices have Dynare's layout; indices inside the returned structures are
 Dynare's (1-based, as the MAT-file holds them) where they are stored (``ind_dMOMENTS``...), and 0-based inside the code.
 
-Not ported (refused with NotImplementedError): orders 2 and 3, ``analytic_derivation_mode`` -1 and -2 (finite
-differences), unit roots (the diffuse filter), the brute-force collinearity search of ``advanced=1``, prior Monte Carlo.
+Not ported (refused with NotImplementedError): orders 2 and 3, unit roots (the diffuse filter) and the other cases listed in
+NOTES.md.  ``analytic_derivation_mode`` -1 (finite differences of every Jacobian), -2, 0 and 1 (Kronecker products) are ported.
 """
 from __future__ import annotations
 
@@ -391,6 +391,11 @@ def pruned_first_order(ghx, ghu, Sigma, Yss, indy, nlags, useautocorr, nstatic, 
     return out
 
 
+def commutation(n, m):
+    """``pruned_SS.commutation(n, m)``: reshape(kron(vec(eye(n)), eye(m)), n*m, n*m) (column-major)."""
+    return np.kron(np.eye(n).ravel(order="F")[:, None], np.eye(m)).reshape((n * m, n * m), order="F")
+
+
 def duplication(p):
     """``pruned_SS.duplication``: duplication matrix and its Moore-Penrose inverse (the elimination matrix)."""
     a = np.tril(np.ones((p, p)))
@@ -410,7 +415,7 @@ class IdentificationWarning(UserWarning):
     pass
 
 
-def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspred, nsc, opts):
+def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspred, nsc, opts, fd=None):
     """``identification.get_jacobians`` at order 1.  ``derivs`` is :func:`pydyn.params_derivs.perturbation_params_derivs`'s
     result; ``indvobs`` the 0-based positions of the observables in decision-rule order.  Returns a dict."""
     from .perturbation import dr_ordering
@@ -447,7 +452,9 @@ def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspr
         nv = obs_nbr * (obs_nbr + 1) // 2
         d = np.zeros((obs_nbr + nv + nlags * obs_nbr ** 2, totparam))
         d[:obs_nbr] = pr["dE_y"]
-        for jp in range(totparam):
+        if opts["analytic_derivation_mode"] == -1:
+            d[obs_nbr:] = fd(1, nlags, useautocorr, grid_nbr)
+        for jp in range(totparam if opts["analytic_derivation_mode"] != -1 else 0):
             d[obs_nbr:obs_nbr + nv, jp] = vech_dyn(pr["dVar_y"][:, :, jp])
             for i in range(nlags):
                 a = obs_nbr + nv + i * obs_nbr ** 2
@@ -455,7 +462,49 @@ def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspr
         r["dMOMENTS"] = d
     else:
         r["MOMENTS"], r["dMOMENTS"] = np.zeros(0), np.zeros((0, totparam))
-    if not opts["no_identification_spectrum"]:
+    if not opts["no_identification_spectrum"] and opts["analytic_derivation_mode"] == -1:
+        nf = grid_nbr // 2 + 1
+        dOm_all = fd(2, nlags, useautocorr, grid_nbr)
+        S = np.zeros((totparam, totparam), complex)
+        for ig in range(nf):
+            dO = dOm_all[ig * obs_nbr ** 2:(ig + 1) * obs_nbr ** 2, :]
+            S += (1.0 if ig == 0 else 2.0) * (dO.conj().T @ dO)
+        S = np.real(2 * np.pi * S / (2 * nf - 1))
+        r["dSPECTRUM_NO_MEAN"] = S
+        r["dSPECTRUM"] = S + pr["dE_y"].T @ pr["dE_y"]
+    elif not opts["no_identification_spectrum"] and opts["analytic_derivation_mode"] == 1 and \
+            pr["A"].shape[0] ** 2 <= 6400:
+        # kronflag == 1: Kronecker products (DerivABCD) with the transfer function at exp(-i w), as in get_jacobians.m
+        nf = grid_nbr // 2 + 1
+        freqs = np.arange(nf) * (np.pi / (grid_nbr / 2))
+        A, B, C, D = pr["A"], pr["B"], pr["C"], pr["D"]
+        nx = A.shape[0]
+        IA = np.eye(nx)
+        Sig, dSig = pr["Varinov"], pr["dVarinov"]
+        dA, dB, dC, dD = (pr[k].reshape(pr[k].shape[0] * pr[k].shape[1], totparam, order="F") for k in ("dA", "dB", "dC", "dD"))
+        dVarinov = dSig.reshape(dSig.shape[0] * dSig.shape[1], totparam, order="F")
+        K_obs_exo = commutation(obs_nbr, Sig.shape[0])
+
+        def deriv_abcd(X1, dX1, X2, dX2, X3, dX3):
+            I1 = np.eye(X1.shape[0])
+            return (np.kron(X3.T @ X2.T, I1) @ dX1 + np.kron(X3.T, X1) @ dX2 + np.kron(np.eye(X3.shape[1]), X1 @ X2) @ dX3)
+
+        S = np.zeros((totparam, totparam), complex)
+        for ig, w in enumerate(freqs):
+            z = np.exp(-1j * w)
+            zIA = z * IA - A
+            zIAinv = np.linalg.solve(zIA, IA)
+            Tf = D + C @ zIAinv @ B
+            dzIA = -dA
+            dzIAinv = np.kron(-np.linalg.solve(zIA.T, IA), zIAinv) @ dzIA
+            dTf = dD + deriv_abcd(C, dC, zIAinv, dzIAinv, B, dB)
+            dTf_conjt = K_obs_exo @ np.conj(dTf)
+            dO = (1 / (2 * np.pi)) * deriv_abcd(Tf, dTf, Sig, dVarinov, Tf.conj().T, dTf_conjt)
+            S += (1.0 if ig == 0 else 2.0) * (dO.conj().T @ dO)
+        S = np.real(2 * np.pi * S / (2 * nf - 1))
+        r["dSPECTRUM_NO_MEAN"] = S
+        r["dSPECTRUM"] = S + pr["dE_y"].T @ pr["dE_y"]
+    elif not opts["no_identification_spectrum"]:
         nf = grid_nbr // 2 + 1
         freqs = np.arange(nf) * (np.pi / (grid_nbr / 2))
         A, B, C, D = pr["A"], pr["B"], pr["C"], pr["D"]
@@ -468,7 +517,7 @@ def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspr
         chunk = max(1, int(2e6 // max(1, obs_nbr ** 2 * totparam)))
         for a in range(0, nf, chunk):
             z = np.exp(1j * freqs[a:a + chunk])
-            inv = np.linalg.inv(z[:, None, None] * IA - A)                # (F, nx, nx)
+            inv = np.linalg.solve(z[:, None, None] * IA - A, np.broadcast_to(IA, (len(z),) + IA.shape))  # (F, nx, nx), M\\I as in Octave
             T = D + C @ inv @ B                                           # transfer function (F, obs, nexo)
             Th = np.conj(np.swapaxes(T, 1, 2))
             dOm = np.zeros((len(z), obs_nbr ** 2, totparam), complex)
@@ -528,6 +577,10 @@ def get_jacobians(model, ghx, ghu, ys, pp, Sigma, derivs, indvobs, nstatic, nspr
 
 
 # ---------------------------------------------------------------------------------------------------- asymptotic Hessian
+class _NegativeVariance(Exception):
+    """A negative prediction error variance in the univariate Kalman filter."""
+
+
 class _SingularF(Exception):
     """kalman_filter.m returns an infinite likelihood where the prediction error covariance is badly conditioned; the
     caller then fails (dsge_likelihood indexes a cell with it) and identification.analysis falls back to simulation."""
@@ -597,7 +650,9 @@ def univariate_asymptotic_hessian(Y, T, R, Q, Z, DT, DYss, DOm, Pstar, kalman_to
                 P = P - np.outer(PZ, Ki)
                 P = (P + P.T) / 2
             elif Fi < 0:
-                raise NotImplementedError("identification: negative prediction error variance in the univariate filter")
+                # pathological numerical case: univariate_kalman_filter.m returns LIK = {NaN, DLIK, Hess}; dsge_likelihood
+                # then fails and analysis.m's catch branch (simulated moment uncertainty) runs
+                raise _NegativeVariance()
         Da, DP = dstate(a, P, Da, DP, True)
         a = T @ a
         P = T @ P @ T.T + QQ
@@ -855,6 +910,10 @@ def _grow(a, n):
     return np.vstack([a, np.zeros((n - a.shape[0], a.shape[1]))])
 
 
+class _FDFailure(Exception):
+    """compute_decision_rules fails at a finite-difference point."""
+
+
 class IdentificationStop(Exception):
     """The model does not solve at the point tested (Dynare prints a message and returns)."""
 
@@ -911,9 +970,8 @@ class Identification:
             self.opts["prior_mc"] = 1                 # only bounds in estimated_params: one single point
         if self.opts["order"] != 1:
             raise NotImplementedError("identification: orders 2 and 3 are not ported (order=1 only)")
-        if self.opts["analytic_derivation_mode"] not in (0, 1, -2):
-            raise NotImplementedError("identification: analytic_derivation_mode -1 (finite differences of all Jacobians) "
-                                      "is not ported; the modes 0, 1 and -2 are")
+        if self.opts["analytic_derivation_mode"] not in (0, 1, -1, -2):
+            raise NotImplementedError("identification: analytic_derivation_mode must be 0, 1, -1 or -2")
 
     def _set_derivation_mode(self, default_mode_set):
         """dynare_estimation_init.m: where the steady-state file changes parameter values (or leaves some NaN) at the
@@ -994,13 +1052,16 @@ class Identification:
                 pp = np.asarray(pp, float)
                 if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(pp))):
                     raise SteadyStateError("steady state or parameters are not finite")
+                if self.opts["analytic_derivation_mode"] == -1:
+                    return self._solve_fd(theta, ys, pp, pvec, Sigma)
                 numerical = self.opts["analytic_derivation_mode"] == -2
                 if not numerical and np.any((pp != pvec) & ~(np.isnan(pp) & np.isnan(pvec))):
                     raise NotImplementedError("identification: the steady-state file changes parameter values although "
                                               "analytic_derivation_mode is 0 or 1 (Dynare's analytic derivatives are then "
                                               "wrong); use analytic_derivation_mode=-2")
                 d = perturbation_params_derivs(m, self.indpmodel, self.indpstderr, self.indpcorr, ys=ys, params=pp,
-                                               numerical=numerical)
+                                               numerical=numerical,
+                                               kron=self.opts["analytic_derivation_mode"] == 1)
             except (SteadyStateError, BlanchardKahnError) as exc:
                 raise IdentificationStop(str(exc)) from None
             except ParamsDerivsError as exc:
@@ -1008,6 +1069,139 @@ class Identification:
         finally:
             m.Sigma_e = old_sigma
         return {"ys": ys, "pp": pp, "Sigma": Sigma, "derivs": d}
+
+    # ---------------------------------------------------------------------------------------- analytic_derivation_mode = -1
+    def _fd_point(self, theta):
+        """``compute_decision_rules`` at ``theta`` (stderr, corr, model parameters): steady state, parameters after the
+        steady-state file, Sigma_e and the first-order solution matrices ghx, ghu in decision-rule order.  Raises
+        :class:`_FDFailure` where the model does not solve (``info > 0`` in Dynare)."""
+        from .perturbation import first_order, dr_ordering, BlanchardKahnError
+        from .steady import steady_state, SteadyStateError
+        m = self.model
+        theta = np.asarray(theta, float)
+        if self.prior_exist:
+            cal = self.est.calibration(theta)
+            pvec, Sigma = cal["params"], cal["Sigma_e"]
+        else:
+            # set_all_parameters: Sigma_e(k,k) = x^2, correlations kept; the calibrated covariance matrix otherwise
+            n_exo = m.n_exo
+            S0 = np.asarray(m.Sigma_e, float)
+            sd0 = np.sqrt(np.diag(S0))
+            with np.errstate(all="ignore"):
+                corr = S0 / np.outer(sd0, sd0)
+            corr[~np.isfinite(corr)] = 0.0
+            np.fill_diagonal(corr, 1.0)
+            sd = np.sqrt(theta[:n_exo] ** 2)
+            Sigma = np.diag(sd) @ corr @ np.diag(sd)
+            pvec = np.array(theta[n_exo:], float)
+        old_sigma = m.Sigma_e
+        try:
+            m.Sigma_e = Sigma
+            try:
+                ys, pp = steady_state(m, pvec)
+                ys, pp = np.asarray(ys, float), np.asarray(pp, float)
+                if not (np.all(np.isfinite(ys)) and np.all(np.isfinite(pp))):
+                    raise SteadyStateError("steady state or parameters are not finite")
+                sol = first_order(m, ys=ys, params=pp, loglinear=False)
+            except (SteadyStateError, BlanchardKahnError) as exc:
+                raise _FDFailure(str(exc)) from None
+        finally:
+            m.Sigma_e = old_sigma
+        order_var, state_var, _ = dr_ordering(m.lead_lag_incidence)
+        return {"ys": ys, "pp": pp, "Sigma": np.asarray(Sigma, float), "ghx": sol.G[np.ix_(order_var, state_var)],
+                "ghu": sol.H[order_var]}
+
+    def _fjaco(self, f, x):
+        """``identification.fjaco`` (two-sided differences, step ``dynatol.x * max(|x|, 1)``, ``dynatol.x = 1e-5``)."""
+        x = np.asarray(x, float)
+        h = 1e-5 * np.maximum(np.abs(x), 1.0)
+        xh1, xh0 = x + h, x - h
+        hh = xh1 - xh0
+        cols = []
+        for j in range(len(x)):
+            vals = []
+            for xv in (xh1[j], xh0[j]):
+                xx = x.copy()
+                xx[j] = xv
+                try:
+                    vals.append(f(xx))
+                except _FDFailure as exc:
+                    raise ValueError("fjaco.m: numerical two-sided difference method yields errors in solution algorithm"
+                                     f" (cannot solve the model for {self.names[j]}: {exc})") from None
+            cols.append((vals[0] - vals[1]) / hh[j])
+        return np.stack(cols, axis=1)
+
+    def _solve_fd(self, theta, ys, pp, pvec, Sigma):
+        """``analytic_derivation_mode = -1``: every Jacobian by two-sided finite differences of ``compute_decision_rules``
+        (``get_perturbation_params_derivs.m`` with ``get_perturbation_params_derivs_numerical_objective.m``)."""
+        from .params_derivs import numerical_dys_dJ
+        m = self.model
+        n, nexo, nspred = m.n_endo, m.n_exo, self.nspred
+        ns, nc, nm = self.stderrparam_nbr, self.corrparam_nbr, self.modparam_nbr
+        tot = self.totparam_nbr
+        theta = np.asarray(theta, float)
+        x0 = theta.copy()
+        x0[self.nsc:] = np.asarray(pp, float)[self.indpmodel]          # xparam1 = get_all_parameters(M_): M_.params after resol
+        try:
+            base = self._fd_point(x0)
+        except _FDFailure as exc:
+            raise IdentificationStop(str(exc)) from None
+        ghx, ghu = base["ghx"], base["ghu"]
+        Sigma = base["Sigma"]
+
+        def f_sol(x):
+            r = self._fd_point(x)
+            return np.concatenate([r["Sigma"].ravel(order="F"), r["ghx"].ravel(order="F"), r["ghu"].ravel(order="F")])
+        dSG = self._fjaco(f_sol, x0)
+        a = nexo * nexo
+        dSigma = dSG[:a].reshape((nexo, nexo, tot), order="F")
+        dghx = dSG[a:a + n * nspred].reshape((n, nspred, tot), order="F")
+        dghu = dSG[a + n * nspred:].reshape((n, nexo, tot), order="F")
+        dOm = np.zeros((n, n, tot))
+        dCorr = np.zeros((nexo, nexo, tot))
+        for jp in range(ns + nc):
+            dOm[:, :, jp] = ghu @ dSigma[:, :, jp] @ ghu.T
+        for jp, (i, k) in enumerate(self.indpcorr):
+            dCorr[i, k, ns + jp] = dCorr[k, i, ns + jp] = 1.0
+        for jp in range(nm):
+            q = ns + nc + jp
+            dOm[:, :, q] = dghu[:, :, q] @ Sigma @ ghu.T + ghu @ Sigma @ dghu[:, :, q].T
+        # dynamic model: steady state and dynamic Jacobian, with respect to the model parameters only
+        order_var = self.order_var
+        pp = np.asarray(pp, float)
+        dys, dJ = numerical_dys_dJ(m, self.indpmodel, pp, np.asarray(m.exo_steady(), float))
+        d = {"indpmodel": self.indpmodel, "indpstderr": self.indpstderr, "indpcorr": self.indpcorr,
+             "dYss": dys[np.ix_(order_var, self.indpmodel)], "dSigma_e": dSigma, "dCorrelation_matrix": dCorr,
+             "dghx": dghx, "dghu": dghu, "dOm": dOm, "dg1": np.moveaxis(dJ, 0, 2), "ghx": ghx, "ghu": ghu,
+             "order_var": order_var}
+        return {"ys": base["ys"], "pp": base["pp"], "Sigma": Sigma, "derivs": d, "x0": x0}
+
+    def _fd_for(self, sol):
+        if self.opts["analytic_derivation_mode"] != -1:
+            return None
+        return lambda flag, nl, uac, gn: self.fd_objective(sol["x0"], flag, nl, uac, gn)
+
+    def fd_objective(self, x0, flag, nlags, useautocorr, grid_nbr):
+        """``identification.numerical_objective`` differentiated by ``fjaco`` (``analytic_derivation_mode = -1``): the
+        Jacobian of vech(Var_y) and the autocovariances (``flag`` 1) or of the spectral density on the grid (``flag`` 2)."""
+        def f(x):
+            r = self._fd_point(x)
+            Yss = r["ys"][self.order_var]
+            pr = pruned_first_order(r["ghx"], r["ghu"], r["Sigma"], Yss, self.indvobs, nlags, useautocorr, self.nstatic,
+                                    self.nspred)
+            if flag == 1:
+                E = pr["Corr_yi"] if useautocorr else pr["Var_yi"]
+                return np.concatenate([vech_dyn(pr["Var_y"])] + [vec(E[:, :, i]) for i in range(nlags)])
+            freqs = np.arange(grid_nbr // 2 + 1) * (np.pi / (grid_nbr / 2))
+            A, B, C, D = pr["A"], pr["B"], pr["C"], pr["D"]
+            IA = np.eye(A.shape[0])
+            out = []
+            for w in freqs:
+                T = D + C @ np.linalg.solve(np.exp(1j * w) * IA - A, B)
+                g = (1 / (2 * np.pi)) * (T @ pr["Varinov"] @ T.conj().T)
+                out.append(g.ravel(order="F"))
+            return np.concatenate(out)
+        return self._fjaco(f, x0)
 
     # ---------------------------------------------------------------------------------------- analysis.m
     def analysis(self, theta, init=True):
@@ -1020,7 +1214,7 @@ class Identification:
         sol = self.solve(theta)
         ghx, ghu = sol["derivs"]["ghx"], sol["derivs"]["ghu"]
         J = get_jacobians(self.model, ghx, ghu, sol["ys"], sol["pp"], sol["Sigma"], sol["derivs"], self.indvobs,
-                          self.nstatic, self.nspred, self.nsc, o)
+                          self.nstatic, self.nspred, self.nsc, o, fd=self._fd_for(sol))
         err = {"identification_strength": 0, "identification_reducedform": 0, "identification_moments": 0,
                "identification_minimal": 0, "identification_spectrum": 0}
         messages = [J["minimal_message"]] if J["minimal_message"] else []
@@ -1056,7 +1250,7 @@ class Identification:
                     nlags += 1
                     opts_local.update(no_identification_minimal=1, no_identification_spectrum=1, ar=nlags)
                     Jl = get_jacobians(self.model, ghx, ghu, sol["ys"], sol["pp"], sol["Sigma"], sol["derivs"], self.indvobs,
-                                       self.nstatic, self.nspred, self.nsc, opts_local)
+                                       self.nstatic, self.nspred, self.nsc, opts_local, fd=self._fd_for(sol))
                     MOMENTS, dMOMENTS = Jl["MOMENTS"], Jl["dMOMENTS"]
                     ind_dMOMENTS = _rows_above(dMOMENTS, tol_deriv)
                 if len(ind_dMOMENTS) < tot:
@@ -1266,7 +1460,10 @@ class Identification:
             if not self.raw.get("use_univariate_filters_if_singularity_is_detected", 1):
                 raise NotImplementedError("identification: singular prediction error covariance with "
                                           "use_univariate_filters_if_singularity_is_detected=0 (not ported)") from None
-            Hess = univariate_asymptotic_hessian(Y, T, R, Sigma, Z, DT, DYss, DOm, Pstar)
+            try:
+                Hess = univariate_asymptotic_hessian(Y, T, R, Sigma, Z, DT, DYss, DOm, Pstar)
+            except _NegativeVariance:
+                return None
         return -Hess
 
     def _restrict_dr(self):
