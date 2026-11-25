@@ -74,7 +74,7 @@ HARMLESS_REASONS = {
     'simul.preconditioner': 'numerical algorithm or its tuning; the same solution when it converges',
 }
 #: figure options of plot_shock_decomposition / initial_condition_decomposition (the figures are not what pydyn computes)
-HARMLESS_PREFIXES = {'plot_shock_decomp.': 'figure option only', 'initial_condition_decomp.': 'figure option only'}
+HARMLESS_PREFIXES = {'irf_opt.': 'accepted by the preprocessor but read by no code of Dynare 7.2 (no consumer of options_.irf_opt in matlab/; Octave gives identical IRFs at order 2 with and without them)', 'plot_shock_decomp.': 'figure option only', 'initial_condition_decomp.': 'figure option only'}
 
 SPECS = {
     'steady': dict(
@@ -91,36 +91,23 @@ SPECS = {
     ),
     'check': dict(
         honoured=frozenset({
-            'homotopy_force_continue', 'homotopy_mode', 'homotopy_steps', 'solve_algo', 'solve_tolf',
-            'solve_tolx', 'steady.maxit', 'steadystate.nocheck'
+            'homotopy_force_continue', 'homotopy_mode', 'homotopy_steps', 'qz_zero_threshold', 'solve_algo', 'solve_tolf', 'solve_tolx', 'steady.maxit', 'steadystate.nocheck'
         }),
         harmless=frozenset({
             'markowitz', 'noprint', 'steady.non_zero'
         }),
         refused=frozenset({
-            'fsolve_options', 'qz_zero_threshold'
+            'fsolve_options'
         }),
     ),
     'stoch_simul': dict(
         honoured=frozenset({
-            'aim_solver', 'ar', 'bandpass.indicator', 'bandpass.passband',
-            'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop',
-            'filtered_theoretical_moments_grid', 'hp_filter', 'irf', 'irf_shocks', 'k_order_solver',
-            'loglinear', 'nocorr', 'nodecomposition', 'nomoments', 'one_sided_hp_filter', 'order',
-            'partial_information', 'periods', 'pruning', 'qz_criterium', 'relative_irf', 'replic',
-            'solve_algo'
+            'SpectralDensity.trigger', 'aim_solver', 'ar', 'bandpass.indicator', 'bandpass.passband', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop', 'filtered_theoretical_moments_grid', 'hp_filter', 'irf', 'irf_shocks', 'k_order_solver', 'loglinear', 'nocorr', 'nodecomposition', 'nomoments', 'one_sided_hp_filter', 'order', 'partial_information', 'periods', 'pruning', 'qz_criterium', 'qz_zero_threshold', 'relative_irf', 'replic', 'simul_replic', 'solve_algo'
         }),
         harmless=frozenset({
-            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol',
-            'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter',
-            'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'nodisplay',
-            'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
+            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol', 'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent', 'irf_opt.stderr_multiples', 'nodisplay', 'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
         }),
-        refused=frozenset({
-            'SpectralDensity.trigger', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf',
-            'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent',
-            'irf_opt.stderr_multiples', 'qz_zero_threshold', 'simul_replic'
-        }),
+        refused=frozenset(),
     ),
     'calib_smoother': dict(
         honoured=frozenset({
@@ -139,56 +126,13 @@ SPECS = {
     ),
     'estimation': dict(
         honoured=frozenset({
-            'MCMC_jumping_covariance', 'additional_optimizer_steps', 'aim_solver', 'analytic_derivation',
-            'ar', 'bayesian_irf', 'conditional_variance_decomposition', 'contemporaneous_correlation',
-            'convergence.brooksgelman.plotrows', 'convergence.geweke.geweke_interval',
-            'convergence.geweke.taper_steps', 'convergence.rafterylewis.indicator',
-            'convergence.rafterylewis.qrs', 'cova_compute', 'datafile', 'diffuse_filter',
-            'diffuse_kalman_tol', 'dsge_var', 'dsge_varlag',
-            'endo_vars_for_moment_computations_in_estimation', 'endogenous_prior',
-            'estimate_initial_states_endogenous_prior', 'estimation.moments_posterior_density.indicator',
-            'filter_covariance', 'filter_decomposition', 'filter_step_ahead', 'filtered_vars', 'first_obs',
-            'forecast', 'forecasts.conf_sig', 'frequentist_smoother', 'hessian.use_penalized_objective',
-            'heteroskedastic_filter', 'huge_number', 'irf', 'irf_shocks', 'kalman_algo', 'kalman_tol',
-            'lik_init', 'load_mh_file', 'logdata', 'loglinear', 'lyapunov_doubling_tol', 'mh_conf_sig',
-            'mh_drop', 'mh_init_scale', 'mh_init_scale_factor', 'mh_jscale', 'mh_nblck',
-            'mh_posterior_mode_estimation', 'mh_recover', 'mh_replic', 'mh_tune_jscale.guess',
-            'mh_tune_jscale.status', 'mh_tune_jscale.target', 'mode_check.neighbourhood_size',
-            'mode_check.number_of_points', 'mode_check.status', 'mode_check.symmetric_plots', 'mode_compute',
-            'mode_file', 'moments_varendo', 'no_init_estimation_check_first_obs', 'nobs', 'noconstant',
-            'nodecomposition', 'nodiagnostic', 'optim_opt', 'order', 'partial_information',
-            'posterior_max_subsample_draws', 'posterior_sampler_options.posterior_sampling_method',
-            'posterior_sampler_options.sampling_opt', 'prefilter', 'presample', 'prior_trunc', 'pruning',
-            'relative_irf', 'rescale_prediction_error_covariance', 'smoothed_state_uncertainty', 'smoother',
-            'smoother_redux', 'solve_algo', 'sub_draws', 'use_univariate_filters_if_singularity_is_detected',
-            'use_univariate_smoother_if_singularity_is_detected', 'xls_range', 'xls_sheet'
+            'MCMC_jumping_covariance', 'additional_optimizer_steps', 'aim_solver', 'analytic_derivation', 'ar', 'bayesian_irf', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'convergence.brooksgelman.plotrows', 'convergence.geweke.geweke_interval', 'convergence.geweke.taper_steps', 'convergence.rafterylewis.indicator', 'convergence.rafterylewis.qrs', 'cova_compute', 'datafile', 'diffuse_filter', 'diffuse_kalman_tol', 'dsge_var', 'dsge_varlag', 'endo_vars_for_moment_computations_in_estimation', 'endogenous_prior', 'estimate_initial_states_endogenous_prior', 'estimation.moments_posterior_density.indicator', 'filter_covariance', 'filter_decomposition', 'filter_step_ahead', 'filtered_vars', 'first_obs', 'forecast', 'forecasts.conf_sig', 'frequentist_smoother', 'hessian.use_penalized_objective', 'heteroskedastic_filter', 'huge_number', 'irf', 'irf_shocks', 'kalman_algo', 'kalman_tol', 'lik_init', 'load_mh_file', 'logdata', 'loglinear', 'lyapunov_doubling_tol', 'mh_conf_sig', 'mh_drop', 'mh_init_scale', 'mh_init_scale_factor', 'mh_jscale', 'mh_nblck', 'mh_posterior_mode_estimation', 'mh_recover', 'mh_replic', 'mh_tune_jscale.guess', 'mh_tune_jscale.status', 'mh_tune_jscale.target', 'mode_check.neighbourhood_size', 'mode_check.number_of_points', 'mode_check.status', 'mode_check.symmetric_plots', 'mode_compute', 'mode_file', 'moments_varendo', 'no_init_estimation_check_first_obs', 'nobs', 'noconstant', 'nodecomposition', 'nodiagnostic', 'optim_opt', 'order', 'partial_information', 'posterior_max_subsample_draws', 'posterior_sampler_options.posterior_sampling_method', 'posterior_sampler_options.sampling_opt', 'prefilter', 'presample', 'prior_trunc', 'pruning', 'qz_zero_threshold', 'relative_irf', 'rescale_prediction_error_covariance', 'smoothed_state_uncertainty', 'smoother', 'smoother_redux', 'solve_algo', 'sub_draws', 'use_univariate_filters_if_singularity_is_detected', 'use_univariate_smoother_if_singularity_is_detected', 'xls_range', 'xls_sheet'
         }),
         harmless=frozenset({
-            'TeX', 'dirname', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol',
-            'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol',
-            'graph_format', 'impulse_responses.plot_threshold', 'lyapunov_db', 'lyapunov_fixed_point_tol',
-            'lyapunov_fp', 'lyapunov_srs', 'no_graph.posterior', 'nodisplay', 'nograph',
-            'parallel_info.use_pct.estimation.', 'plot_priors', 'silent_optimizer'
+            'TeX', 'dirname', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent', 'irf_opt.stderr_multiples', 'lyapunov_db', 'lyapunov_fixed_point_tol', 'lyapunov_fp', 'lyapunov_srs', 'no_graph.posterior', 'nodisplay', 'nograph', 'parallel_info.use_pct.estimation.', 'plot_priors', 'silent_optimizer'
         }),
         refused=frozenset({
-            'conditional_likelihood.status', 'fast_kalman_filter', 'irf_opt.EM.drop', 'irf_opt.EM.iter',
-            'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf',
-            'irf_opt.percent', 'irf_opt.stderr_multiples', 'load_results_after_load_mh',
-            'mh_initialize_from_previous_mcmc.directory', 'mh_initialize_from_previous_mcmc.prior',
-            'mh_initialize_from_previous_mcmc.record', 'mh_initialize_from_previous_mcmc.status',
-            'particle.cpf_weights_method.amisanotristani', 'particle.cpf_weights_method.murrayjonesparslow',
-            'particle.distribution_approximation.cubature', 'particle.distribution_approximation.montecarlo',
-            'particle.distribution_approximation.unscented', 'particle.filter_algorithm',
-            'particle.initialization', 'particle.number_of_particles', 'particle.particle_filter_options',
-            'particle.proposal_approximation.cubature', 'particle.proposal_approximation.montecarlo',
-            'particle.proposal_approximation.unscented', 'particle.resampling.method.kitagawa',
-            'particle.resampling.method.multinomial', 'particle.resampling.method.residual',
-            'particle.resampling.method.smooth', 'particle.resampling.method.stratified',
-            'particle.resampling.status.generic', 'particle.resampling.status.none',
-            'particle.resampling.status.systematic', 'particle.resampling.threshold',
-            'posterior_sampler_options.posterior_sampling_method.proposal_distribution', 'qz_zero_threshold',
-            'selected_variables_only', 'skewed_kalman.mvnlogcdf', 'skewed_kalman.prune_tol',
-            'skewed_kalman.rank_deficiency_transform', 'updated_covariance'
+            'conditional_likelihood.status', 'fast_kalman_filter', 'load_results_after_load_mh', 'mh_initialize_from_previous_mcmc.directory', 'mh_initialize_from_previous_mcmc.prior', 'mh_initialize_from_previous_mcmc.record', 'mh_initialize_from_previous_mcmc.status', 'particle.cpf_weights_method.amisanotristani', 'particle.cpf_weights_method.murrayjonesparslow', 'particle.distribution_approximation.cubature', 'particle.distribution_approximation.montecarlo', 'particle.distribution_approximation.unscented', 'particle.filter_algorithm', 'particle.initialization', 'particle.number_of_particles', 'particle.particle_filter_options', 'particle.proposal_approximation.cubature', 'particle.proposal_approximation.montecarlo', 'particle.proposal_approximation.unscented', 'particle.resampling.method.kitagawa', 'particle.resampling.method.multinomial', 'particle.resampling.method.residual', 'particle.resampling.method.smooth', 'particle.resampling.method.stratified', 'particle.resampling.status.generic', 'particle.resampling.status.none', 'particle.resampling.status.systematic', 'particle.resampling.threshold', 'posterior_sampler_options.posterior_sampling_method.proposal_distribution', 'selected_variables_only', 'skewed_kalman.mvnlogcdf', 'skewed_kalman.prune_tol', 'skewed_kalman.rank_deficiency_transform', 'updated_covariance'
         }),
     ),
     'forecast': dict(
@@ -331,22 +275,12 @@ SPECS = {
     ),
     'ramsey_policy': dict(
         honoured=frozenset({
-            'aim_solver', 'ar', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop',
-            'filtered_theoretical_moments_grid', 'hp_filter', 'instruments', 'irf', 'irf_shocks',
-            'k_order_solver', 'nocorr', 'nomoments', 'order', 'partial_information', 'periods', 'pruning',
-            'qz_criterium', 'relative_irf', 'replic', 'solve_algo'
+            'aim_solver', 'ar', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop', 'filtered_theoretical_moments_grid', 'hp_filter', 'instruments', 'irf', 'irf_shocks', 'k_order_solver', 'nocorr', 'nomoments', 'order', 'partial_information', 'periods', 'pruning', 'qz_criterium', 'qz_zero_threshold', 'relative_irf', 'replic', 'simul_replic', 'solve_algo'
         }),
         harmless=frozenset({
-            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol',
-            'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter',
-            'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'nodisplay',
-            'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
+            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol', 'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent', 'irf_opt.stderr_multiples', 'nodisplay', 'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
         }),
-        refused=frozenset({
-            'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF',
-            'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent',
-            'irf_opt.stderr_multiples', 'qz_zero_threshold', 'simul_replic'
-        }),
+        refused=frozenset(),
     ),
     'evaluate_planner_objective': dict(
         honoured=frozenset(),
@@ -357,43 +291,21 @@ SPECS = {
     ),
     'osr': dict(
         honoured=frozenset({
-            'aim_solver', 'analytic_derivation', 'analytic_derivation_mode', 'ar',
-            'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop',
-            'filtered_theoretical_moments_grid', 'hp_filter', 'huge_number', 'irf', 'irf_shocks',
-            'k_order_solver', 'nocorr', 'nomoments', 'optim_opt', 'order', 'osr.maxit', 'osr.opt_algo',
-            'osr.tolf', 'partial_information', 'periods', 'pruning', 'qz_criterium', 'relative_irf', 'replic',
-            'solve_algo'
+            'aim_solver', 'analytic_derivation', 'analytic_derivation_mode', 'ar', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'drop', 'filtered_theoretical_moments_grid', 'hp_filter', 'huge_number', 'irf', 'irf_shocks', 'k_order_solver', 'nocorr', 'nomoments', 'optim_opt', 'order', 'osr.maxit', 'osr.opt_algo', 'osr.tolf', 'partial_information', 'periods', 'pruning', 'qz_criterium', 'qz_zero_threshold', 'relative_irf', 'replic', 'simul_replic', 'solve_algo'
         }),
         harmless=frozenset({
-            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol',
-            'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter',
-            'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'nodisplay',
-            'nofunctions', 'nograph', 'nomodelsummary', 'noprint', 'silent_optimizer'
+            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol', 'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent', 'irf_opt.stderr_multiples', 'nodisplay', 'nofunctions', 'nograph', 'nomodelsummary', 'noprint', 'silent_optimizer'
         }),
-        refused=frozenset({
-            'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF',
-            'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent',
-            'irf_opt.stderr_multiples', 'qz_zero_threshold', 'simul_replic'
-        }),
+        refused=frozenset(),
     ),
     'discretionary_policy': dict(
         honoured=frozenset({
-            'aim_solver', 'ar', 'conditional_variance_decomposition', 'contemporaneous_correlation',
-            'discretionary_tol', 'drop', 'filtered_theoretical_moments_grid', 'hp_filter', 'instruments',
-            'irf', 'irf_shocks', 'k_order_solver', 'nocorr', 'nomoments', 'order', 'partial_information',
-            'periods', 'pruning', 'qz_criterium', 'relative_irf', 'replic', 'solve_algo'
+            'aim_solver', 'ar', 'conditional_variance_decomposition', 'contemporaneous_correlation', 'discretionary_tol', 'drop', 'filtered_theoretical_moments_grid', 'hp_filter', 'instruments', 'irf', 'irf_shocks', 'k_order_solver', 'nocorr', 'nomoments', 'order', 'partial_information', 'periods', 'pruning', 'qz_criterium', 'qz_zero_threshold', 'relative_irf', 'replic', 'simul_replic', 'solve_algo'
         }),
         harmless=frozenset({
-            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol',
-            'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter',
-            'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'nodisplay',
-            'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
+            'TeX', 'dr_cycle_reduction', 'dr_cycle_reduction_maxiter', 'dr_cycle_reduction_tol', 'dr_display_tol', 'dr_logarithmic_reduction', 'dr_logarithmic_reduction_maxiter', 'dr_logarithmic_reduction_tol', 'graph_format', 'impulse_responses.plot_threshold', 'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF', 'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent', 'irf_opt.stderr_multiples', 'nodisplay', 'nofunctions', 'nograph', 'nomodelsummary', 'noprint'
         }),
-        refused=frozenset({
-            'irf_opt.EM.drop', 'irf_opt.EM.iter', 'irf_opt.EM.tolf', 'irf_opt.analytical_GIRF',
-            'irf_opt.diagonal_only', 'irf_opt.ergodic_mean_irf', 'irf_opt.percent',
-            'irf_opt.stderr_multiples', 'qz_zero_threshold', 'simul_replic'
-        }),
+        refused=frozenset(),
     ),
     'identification': dict(
         honoured=frozenset({

@@ -11,6 +11,24 @@
     "analytic_derivatives/burnside_3_order_PertParamsDerivs"
    ],
    "expect": "orders 2 and 3 are not ported"
+  },
+  {
+   "feature": "semi-structural model tools: equation-by-equation estimation (dyn_ols, sur, pooled_ols, pooled_fgls, olsgibbs, surgibbs), cherrypick and the equation.* package, which share Dynare's JSON equation parser (matlab/ols, about 1,800 lines, plus cherrypick.m, 525 lines)",
+   "reason": "for semi-structural models: parked by decision, not used in the DSGE workflow pydyn targets",
+   "ids": [
+    "ecb/SUR/*",
+    "ecb/SURGibbs/*",
+    "ecb/cherrypick/*",
+    "ecb/pooled_ols/*",
+    "ecb/pooled_fgls/*",
+    "estimation/univariate/ols/*",
+    "estimation/univariate/bayesian*",
+    "pac/trend-component-27/*",
+    "pac/trend-component-28/*",
+    "pac/trend-component-29/*",
+    "pac/var-12/example5"
+   ],
+   "expect": "cherrypick|dyn_ols|\\bsur\\b|pooled_ols|pooled_fgls|surgibbs|olsgibbs|equation\\.|write_expectations|equation parser"
   }
  ]
 }

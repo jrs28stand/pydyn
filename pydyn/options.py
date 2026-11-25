@@ -74,6 +74,14 @@ def qz_criterium(model, value=None, default=1.0 + 1e-6) -> float:
     return float(v)
 
 
+def qz_zero_threshold(model, default=None):
+    """options_.qz_zero_threshold as the .mod file's statements (or MATLAB lines) left it; None: Dynare's default 1e-6."""
+    v = stoch_options(model).get("qz_zero_threshold")
+    if v is None:
+        v = matlab_option(model, "qz_zero_threshold", default=default)
+    return None if v is None else float(v)
+
+
 def warn_once(model, message: str, stacklevel: int = 3) -> None:
     seen = model.__dict__.setdefault("_warned", set())
     if message not in seen:
@@ -108,7 +116,7 @@ HONOURED_MATLAB_OPTIONS = {
     "stack_solve_algo": "perfect_foresight", "solve_algo": "perfect_foresight", "dynatol.f": "perfect_foresight",
     "dynatol.x": "perfect_foresight", "simul.maxit": "perfect_foresight", "lmmcp.TolFun": "perfect_foresight",
     "solve_tolf": "steady_state", "solve_tolx": "steady_state",
-    "qz_criterium": "first_order, moments", "forecast_replic": "forecast", "instruments": "steady-state files, ramsey",
+    "qz_criterium": "first_order, moments", "qz_zero_threshold": "first_order", "forecast_replic": "forecast", "instruments": "steady-state files, ramsey",
 }
 #: fields that only select what is printed, plotted or saved, or that the .mod file's own MATLAB code reads back
 MATLAB_COSMETIC = COSMETIC | {"nograph", "nodisplay", "console_mode", "TeX", "tex", "dirname"}

@@ -266,7 +266,11 @@ class CommandsMixin:
                 warnings.warn("STOCH_SIMUL error: The horizon of simulation is shorter than the number of observations "
                               "to be dropped. Either increase periods or decrease drop.")
                 return
-            shocks_used = self._draw_shocks(periods)
+            replic_sim = int(self.opt("simul_replic", 1))
+            if replic_sim > 1 and self.shocks.get(self._n_simul + 1) is not None:
+                raise R.ResultsError("stoch_simul: simul_replic > 1 with shocks given to pydyn.dynare()")
+            draws = self._draw_shocks(periods, replic_sim)
+            shocks_used = draws[0]
             y0 = ys
             hv = self.M_.get("endo_histval")
             if isinstance(hv, np.ndarray) and hv.size:
@@ -274,11 +278,19 @@ class CommandsMixin:
                 if loglinear:                       # stoch_simul.m: y0 = log_variable(1:endo_nbr, M_.endo_histval, M_)
                     from .forecast import _histval_state
                     y0 = _histval_state(m, y0)
-            y = simulate(dr, shocks_used, order=order, pruning=pruning, y0=y0)
+            ys_all = []
+            for sh in draws:                       # simult.m: one simulation per replication, the first one is oo_.endo_simul
+                y = simulate(dr, sh, order=order, pruning=pruning, y0=y0)
+                if int(info["maximum_lag"]) == 0:  # simult_ gives iter + maximum_lag columns, simult drops the first: one fewer here
+                    y = y[1:]                      # no states: simult_ gives ghu*ex_' for all iter periods, the first is dropped
+                ys_all.append(y)
+            y = ys_all[0]
+            shocks_used = draws[-1]                # oo_.exo_simul is the last replication's draw (simult.m overwrites it each time)
             self.set_oo("exo_simul", R.mat(shocks_used))
-            if int(info["maximum_lag"]) == 0:      # simult_ gives iter + maximum_lag columns, simult drops the first: one fewer here
-                y = y[1:]                          # no states: simult_ gives ghu*ex_' for all iter periods, the first is dropped
+            if int(info["maximum_lag"]) == 0:
                 shocks_used = shocks_used[1:]      # the moments' one-shock simulations then have the same length (exo_simul keeps all)
+            if replic_sim > 1:
+                self._write_simul_file(ys_all)
             self._sim_y0 = y0               # disp_moments.m starts its one-shock simulations (variance decomposition) from the same y0
             self.set_oo("endo_simul", R.mat(y.T))
         # --- moments
@@ -288,9 +300,67 @@ class CommandsMixin:
         irf = int(self.opt("irf", 40))
         if irf > 0:
             self._irfs(dr, names, ivar, irf, order, pruning, replic, Sigma)
+        if self.opt_flag("SpectralDensity.trigger"):
+            self._spectral_density(names, ivar, order)
         self.set_oo("gui.ran_stoch_simul", np.bool_(True))
 
-    def _draw_shocks(self, periods):
+    def _spectral_density(self, names, ivar, order):
+        """UnivariateSpectralDensity.m: oo_.SpectralDensity.freqs (ngrid x 1) and .density (nvar x ngrid), the spectral density of
+        the selected variables (HP- or band-pass filtered when hp_filter / bandpass_filter is set) on the grid
+        0:pi/(ngrid-1):pi, ngrid = filtered_theoretical_moments_grid.  Order > 1: Dynare prints a message and returns."""
+        R = _R()
+        if order > 1:
+            return
+        if self.opt("one_sided_hp_filter", 0):
+            raise R.ResultsError("stoch_simul: UnivariateSpectralDensity:: spectral density estimate not available with one-sided "
+                                 "HP filter (Dynare stops with this error)")
+        m = self.model
+        dr = self.oo_["dr"]
+        ghx, ghu = np.asarray(farr(dr["ghx"]), float), np.asarray(farr(dr["ghu"]), float)
+        order_var = np.asarray(farr(dr["order_var"]), int).ravel() - 1
+        iv = np.empty(len(order_var), int)
+        iv[order_var] = np.arange(len(order_var))
+        _, _, cnt = dr_ordering(m.lead_lag_incidence)
+        nst, nsp = cnt["nstatic"], cnt["npred"] + cnt["nboth"]
+        ikx = nst + np.arange(nsp)
+        A, ghu1 = ghx[ikx, :], ghu[ikx, :]
+        if nsp and np.max(np.abs(np.linalg.eigvals(A))) >= 1 - 1e-12:
+            raise R.ResultsError("stoch_simul: SpectralDensity.trigger for a model with unit roots (Dynare restricts the "
+                                 "variables with lyapunov_symm's unstable subspace) is not supported")
+        iky = iv[np.asarray(ivar, int)]
+        aa, bb = ghx[iky, :], ghu[iky, :]
+        ngrid = int(self.opt("filtered_theoretical_moments_grid", 512))
+        freqs = np.arange(ngrid) * (np.pi / (ngrid - 1)) if ngrid > 1 else np.zeros(1)     # Octave's range 0:pi/(ngrid-1):pi
+        if ngrid > 1:
+            freqs[-1] = np.pi
+        if self.opt_flag("bandpass.indicator"):
+            lo, hi = self.opt("bandpass.passband", [6, 32])[1], max(2, self.opt("bandpass.passband", [6, 32])[0])
+            gain = ((freqs >= 2 * np.pi / lo) & (freqs <= 2 * np.pi / hi)).astype(float)
+        elif self.opt("hp_filter", 0):
+            lam = float(self.opt("hp_filter", 0))
+            gain = 4 * lam * (1 - np.cos(freqs)) ** 2 / (1 + 4 * lam * (1 - np.cos(freqs)) ** 2)
+        else:
+            gain = np.ones(ngrid)
+        Sigma = np.array(m.Sigma_e, float)
+        IA, IE = np.eye(A.shape[0]), np.eye(m.n_exo)
+        nv = len(iky)
+        f = np.zeros((nv, ngrid))
+        for ig, w in enumerate(freqs):
+            tpos, tneg = np.exp(1j * w), np.exp(-1j * w)
+            left = np.vstack([np.linalg.solve(IA - A * tneg, ghu1), IE]) if nsp else IE
+            right = np.hstack([ghu1.T @ np.linalg.inv(IA - A.T * tpos), IE]) if nsp else IE
+            fo = (1 / (2 * np.pi)) * (left @ Sigma @ right)
+            L = np.hstack([aa * tneg, bb]) if nsp else bb
+            Rr = np.vstack([aa.T * tpos, bb.T]) if nsp else bb.T
+            g = L @ fo @ Rr
+            f[:, ig] = np.real(np.diag(gain[ig] ** 2 * g))
+        out = R.rstruct("oo_.SpectralDensity")
+        out["freqs"] = R.col(freqs)
+        out["density"] = R.mat(f)
+        self.set_oo("SpectralDensity", out)
+
+    def _draw_shocks(self, periods, replic=1):
+        """The shocks of the simulation(s) of one stoch_simul: a list of ``replic`` arrays (simult.m draws them one after the other)."""
         R = _R()
         m = self.model
         self._n_simul += 1
@@ -299,15 +369,32 @@ class CommandsMixin:
             g = np.asarray(given, float)
             if g.shape != (periods, m.n_exo):
                 raise R.ResultsError(f"the shocks given for stoch_simul number {self._n_simul} must be {periods}x{m.n_exo}")
-            return g
+            return [g]
         Sigma = np.array(m.Sigma_e, float)
         active = np.nonzero(np.diag(Sigma) != 0)[0]
-        shocks = np.zeros((periods, m.n_exo))
-        if len(active):
-            chol = np.linalg.cholesky(Sigma[np.ix_(active, active)]).T            # chol(): upper factor
-            z = self.rng.randn((len(active), periods))                           # randn(nxs, periods)'
-            shocks[:, active] = z.T @ chol
-        return shocks
+        out = []
+        for _ in range(replic):
+            shocks = np.zeros((periods, m.n_exo))
+            if len(active):
+                chol = np.linalg.cholesky(Sigma[np.ix_(active, active)]).T            # chol(): upper factor
+                z = self.rng.randn((len(active), periods))                           # randn(nxs, periods)'
+                shocks[:, active] = z.T @ chol
+            out.append(shocks)
+        return out
+
+    def _write_simul_file(self, ys_all):
+        """simult.m with simul_replic > 1: <name>/Output/<name>_simul holds each replication's endo_simul (without the initial
+        value) as raw float64, column-major (fwrite).  Not overwritten unless pydyn.dynare() wrote it."""
+        base = self.model.json_dir.parents[1]
+        path = base / "Output" / f"{base.name}_simul"
+        led = self.gfx.ledger
+        if not led.may_write(path):
+            raise _R().ResultsError(f"stoch_simul: {path.name} exists and was not written by pydyn.dynare(); it is not overwritten")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as fh:
+            for y in ys_all:
+                fh.write(np.ascontiguousarray(np.asarray(y, "<f8").T).tobytes(order="F"))
+        led.record(path)
 
     def _make_dr(self, sol, dr, order, qz):
         R = _R()

@@ -916,7 +916,7 @@ def metropolis_hastings(log_post, x0, logpost0, chol_upper, lb, ub, innovations,
 _DEFAULTS = dict(
     datafile=None, first_obs=1, nobs=None, loglinear=False, logdata=False, prefilter=0, presample=0,
     lik_init=1, diffuse_filter=False, kalman_algo=0, kalman_tol=1e-10, diffuse_kalman_tol=1e-6,
-    riccati_tol=1e-6, qz_criterium=None, prior_trunc=0.0, Harvey_scale_factor=10.0,
+    riccati_tol=1e-6, qz_criterium=None, qz_zero_threshold=None, prior_trunc=0.0, Harvey_scale_factor=10.0,
     lyapunov_complex_threshold=1e-15, rescale_prediction_error_covariance=False,
     gstep=(1e-2, 1.0), order=1, use_univariate_filters_if_singularity_is_detected=True,
     # posterior mode (Estimation.mode); mode_compute=None means "not given in the .mod file"
@@ -1437,7 +1437,8 @@ class Estimation:
             raise BlanchardKahnError("the Jacobian of the dynamic model contains NaN or Inf")
         try:
             G, H, _ = solve_linear_re(J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:],
-                                      qz_criterium=self.options["qz_criterium"])
+                                      qz_criterium=self.options["qz_criterium"],
+                                      qz_zero_threshold=self.options["qz_zero_threshold"])
         except (np.linalg.LinAlgError, ValueError) as exc:
             raise BlanchardKahnError(f"first-order solution failed: {exc}") from None
         mask = np.ones(n, bool)

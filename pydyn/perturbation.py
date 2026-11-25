@@ -117,7 +117,8 @@ def dr_ordering(lead_lag_incidence: np.ndarray):
 SOLVER = os.environ.get("PYDYN_FIRST_ORDER", "reduced")
 
 
-def solve_linear_re(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM, lead_lag_incidence=None, method=None):
+def solve_linear_re(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM, lead_lag_incidence=None, method=None,
+                    qz_zero_threshold=None):
     """Solve fp E y(+1) + f0 y + fm y(-1) + fu u = 0 for y = G y(-1) + H u.
 
     ``lead_lag_incidence`` (n x 3, non-zero where a variable appears with a lag / lead) lets the
@@ -132,10 +133,10 @@ def solve_linear_re(fm, f0, fp, fu, qz_criterium=QZ_CRITERIUM, lead_lag_incidenc
         lag, lead = np.any(fm != 0, axis=0), np.any(fp != 0, axis=0)
     else:
         lag, lead = lead_lag_incidence[:, 0] > 0, lead_lag_incidence[:, 2] > 0
-    return _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium)
+    return _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium, qz_zero_threshold)
 
 
-def _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium=QZ_CRITERIUM):
+def _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium=QZ_CRITERIUM, qz_zero_threshold=None):
     """Port of the QZ branch of Dynare's dyn_first_order_solver.m.
 
     Variables are put in decision-rule order (static, purely backward, mixed, purely forward).
@@ -187,7 +188,8 @@ def _solve_reduced(fm, f0, fp, fu, lag, lead, qz_criterium=QZ_CRITERIUM):
         S, T, alpha, beta, w, sdim = _ordered_qz(E, D, qz_criterium)
         with np.errstate(divide="ignore", invalid="ignore"):
             eig = alpha / beta
-        if np.any((np.abs(alpha) <= QZ_ZERO_THRESHOLD) & (np.abs(beta) <= QZ_ZERO_THRESHOLD)):
+        zt = QZ_ZERO_THRESHOLD if qz_zero_threshold is None else float(qz_zero_threshold)   # options_.qz_zero_threshold
+        if np.any((np.abs(alpha) <= zt) & (np.abs(beta) <= zt)):
             raise BlanchardKahnError("one of the generalised eigenvalues is close to 0/0 "
                                      "(the model has a singularity: Dynare's error 7)")
     else:
@@ -319,6 +321,7 @@ def first_order(model, ys=None, params=None, qz_criterium=None, loglinear=None) 
     J = model.dynamic_jac(np.tile(ys, 3), model.exo_steady(), params, ys)
     fm, f0, fp, fu = J[:, :n], J[:, n:2 * n], J[:, 2 * n:3 * n], J[:, 3 * n:]
     G, H, eig = solve_linear_re(fm, f0, fp, fu, qz_criterium=_opt.qz_criterium(model, qz_criterium),
+                                qz_zero_threshold=_opt.qz_zero_threshold(model),
                                 lead_lag_incidence=model.lead_lag_incidence)
     order_var, state_var, _ = dr_ordering(model.lead_lag_incidence)
     # clean numerical noise in columns of non-state variables
