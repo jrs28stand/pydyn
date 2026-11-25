@@ -16,11 +16,26 @@ import pydyn
 
 REF = Path(__file__).resolve().parent.parent / "reference" / "ident"
 CASES = ["BrockMirman", "fl1", "cgg_criteria_differ", "as2007_QT", "forward_looking_varobs_x", "au5", "au6", "kim2",
-         "fs2000_corr_pt"]
+         "fs2000_corr_pt",
+         "as2007_kron_m1", "as2007_kron_p1", "as2007_negF"]
 # (file name stem) -> paths whose values depend on a basis chosen arbitrarily by an SVD of a rank-deficient problem
 BASIS_PATHS = {"fs2000_corr_pt": ("ide_minimal_point.dMINIMAL", "ide_minimal_point.norm_dMINIMAL")}
 # kim2: the Hessian is singular to 1e-17 and Octave's A\\B then returns an LU solution of rounding noise
 SINGULAR_PATHS = {"kim2": ("si_dMOMENTSnorm", "si_dREDUCEDFORMnorm", "si_dDYNAMICnorm")}
+# as2007_kronflags: the Hessian restricted to the identified parameters has condition number 5e20 and rank 13 of 21, so the
+# strength measures (si_*norm) and the weak-identification flags (jweak, with the zero singular values of dSPECTRUM at 1e-12
+# against a threshold of 2e-11) are rounding noise; every Jacobian, AHess and the moments agree to 1e-8
+# (analytic_derivation_mode -1: finite differences with the same step as Dynare; 1: the Kronecker formulas)
+_KRON = ("si_dMOMENTSnorm", "si_dREDUCEDFORMnorm", "si_dDYNAMICnorm", "jweak", "jweak_pair", "indno")
+SINGULAR_PATHS["as2007_kron_m1"] = _KRON
+SINGULAR_PATHS["as2007_kron_p1"] = _KRON
+# as2007_negF: 10 observables for 3 shocks, the univariate Kalman filter meets a negative prediction error variance, Dynare's
+# dsge_likelihood fails and analysis.m uses the simulated moment uncertainty (the random draws are replayed); the
+# singular simulated information matrix makes the exact-zero test ``find(diag_chh)`` pick 2 more reduced-form rows
+SINGULAR_PATHS["as2007_negF"] = _KRON + ("ind_dREDUCEDFORM", "norm_dREDUCEDFORM", "si_dREDUCEDFORM", "REDUCEDFORM")
+# kim2/au5/au6: tolerances of the Monte Carlo and univariate-filter paths; as2007_kron_*: normalised quantities (tilda_dSPECTRUM,
+# strength of the moments) divide by small diagonal elements of matrices whose entries carry finite-difference rounding (1e-11)
+TOL = {"kim2": 1e-7, "au5": 1e-7, "au6": 1e-7, "as2007_kron_m1": 1e-5, "as2007_kron_p1": 1e-5, "as2007_negF": 1e-5}
 NOISE = {"cond", "Mco", "Pco", "V"}
 NOISE_PATH = {"ide_hess_point.indno"}
 
@@ -88,7 +103,7 @@ def test_against_octave(case, tmp_path):
                 if a.dtype != object:
                     assert np.max(np.abs(a - b)) <= 1e-7 * max(1.0, np.max(np.abs(a))), (stem, k)
                 continue
-            _cmp(ref[k][0, 0], got[k][0, 0], k, bad, 1e-7 if case in ("kim2", "au5", "au6") else 1e-8, skip)
+            _cmp(ref[k][0, 0], got[k][0, 0], k, bad, TOL.get(case, 1e-8), skip)
         assert not bad, f"{stem}: " + "; ".join(bad)
     # the label file holds the point variables (Dynare writes it before the Monte Carlo ones are appended)
     labelled = [p for p in out.glob(f"{case}_*_identif.mat")]
@@ -106,7 +121,6 @@ def test_against_octave(case, tmp_path):
 REFUSE = [
     ("identification(no_identification_strength,order=2);", "order"),
     ("identification(no_identification_strength,prior_mc=5,checks_via_subsets=1);", "checks_via_subsets"),
-    ("identification(no_identification_strength,analytic_derivation_mode=-1);", "analytic_derivation_mode"),
 ]
 
 

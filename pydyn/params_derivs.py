@@ -81,7 +81,11 @@ def steady_state_derivatives(model, ys, params, qz_criterium=1 + 1e-6):
     try:
         with np.errstate(all="ignore"):
             if np.linalg.cond(g1) < 1 / np.finfo(float).eps:
-                dys = -np.linalg.solve(g1, rp)
+                # one right-hand side at a time: where a parameter does not enter, the solution stays exactly zero (a blocked
+                # triangular solve with several right-hand sides can leave rounding noise there; identification's
+                # ``find(diag_chh)`` tests exact zeros)
+                lu = linalg.lu_factor(g1)
+                dys = -np.column_stack([linalg.lu_solve(lu, rp[:, j]) for j in range(rp.shape[1])])
     except np.linalg.LinAlgError:
         dys = None
     if dys is None or not np.all(np.isfinite(dys)):
@@ -93,8 +97,69 @@ def steady_state_derivatives(model, ys, params, qz_criterium=1 + 1e-6):
     return dys, rp
 
 
+def numerical_dys_dJ(model, indpmodel, params, x, dynatol_x=1e-5):
+    """Two-sided finite differences (``fjaco.m``: step ``dynatol.x * max(|p|, 1)``, divided by ``(p+h)-(p-h)``) of the steady
+    state and of the dynamic Jacobian with respect to the selected model parameters, the steady state (with the steady-state
+    file's parameter changes) recomputed at each point.  Returns ``dys`` [endo x all parameters, only the selected columns
+    filled] and ``dJ`` [selected x endo x (3 endo + exo)], columns of the Jacobian in declaration order."""
+    from .steady import steady_state
+    n = model.n_endo
+    rows, cols = model.jac_rows, model.jac_cols
+    indpmodel = np.asarray(indpmodel, int).ravel()
+    ncol = 3 * n + model.n_exo
+    dys = np.zeros((n, len(model.param_names)))
+    dJ = np.zeros((len(indpmodel), n, ncol))
+    for jj, jp in enumerate(indpmodel):
+        x0 = params[jp]
+        h = dynatol_x * max(abs(x0), 1.0)
+        xh1, xh0 = x0 + h, x0 - h
+        hh = xh1 - xh0
+        vals = []
+        for xv in (xh1, xh0):
+            pv = params.copy()
+            pv[jp] = xv
+            ysv, ppv = steady_state(model, pv)
+            ysv, ppv = np.asarray(ysv, float), np.asarray(ppv, float)
+            Jv = model.dynamic_jac(np.tile(ysv, 3), x, ppv, ysv)
+            vals.append((ysv, Jv))
+        dys[:, jp] = (vals[0][0] - vals[1][0]) / hh
+        dJ[jj][rows, cols] = ((vals[0][1] - vals[1][1]) / hh)[rows, cols]
+    return dys, dJ
+
+
+def _kron_solution(model, G, H, fm, f0, fp, fu, dJ, order_var, state_var, nm, nexo, n):
+    """``analytic_derivation_mode = 1`` of get_perturbation_params_derivs.m (Iskrev 2010, appendix A): the derivatives of
+    the Kalman transition matrix and of ghu by the implicit function theorem with Kronecker products, in decision-rule
+    order, returned as the declaration-order ``dG`` [nm x n x n] and ``dH`` [nm x n x nexo] used below."""
+    ov = np.asarray(order_var, int)
+    I = np.eye(n)
+    KA = G[np.ix_(ov, ov)]
+    GAM0, GAM1 = f0[:, ov], -fp[:, ov]
+    dGAM0 = np.stack([dJ[j][:, n:2 * n][:, ov].ravel(order="F") for j in range(nm)], axis=1)
+    dGAM1 = np.stack([-dJ[j][:, 2 * n:3 * n][:, ov].ravel(order="F") for j in range(nm)], axis=1)
+    dGAM2 = np.stack([-dJ[j][:, :n][:, ov].ravel(order="F") for j in range(nm)], axis=1)
+    GAM3 = -fu
+    dGAM3 = np.stack([-dJ[j][:, 3 * n:].ravel(order="F") for j in range(nm)], axis=1)
+    dF = np.kron(I, GAM0) - np.kron(KA.T, GAM1) - np.kron(I, GAM1 @ KA)
+    Fp = np.kron(KA.T, I) @ dGAM0 - np.kron(KA.T @ KA.T, I) @ dGAM1 - dGAM2
+    dKA = -np.linalg.solve(dF, Fp)
+    MM = GAM0 - GAM1 @ KA
+    invMM = np.linalg.solve(MM, I)
+    dghu = (-np.kron((invMM @ GAM3).T, invMM) @ (dGAM0 - np.kron(KA.T, I) @ dGAM1 - np.kron(I, GAM1) @ dKA)
+            + np.kron(np.eye(nexo), invMM) @ dGAM3)
+    dG = np.zeros((nm, n, n))
+    dH = np.zeros((nm, n, nexo))
+    inv = np.empty(n, int)
+    inv[ov] = np.arange(n)
+    for j in range(nm):
+        dKj = dKA[:, j].reshape((n, n), order="F")          # DR rows, DR columns
+        dG[j] = dKj[np.ix_(inv, inv)]                       # declaration order
+        dH[j] = dghu[:, j].reshape((n, nexo), order="F")[inv]
+    return dG, dH
+
+
 def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=None, params=None, order=1,
-                               qz_criterium=1 + 1e-6, numerical=False, dynatol_x=1e-5):
+                               qz_criterium=1 + 1e-6, numerical=False, dynatol_x=1e-5, kron=False):
     """Derivatives of the first-order solution with respect to selected parameters, in Dynare's layout.
 
     ``indpmodel``: 0-based positions in ``model.param_names``; ``indpstderr``: 0-based positions of shocks (declaration
@@ -135,22 +200,7 @@ def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=
         # analytic_derivation_mode = -2: two-sided finite differences (fjaco.m, step dynatol.x * max(|x|, 1)) of the steady
         # state and of the dynamic Jacobian, the steady state (with the steady-state file's parameter changes) recomputed
         # at each point; the solution derivatives below are analytic as in mode 0
-        dys = np.zeros((n, len(model.param_names)))
-        for jj, jp in enumerate(indpmodel):
-            x0 = params[jp]
-            h = dynatol_x * max(abs(x0), 1.0)
-            xh1, xh0 = x0 + h, x0 - h
-            hh = xh1 - xh0
-            vals = []
-            for xv in (xh1, xh0):
-                pv = params.copy()
-                pv[jp] = xv
-                ysv, ppv = steady_state(model, pv)
-                ysv, ppv = np.asarray(ysv, float), np.asarray(ppv, float)
-                Jv = model.dynamic_jac(np.tile(ysv, 3), x, ppv, ysv)
-                vals.append((ysv, Jv))
-            dys[:, jp] = (vals[0][0] - vals[1][0]) / hh
-            dJ[jj][rows, cols] = ((vals[0][1] - vals[1][1]) / hh)[rows, cols]
+        dys, dJ = numerical_dys_dJ(model, indpmodel, params, x, dynatol_x)
     else:
         dys, _ = steady_state_derivatives(model, ys, params, qz_criterium)
     # total derivative of the dynamic Jacobian: one complex-step evaluation per parameter
@@ -163,6 +213,9 @@ def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=
         if model._det_view is not None:
             v = v[model._det_view["keep"]["dynamic_jac"]]
         dJ[jj][rows, cols] = v.imag / H_STEP
+    kron_sol = None
+    if kron and n * n <= 6400:
+        kron_sol = _kron_solution(model, G, H, fm, f0, fp, fu, dJ, order_var, state_var, nm, nexo, n)
     # Sylvester equation in the state columns of G
     st = np.asarray(state_var, int)
     ncs = len(st)
@@ -181,6 +234,8 @@ def perturbation_params_derivs(model, indpmodel, indpstderr=(), indpcorr=(), ys=
             dG[jj][:, st] = X
         dA = df0 + dfp @ G + fp @ dG[jj]
         dH[jj] = -np.linalg.solve(A, dfu + dA @ H)
+    if kron_sol is not None:
+        dG, dH = kron_sol
     Sigma = np.asarray(model.Sigma_e, float)
     sd = np.sqrt(np.diag(Sigma))
     with np.errstate(all="ignore"):
