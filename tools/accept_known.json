@@ -1,8 +1,4 @@
 {
- "decision_rules/first_order/walsh": {
-  "class": "Dynare quirk",
-  "note": "the last stoch_simul uses cycle_reduction with dr_cycle_reduction_tol=1e-1; Dynare's own stored rules are the loose ones (the test itself prints that QZ and cycle reduction differ at that tolerance)"
- },
  "kalman_filter_smoother/test_compute_Pinf_Pstar": {
   "class": "Dynare quirk",
   "note": "T has a 6-fold defective unit-root block; Schur vectors of a repeated-eigenvalue subspace are not unique, so a 7e-16 difference in T changes the rank of Pinf (3 vs 4/5). Given Dynare's own T, R, Q pydyn's compute_Pinf_Pstar reproduces Dynare's Pinf exactly"

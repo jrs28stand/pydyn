@@ -797,7 +797,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         self.fig_forecast(fc)
 
     # ------------------------------------------------------------------ shock decompositions
-    def _decomposition_smoother(self, kind, run=True, allow_sets=False):
+    def _decomposition_smoother(self, kind, run=True, allow_sets=False, st=None):
         """The smoother of Dynare's evaluate_smoother(parameter_set, ...) inside shock_decomposition.m and
         initial_condition_decomposition.m; parameter_set = 'calibration', and with ``allow_sets`` also the posterior mean,
         median and mode and the ML mode of the last estimation.  The parameter set used is left in ``self._sd_ps``."""
@@ -814,6 +814,12 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
                 v = self.opt(key, None)
                 if isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)) and np.isfinite(v) and v > 0:
                     kw[key] = int(v)
+        # the statement's own smoother options (shock_decomposition(lik_init=3, nobs=100, ...)): Dynare writes them into options_
+        # before evaluate_smoother runs, so they govern this smoother run (found by tools/options_probe.py: they were ignored)
+        from .smoother import _DEFAULTS as _SMOOTHER_OPTIONS
+        for key, val in ((st or {}).get("options") or {}).items():
+            if key in _SMOOTHER_OPTIONS and key not in ("datafile", "parameter_set", "varobs", "noprint"):
+                kw[key] = R.py_value(R.option_value(val))
         sets = ("calibration", "posterior_mean", "posterior_median", "posterior_mode", "mle_mode") if allow_sets else ("calibration",)
         if ps not in sets:
             raise R.ResultsError(f"{kind}: parameter_set={ps} is not supported by pydyn.dynare() (only "
@@ -861,7 +867,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
                                  "than pydyn.dynare() follows")
         if ft is not None:
             self._sd_forecast_inputs(ft)           # the checks that precede the smoother in shock_decomposition.m
-        res = self._decomposition_smoother(kind, allow_sets=True)
+        res = self._decomposition_smoother(kind, allow_sets=True, st=st)
         ps = self._sd_ps
         self._sd_initial_date = self._decomp_initial_date(res)
         if ft is not None:
@@ -938,7 +944,7 @@ class EstimationMixin(PosteriorAnalysisMixin, ConvergenceMixin, DiscretionaryMix
         if "initval_decomposition" in self.oo_:
             self._plot_initval_decomposition(st)
             return                  # Dynare keeps the decomposition it has (and only plots it again)
-        res = self._decomposition_smoother(kind)
+        res = self._decomposition_smoother(kind, st=st)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             icd = initial_condition_decomposition(self.model, res)

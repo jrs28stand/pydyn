@@ -41,6 +41,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import option_policy as _opt_policy
 from . import dates as _dates
 from . import matlab as _ml
 from .matlab import (Cell, Interpreter, MatlabError, Struct, Tainted, Unsupported, arr, farr, ret, _F, _HOST_GLOBALS)
@@ -848,6 +849,9 @@ class _Core(CommandsMixin):
         st = m.statements[k]
         kind = st["statementName"]
         self.last_k = k
+        why = _opt_policy.check_statement(kind, st.get("options"))
+        if why:                                         # an option pydyn does not act on is never silently dropped
+            raise ResultsError(f"<{kind}>: {why}")
         self.pull()
         try:
             if kind in IGNORED:
