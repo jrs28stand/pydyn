@@ -12,6 +12,17 @@ pydyn's rule is to refuse rather than guess. Everything below either raises a cl
 (`NotImplementedError`, `Unsupported`, `ResultsError`) or, for options, warns once with
 `UnsupportedOptionWarning`. Any option, or `options_` field set from MATLAB code, that pydyn does not act on is reported; none is ignored silently.
 
+How options are kept honest (`pydyn/option_policy.py`): for every statement `pydyn.dynare()` runs, each option the Dynare 7.2
+preprocessor can emit is classified as *honoured* (pydyn acts on it), *harmless* (it cannot change a number pydyn computes: printing,
+figures, the name of an output folder, the choice of a numerical algorithm that gives the same solution; the reason is in
+`HARMLESS_REASONS`) or *refused* (Dynare acts on it, pydyn does not: the statement raises a `ResultsError` naming the option).
+Some are value-aware: `dr_cycle_reduction_tol` and the other solver tolerances are harmless at Dynare's default or tighter and refused when looser (the solution would differ from QZ), `fsolve_options` is harmless only for Display/AutoScaling-type settings, and `lyapunov=fixed_point` is refused (1.6e-8 off at its default tolerance). An option the table does not know is refused too, so an option added by a later Dynare is refused until it is classified.
+`tools/options_audit.py` rebuilds the ground truth from `DynareBison.yy` and `tests/test_option_policy.py` fails if a table and the grammar
+disagree; `tools/options_probe.py` runs a statement with and without an option and reports options whose results do not change
+(the check used to confirm "honoured").  The plain API (`pydyn.Model`, the functions of the package) warns at load time about the
+refused options of the statements in the file instead of raising.  Options written by MATLAB code (`options_.x = ...`) are covered
+by `pydyn.options.HONOURED_MATLAB_OPTIONS` as before.
+
 ## 1. Features not implemented
 
 | Area | Missing | Notes |

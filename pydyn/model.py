@@ -155,6 +155,8 @@ class Model:
         self._init_state()
         if run_statements:
             self._run_statements()
+            from .option_policy import warn_model       # options of the statements that pydyn does not act on
+            warn_model(self)
 
     # ------------------------------------------------------------------ compilation
     def _tr_dynamic(self):
