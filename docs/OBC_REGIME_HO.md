@@ -145,4 +145,4 @@ Port `HigherOrderRegime` after the order-1 regime solver: generalised `_affine_m
 relevance = bind test at z=0; batched guess-and-verify grouped by regime sequence; failure classes via the statuses; the equality tests against the LCP cubature and DynareOBC's `ref_o2*.mat`; tolerance semantics unchanged.
 
 ## State / next step
-- Steps 1 to 4 done and tested (50 tests; 298 + 19 OBC/OccBin tests). Report (step 5) pending the final commit.
+- Steps 1 to 4 done. tests/test_obc_regime_ho.py: 50 tests; `pytest tests -k "obc or occbin"`: 317 passed, 3 skipped. Next: the user decides open question 1 (cubature_failure_tolerance for approx-class models); Julia port per section 7.
