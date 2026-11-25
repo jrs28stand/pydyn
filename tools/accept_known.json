@@ -154,5 +154,13 @@
  "external_function/no_deriv_given_dll": {
   "class": "Dynare quirk (numerical derivative scheme)",
   "note": "Dynare computes the second derivatives of the external function numerically and the result is not accurate: Dynare's dr.ghxx differs from its own benchmark run (all derivatives analytic, identical model) by 9.8e-4, pydyn's from that benchmark by 8.2e-4 (and pydyn's first_and_2nd_deriv_given matches the benchmark to 1.5e-10); the two finite-difference schemes differ, their results differ by 1.8e-3. Same numbers in the five files that leave the 2nd derivative to numerical differentiation"
+ },
+ "optimal_policy/OSR/osr_example_obj_corr_non_stat_vars": {
+  "class": "Dynare quirk (optimiser path)",
+  "note": "The OSR objective is identical: at Dynare's optimal rules pydyn's loss is 3.334309582956127 against Dynare's 3.33430958295605, and at the initial values 8.025573444649 against 8.025573444647 (2e-13 relative). The csminwel paths agree in the first 17 iterations (f at the start of each iteration to 1e-3 or better, the same lambda sequences in the iterations compared in detail); a rounding-level difference in the objective (1e-12) is amplified by the long, nearly flat valley of the non-stationary model (a lambda=27 step turns 4e-10 into 2e-7 in f at iteration 7, 1e-3 at 18), then the paths part. Dynare takes 164 iterations, perturbs the search direction at two cliffs (iterations 46 and 84, with its own rand stream) and ends at 3.3343 (exit 3); pydyn stops at 44 iterations at 3.3665 (crit 1e-7). Perturbing the objective by 2e-13 relative moves pydyn's end point between 3.3639 and 3.3665, so the end point is not reproducible; dr, moments and IRFs are evaluated there"
+ },
+ "filter_step_ahead/trend_cycle_decomposition": {
+  "class": "Dynare quirk (optimiser end point, propagated by the chain)",
+  "note": "After the fix of the repeated-draws correction of the kernel bandwidth (pydyn.posterior._repeated_draws_correction: runs of more than 4 equal draws were mis-counted; the density differed by up to 39), what remains differs at 1e-7 relative: the posterior mode differs by 8.8e-10 in alpha (0.96465378682 Dynare, 0.96465378767 pydyn, csminwel end points, below the 1e-8 mode rule), the replayed chain is shifted rigidly by that amount (posterior mean of alpha differs by 9.1e-10), and the smoothed stationary component z (|z| < 0.08) moves by 2e-10 per draw, i.e. 6e-8 relative; the kernel density values (peak 1.4e3) move by 1.6e-4. Accept/reject decisions, draws' order and the density grids agree (grid to 6e-10)"
  }
 }

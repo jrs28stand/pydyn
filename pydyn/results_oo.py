@@ -41,6 +41,11 @@ def _pfmod():
     return importlib.import_module(__package__ + ".perfect_foresight")      # the package attribute is the function
 
 
+def _hessian_eq_zero(model):
+    from .optimal_policy import _hessian_eq_zero as f
+    return f(model)
+
+
 class CommandsMixin:
     """Methods of :class:`pydyn.results.Results` that run Dynare's commands."""
 
@@ -198,7 +203,7 @@ class CommandsMixin:
             raise R.ResultsError("stoch_simul: does not support having no varexo in the model. As a workaround you "
                                  "could define a dummy exogenous variable.")
         replic = 1 if order == 1 else int(self.opt("replic", 50))
-        if order != 1 and m.max_deriv_order < 2:
+        if order != 1 and (m.max_deriv_order < 2 or _hessian_eq_zero(m)):       # M_.hessian_eq_zero (stoch_simul.m)
             warnings.warn("stoch_simul: using order = 1 because Hessian is equal to zero")
             order = 1
             replic = 1
@@ -315,6 +320,13 @@ class CommandsMixin:
         eig = self._eigval(sol.eigenvalues)
         ghx = np.asarray(dr["ghx"], float)
         nst, nsp = cnt["nstatic"], cnt["npred"] + cnt["nboth"]
+        if order == 1 and self.opt_flag("aim_solver"):
+            # AIM_first_order_solver.m: dr.eigval = eig(kalman_transition_matrix(dr, nstatic+(1:nspred), 1:nspred)),
+            # i.e. the nspred eigenvalues of the predetermined-variables transition matrix in LAPACK order,
+            # not the QZ spectrum (which also holds the explosive roots of the forward-looking variables).
+            eig_aim = np.linalg.eigvals(ghx[nst:nst + nsp, :nsp])
+        else:
+            eig_aim = None
         D = R.rstruct("oo_.dr")
         D["inv_order_var"] = R.row(inv + 1)
         D["order_var"] = R.col(order_var + 1)
@@ -325,7 +337,9 @@ class CommandsMixin:
         D["ys"] = R.col(ys_dr)
         D["ghx"] = R.mat(ghx)
         D["ghu"] = R.mat(np.asarray(dr["ghu"], float))
-        if order < 3:                       # Dynare's third-order dr (k_order_perturbation) has none of these
+        if eig_aim is not None:             # AIM_first_order_solver.m fills dr.ghx, dr.ghu and dr.eigval only
+            D["eigval"] = R.col(eig_aim, True)
+        elif order < 3:                     # Dynare's third-order dr (k_order_perturbation) has none of these
             D["state_var"] = R.row(np.asarray(sol.state_var, int) + 1)
             D["eigval"] = R.col(eig, True)
             sdim = int(np.sum(np.abs(eig) < qz))
@@ -430,7 +444,9 @@ class CommandsMixin:
         cs = get_lower_cholesky_covariance(Sigma, float(self.opt("add_tiny_number_to_cholesky", 1e-14)))
         shocks = self.opt("irf_shocks")
         if shocks:
-            sel = [m._ix[s] for s in (shocks if isinstance(shocks, list) else [shocks])]
+            # getIrfShocksIndx.m: unique() sorts the indices and drops repeats, so the IRFs (and the random draws of order >= 2)
+            # follow the declaration order of the shocks, not the order listed in irf_shocks
+            sel = sorted({m._ix[s] for s in (shocks if isinstance(shocks, list) else [shocks])})
         else:
             sel = list(range(m.n_exo))
         relative = self.opt_flag("relative_irf")
