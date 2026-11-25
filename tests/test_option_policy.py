@@ -47,7 +47,16 @@ def test_tables_are_disjoint_and_cover_the_grammar():
         assert s["honoured"] | s["harmless"] | s["refused"] == set(gt[st]), st
 
 
-def test_classify():
+@pytest.fixture
+def refused_simul_replic(monkeypatch):
+    """A permanently refused option is needed to test the mechanism: put simul_replic (implemented since) back for the test."""
+    for st in ("stoch_simul", "osr", "ramsey_policy", "discretionary_policy"):
+        spec = P.SPECS[st]
+        monkeypatch.setitem(spec, "honoured", spec["honoured"] - {"simul_replic"})
+        monkeypatch.setitem(spec, "refused", spec["refused"] | {"simul_replic"})
+
+
+def test_classify(refused_simul_replic):
     assert P.classify("stoch_simul", "order") == "honoured"
     assert P.classify("stoch_simul", "nograph") == "harmless"
     assert P.classify("stoch_simul", "dr_cycle_reduction") == "harmless"
@@ -59,11 +68,9 @@ def test_classify():
     assert "particle.filter_algorithm" in why and "particle filters" in why and "order" not in why.split(";")[0]
 
 
-def test_refused_option_stops_the_statement(tmp_path):
+def test_refused_option_stops_the_statement(tmp_path, refused_simul_replic):
     with pytest.raises(ResultsError, match=r"<stoch_simul>: pydyn does not act on simul_replic"):
         _run(tmp_path, "stoch_simul(order=1,periods=50,simul_replic=3,nograph);")
-    with pytest.raises(ResultsError, match="qz_zero_threshold"):
-        _run(tmp_path, "stoch_simul(order=1,qz_zero_threshold=1e-5,nograph);")
 
 
 def test_harmless_and_honoured_options_run(tmp_path):
@@ -71,7 +78,7 @@ def test_harmless_and_honoured_options_run(tmp_path):
     assert r.oo_["dr"]["ghx"] is not None
 
 
-def test_plain_api_warns_about_refused_options(tmp_path):
+def test_plain_api_warns_about_refused_options(tmp_path, refused_simul_replic):
     (tmp_path / "m.mod").write_text(MOD + "stoch_simul(order=1,periods=50,simul_replic=3,nograph);\n")
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")

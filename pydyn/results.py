@@ -508,7 +508,7 @@ _NO_OPTIONS_KINDS = {"param_init", "initval", "endval", "histval", "shocks", "ms
                      "estimated_params_init", "estimated_params_bounds", "varobs"}
 #: options of ``steady`` (and ``check``, which takes them) that the steady-state code reads
 STEADY_KEYS = {"solve_algo", "solve_tolf", "solve_tolx", "steadystate.nocheck", "steady.maxit", "homotopy_mode",
-               "homotopy_steps", "homotopy_force_continue", "homotopy_from_initval_to_endval", "qz_criterium"}
+               "homotopy_steps", "homotopy_force_continue", "homotopy_from_initval_to_endval", "qz_criterium", "qz_zero_threshold"}
 #: options_ fields whose pydyn readers have another default than Dynare: always passed on
 _ALWAYS_OPTIONS = ("order",)
 
