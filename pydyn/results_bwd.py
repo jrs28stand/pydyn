@@ -129,37 +129,145 @@ class BackwardMixin:
             return []
         return self.fn_save(args, nargout)
 
-    def fn_delete(self, args, nargout):
-        """``delete file.mat``: only a file ``save`` (or ``ts.save``) of this run wrote and nobody changed since (the same record
-        as the overwrite rule of ``save``); anything else is refused."""
+    # ------------------------------------------------------------------------------ files of the .mod file's folder
+    def _folder_path(self, name, what):
+        """A path given to delete/copyfile/mkdir: relative, no '..', no wildcards, inside the .mod file's folder (symlinks included)."""
+        import os
+        if not isinstance(name, str) or not name:
+            raise Unsupported(f"{what}: computed or empty path arguments", "file")
+        if name.startswith("/") or ".." in name.split("/") or any(c in name for c in "*?[]\\") or "\0" in name:
+            raise Unsupported(f"{what}: {name!r} is not a plain relative path in the .mod file's folder", "file")
+        base = self.model.json_dir.parents[2]
+        path = base / name
+        if not os.path.realpath(path).startswith(os.path.realpath(base) + os.sep):
+            raise Unsupported(f"{what}: {name!r} leaves the .mod file's folder", "file")
+        return base, path
+
+    def _written_by_pydyn(self, base, path):
+        """True if the file exists, is a plain file and its SHA-256 is in the record of this run or of a sibling model of the folder
+        (the rule of ``save``); returns (ok, rec_path, rec, key)."""
         import hashlib
+        import json
+        key = path.relative_to(base).as_posix()
+        if not (path.is_file() and not path.is_symlink()):
+            return False, None, None, key
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        for rec_path in [self.model.json_dir.parents[1] / self._WRITTEN] + sorted(base.glob(f"*/{self._WRITTEN}")):
+            try:
+                rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
+            except (OSError, json.JSONDecodeError):
+                continue
+            if rec.get(key) == digest:
+                return True, rec_path, rec, key
+        return False, None, None, key
+
+    def fn_delete(self, args, nargout):
+        """``delete file``: only a file pydyn.dynare() wrote (``save``, ``copyfile``, results files ...) and nobody changed since (the same
+        record as the overwrite rule of ``save``); anything else is refused.  Paths are relative to the .mod file's folder."""
         import json
         if nargout or len(args) != 1 or not isinstance(args[0], str):
             raise Unsupported("delete with computed arguments or outputs", "file")
         fname = args[0]
-        if "/" in fname or ".." in fname or any(c in fname for c in "*?[]"):
-            raise Unsupported(f"delete: {fname!r} is not a plain file name in the .mod file's folder", "file")
-        base = self.model.json_dir.parents[2]
-        path = base / fname
+        base, path = self._folder_path(fname, "delete")
         if not path.exists():
             self.warnings.append(f"delete: no such file or directory: {fname}")
             return []
         if not (path.is_file() and not path.is_symlink()):
             raise Unsupported(f"delete: {fname} is not a plain file", "file")
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        # the record of this run, then those of the other models of the same folder (the files of one test series)
-        records = [self.model.json_dir.parents[1] / self._WRITTEN] + sorted(base.glob(f"*/{self._WRITTEN}"))
-        for rec_path in records:
-            try:
-                rec = json.loads(rec_path.read_text()) if rec_path.is_file() else {}
-            except (OSError, json.JSONDecodeError):
-                continue
-            if rec.get(fname) == digest:
-                path.unlink()
-                rec.pop(fname)
-                rec_path.write_text(json.dumps(rec, indent=0))
-                return []
+        ok, rec_path, rec, key = self._written_by_pydyn(base, path)
+        if ok:
+            path.unlink()
+            rec.pop(key)
+            rec_path.write_text(json.dumps(rec, indent=0))
+            return []
         raise Unsupported(f"delete: {fname} was not written by pydyn.dynare(), or was changed since; it is not deleted", "file")
+
+    def fn_copyfile(self, args, nargout):
+        """``copyfile(src, dst)``: one plain file of the .mod file's folder to a file (or into a folder) of the same folder.  An existing
+        destination is overwritten only if pydyn.dynare() wrote it and nobody changed it since (the rule of ``save``)."""
+        import json
+        import shutil
+        if len(args) != 2 or not all(isinstance(a, str) for a in args):
+            raise Unsupported("copyfile with options or computed arguments", "file")
+        base, src = self._folder_path(args[0], "copyfile")
+        _, dst = self._folder_path(args[1].rstrip("/") or args[1], "copyfile")
+        if not src.exists():
+            if src.relative_to(base).parts[0] == self.name and nargout == 0:
+                raise Unsupported(f"copyfile: {args[0]} does not exist (it is one of Dynare's own output files, such as the Metropolis-Hastings draws; "
+                                  "pydyn does not write it)", "file")
+            if nargout == 0:
+                raise MatlabError("copyfile: no files to move")
+            return [_F(0), "no files to move", "copyfile"][:max(nargout, 1)]
+        if not (src.is_file() and not src.is_symlink()):
+            raise Unsupported("copyfile of a folder", "file")
+        if dst.is_dir():
+            dst = dst / src.name
+        if not dst.parent.is_dir():
+            raise Unsupported("copyfile into a folder that does not exist", "file")
+        if dst.exists():
+            ok, _, _, _ = self._written_by_pydyn(base, dst)
+            if not ok:
+                raise Unsupported(f"copyfile: {dst.relative_to(base).as_posix()} exists and was not written by pydyn.dynare(); it is not overwritten", "file")
+        shutil.copyfile(src, dst)
+        self.gfx.ledger.record(dst)
+        return [_F(1), "", ""][:max(nargout, 1)] if nargout else []
+
+    def fn_datatomfile(self, args, nargout):
+        """``datatomfile(file[, var_list[, names]])`` (Dynare's matlab/datatomfile.m): oo_.endo_simul of the listed variables as a data
+        file ``<file>.m`` in the .mod file's folder; the sandbox rule of ``save`` applies to an existing file."""
+        import os
+        import time
+        if nargout or not 1 <= len(args) <= 3 or not isinstance(args[0], str):
+            raise Unsupported("datatomfile with outputs or computed arguments", "file")
+        es = self.oo_.get("endo_simul") if hasattr(self.oo_, "get") else None
+        if es is None or np.size(es) == 0:
+            raise MatlabError("datatomfile: oo_.endo_simul is empty. Check why the simulation failed.")
+        stem, ext = os.path.splitext(args[0])
+        if ext not in ("", ".m"):
+            raise MatlabError("You did not provide a .m file as name of the datafile.")
+        base, path = self._folder_path(stem + ".m", "datatomfile")
+        m = self.model
+        n_orig = int(m.raw.get("orig_endo_nbr", m.n_endo))
+
+        def names_of(v, what):
+            if v is None or (isinstance(v, np.ndarray) and v.size == 0):
+                return None
+            if isinstance(v, str):
+                return [v]
+            if isinstance(v, Cell) and all(isinstance(x, str) for x in v.items):
+                return list(v.items)
+            raise Unsupported(f"datatomfile: {what} that is not a cell array of names", "file")
+        var_list = names_of(args[1] if len(args) > 1 else None, "var_list") or list(m.endo_names[:n_orig])
+        names = names_of(args[2], "names") if len(args) == 3 else var_list
+        if len(names) != len(var_list):
+            raise MatlabError("datatomfile:: Second and third arguments must have the same number of rows (variables)!")
+        es = np.asarray(es, float)
+        lines = [f"% Dataset generated by {self.name}.mod\n", time.strftime("%% %d-%b-%Y %H:%M:%S\n")]
+        for nm, v in zip(names, var_list):
+            if v not in m.endo_names:
+                raise MatlabError("One of the specified variables does not exist")
+            lines.append(f"{nm} = [\n\n")
+            for x in es[list(m.endo_names).index(v), :]:
+                lines.append(("%15.8g" % x if np.isfinite(x) else "%15s" % ("NaN" if np.isnan(x) else ("Inf" if x > 0 else "-Inf"))) + "\n")
+            lines.append("];\n\n")
+        if self.gfx.ledger is not None and not self.gfx.ledger.may_write(path):
+            raise Unsupported(f"datatomfile: {path.name} exists and was not written by pydyn.dynare(); it is not overwritten", "file")
+        path.write_text("".join(lines))
+        self.gfx.ledger.record(path)
+        return []
+
+    def fn_mkdir(self, args, nargout):
+        """``mkdir(folder)`` inside the .mod file's folder (parents are created, as in Octave); an existing folder is not an error."""
+        if len(args) != 1 or not isinstance(args[0], str):
+            raise Unsupported("mkdir with a parent argument or computed arguments", "file")
+        _, path = self._folder_path(args[0], "mkdir")
+        if path.exists() and not path.is_dir():
+            raise Unsupported(f"mkdir: {args[0]!r} exists and is not a folder", "file")
+        existed = path.is_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        if not nargout:
+            return []
+        return [_F(1), "directory exists" if existed else "", "mkdir" if existed else ""][:nargout]
 
     def dseries_read(self, fname):
         """``dseries('file.mat')``: a MAT-file of the .mod file's folder written by ``save`` (INIT__, NAMES__, DATA__)."""
@@ -197,7 +305,7 @@ class BackwardMixin:
                 "backward_model_irf": self.fn_backward_model_irf,
                 "backward_model_forecast": self.fn_backward_model_forecast,
                 "set_historical_values": self.fn_set_historical_values,
-                "delete": self.fn_delete,
+                "delete": self.fn_delete, "copyfile": self.fn_copyfile, "mkdir": self.fn_mkdir, "datatomfile": self.fn_datatomfile,
                 "save": self.fn_save_or_dseries}
 
     # ------------------------------------------------------------------------------ the work

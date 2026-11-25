@@ -451,7 +451,12 @@ def test_corpus_calibration_against_dynare(k, tmp_path):
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            m = pydyn.Model(pydyn.run_preprocessor(tmp_path / src.name))
+            try:
+                m = pydyn.Model(pydyn.run_preprocessor(tmp_path / src.name))
+            except pydyn.ModelError as exc:
+                if "must be run first" in str(exc):          # the file checks (isfile) for the results of an earlier file of its test series
+                    pytest.skip("needs the results of an earlier file of the series")
+                raise
             ref = getattr(CORPUS["refs"], f"f{k}")
             params = m.params
             if int(ref.after_steady):

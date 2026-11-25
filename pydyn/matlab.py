@@ -41,9 +41,15 @@ code paths use ``arrn``, and follow Octave's Array<T> rules where MATLAB does al
 struct arrays, char matrices, N-d cell and char arrays, string objects in concatenations, classes, ``dseries``,
 random numbers other than ``rand``/``randn``/``randi``/``randperm`` (which give Octave 8.4's numbers from
 Dynare's seed, see "random numbers" below; refused in steady-state files and helpers the solvers call),
-``evalin``/``assignin``, every file-system and shell function except ``load`` of a ``.mat`` file located
-next to the ``.mod`` file (and, in pydyn.dynare(), a sandboxed ``save``), and all Dynare internals other
-than those above.
+``evalin``/``assignin``, every file-system and shell function except the folder-scoped ones (below) and all
+Dynare internals other than those above.
+
+File system: ``load`` of a ``.mat`` file located next to the ``.mod`` file, the read-only queries ``isfile``,
+``isfolder``/``isdir`` and ``exist(name[, 'file'|'dir'])`` (which only look inside the model's folder: a path with
+``..``, an absolute path or a symlink leaving the folder is refused), the pure path-string functions ``fullfile``
+and ``fileparts``, and, in pydyn.dynare(), the sandboxed writers ``save``, ``delete``, ``copyfile`` and ``mkdir``
+(model folder only; an existing file is overwritten or deleted only if pydyn.dynare() wrote it and nobody changed it
+since).  ``system``/``unix``/``dos``, ``cd``/``pwd``, ``fopen`` and the rest stay refused, and the refusal names the function.
 
 A statement that cannot be interpreted is *skipped with a warning* only when it provably does not
 write to ``M_`` or the parameters; the variables it would have assigned become "unknown", and any
@@ -3738,6 +3744,8 @@ def _mat2str(I, a, nout):
 
 @bi("char")
 def _char(I, a, nout):
+    if not a:
+        return ""                           # Octave: char() is the empty char (0x0)
     if len(a) == 1 and isinstance(a[0], str):
         return a[0]
     if len(a) == 1 and isinstance(a[0], Cell) and len(a[0].items) == 1 and isinstance(a[0].items[0], str):
@@ -3995,14 +4003,19 @@ def _plot(I, argnodes, sc, nout):
 
 FILE_FUNCS = ("save fopen fread fwrite fgetl fgets fscanf textscan importdata xlsread xlswrite csvread csvwrite "
               "dlmread dlmwrite readtable writetable readmatrix writematrix delete copyfile movefile mkdir rmdir "
-              "cd pwd dir ls system unix dos isfile isfolder isdir fileparts fullfile exist_file "
+              "cd dir ls system unix dos exist_file "
               "datatomfile matfile which websave urlread unzip zip tempdir tempname getenv setenv "
               "open winopen edit type input keyboard dbstack mfilename genpath path userpath").split()
 
 
-@lazy(*FILE_FUNCS)
-def _file(I, argnodes, sc, nout):
-    raise Unsupported("file-system, shell or interactive functions are not available", "file")
+def _file_refusal(fname):
+    def _file(I, argnodes, sc, nout):
+        raise Unsupported(f"{fname}: file-system, shell or interactive functions are not available", "file")
+    return _file
+
+
+for _fname in FILE_FUNCS:
+    LAZY[_fname] = _file_refusal(_fname)
 
 
 @bi("corr")
@@ -4157,6 +4170,19 @@ def _exist(I, a, nout):
         return _F(1)
     if kind == "var" and not I.open_world:
         return _F(0)
+    if kind not in (None, "file", "dir", "var"):
+        raise Unsupported(f"exist(name, '{kind}') depends on the MATLAB installation", "environment")
+    known_fn = name in BUILTINS or name in LAZY or name in I.dir_files()
+    if kind in (None, "file", "dir") and I.dir is not None and not name.endswith(".m"):
+        has_ext = "/" in name or "." in name
+        if has_ext or not known_fn:
+            path = _folder_file(I, name, "exist")            # a file or folder name: looked up in the model's folder only
+            if path is not None and path.is_dir():
+                return _F(7)
+            if path is not None and path.is_file() and kind != "dir":
+                return _F(2)
+            if path is not None or kind == "dir" or has_ext:
+                return _F(0)
     if kind in (None, "file") and name in I.dir_files() and name not in BUILTINS and name not in LAZY:
         return _F(2)
     raise Unsupported("exist() for files or functions depends on the MATLAB path", "environment")
@@ -7673,3 +7699,453 @@ def helper_functions(mod_dir, names_used, taken=()):
             if re.search(r"^\s*function\b", re.sub(r"(?m)^\s*%.*$", "", head).lstrip()[:200]):
                 out[n] = MatlabFunction(p)
     return out
+
+
+# ---------------------------------------------------------------------- regexp (Octave 8.4 / PCRE semantics)
+_RX_OPTS = {"once", "matchcase", "ignorecase", "stringanchors", "lineanchors", "literalspacing", "freespacing",
+            "noemptymatch", "emptymatch", "dotall", "dotexceptnewline", "start", "end", "tokenextents", "match",
+            "tokens", "names", "split"}
+_RX_OUT = ("start", "end", "tokenextents", "match", "tokens", "names", "split")
+_RX_ESC_OK = set("dDwWsSbBAntrfa")
+
+
+def _rx_translate(pat):
+    """PCRE pattern (Octave) -> Python ``re`` pattern with the same meaning; anything whose meaning could differ is refused."""
+    if not pat.isascii():
+        raise Unsupported("regexp with non-ASCII characters", "function")
+    out, i, n, in_cls = [], 0, len(pat), False
+    while i < n:
+        c = pat[i]
+        if c == "\\":
+            if i + 1 >= n:
+                raise Unsupported("regexp: pattern ends with a backslash", "function")
+            d = pat[i + 1]
+            if d in _RX_ESC_OK:
+                out.append("\\" + d)
+                i += 2
+            elif d == "x":
+                m = re.match(r"[0-9A-Fa-f]{2}", pat[i + 2:])
+                if not m:
+                    raise Unsupported("regexp: \\x escape that is not followed by two hexadecimal digits", "function")
+                out.append(pat[i:i + 4])
+                i += 4
+            elif d in "123456789" and not in_cls:
+                if i + 2 < n and pat[i + 2].isdigit():
+                    raise Unsupported("regexp: back-reference with several digits", "function")
+                out.append("\\" + d)
+                i += 2
+            elif d in "<>":
+                raise Unsupported("regexp: \\< and \\> word boundaries", "function")
+            elif not d.isalnum():
+                out.append("\\" + d)
+                i += 2
+            else:
+                raise Unsupported(f"regexp: the escape \\{d} (PCRE and Python differ or it is not supported)", "function")
+            continue
+        if in_cls:
+            if c == "[" and pat[i + 1:i + 2] in (":", ".", "="):
+                raise Unsupported("regexp: POSIX character classes", "function")
+            if c == "]":
+                in_cls = False
+            out.append("\\[" if c == "[" else c)
+            i += 1
+            continue
+        if c == "[":
+            in_cls = True
+            out.append("[")
+            i += 1
+            if pat[i:i + 1] == "^":
+                out.append("^")
+                i += 1
+            if pat[i:i + 1] == "]":                       # a leading ] is a literal in PCRE and in re
+                out.append("\\]")
+                i += 1
+            continue
+        if c == "(" and pat[i + 1:i + 2] == "?":
+            rest = pat[i + 2:]
+            if rest.startswith("<") and not rest.startswith(("<=", "<!")):
+                m = re.match(r"<([A-Za-z_]\w*)>", rest)
+                if not m:
+                    raise Unsupported("regexp: malformed named group", "function")
+                out.append(f"(?P<{m.group(1)}>")
+                i += 2 + m.end()
+            elif rest.startswith(("<=", "<!", ":", "=", "!", ">", "#")):
+                out.append("(?")
+                i += 2
+            elif rest.startswith("P<"):
+                out.append("(?")
+                i += 2
+            else:
+                m = re.match(r"([imsx]*)(?:-([imsx]+))?(:|\))", rest)
+                if not m or not (m.group(1) or m.group(2)):
+                    raise Unsupported("regexp: this (?...) construct is not supported", "function")
+                if m.group(3) == ")" and i != 0:
+                    raise Unsupported("regexp: an inline option group inside the pattern (PCRE and Python scope it differently)", "function")
+                out.append("(?")
+                i += 2
+            continue
+        if c == "{" and pat[i + 1:i + 2] == ",":
+            raise Unsupported("regexp: {,n} (a literal in PCRE, a quantifier in Python)", "function")
+        out.append(c)
+        i += 1
+    if in_cls:
+        raise Unsupported("regexp: unterminated character class", "function")
+    return "".join(out)
+
+
+def _rx_one(s, pat, o):
+    """All outputs of one string / one pattern: a dict keyed by _RX_OUT, with the 'once' variants where asked."""
+    if not isinstance(s, str) or not isinstance(pat, str):
+        raise Unsupported("regexp: arguments that are not strings or cell arrays of strings (Octave converts numbers with a warning)", "function")
+    if not s.isascii():
+        raise Unsupported("regexp on non-ASCII text", "function")
+    flags = re.ASCII
+    if o["dotall"]:
+        flags |= re.S
+    if o["ignorecase"]:
+        flags |= re.I
+    if o["lineanchors"]:
+        flags |= re.M
+    if o["freespacing"]:
+        flags |= re.X
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            rx = re.compile(_rx_translate(pat), flags)
+        except re.error as e:
+            raise Unsupported(f"regexp: the pattern is not supported ({e})", "function") from None
+    names = {v: k for k, v in rx.groupindex.items()}
+    once = o["once"]
+    ng = rx.groups
+    matches, idx = [], 0
+    while idx <= len(s):
+        m = rx.search(s, idx)
+        if m is None:
+            break
+        if m.end() <= m.start():
+            if o["emptymatch"]:
+                matches.append(m)
+            idx = m.end() + 1
+            if idx > len(s):
+                break
+            continue
+        matches.append(m)
+        idx = m.end()
+        if once or idx >= len(s):
+            break
+    if once:
+        matches = matches[:1]
+
+    def tokens_of(m):
+        toks, ext, named = [], [], {}
+        for g in range(1, ng + 1):
+            a, b = m.span(g)
+            if a >= 0 and b > 0 and (g == 1 or (a, b) != m.span(g - 1)):
+                toks.append(s[a:b])
+                ext.append([a + 1.0, float(b)])
+                if g in names:
+                    named[names[g]] = s[a:b]
+        if ng == 0:
+            toks, ext = [m.group(0)], []            # no groups: the whole match is the token, there are no token extents
+        return toks, ext, named
+
+    if names and "names" in o["want"] and not (len(matches) == 1):
+        raise Unsupported("regexp: 'names' with named tokens and zero or several matches (struct arrays)", "function")
+    if once and o["emptymatch"]:
+        raise Unsupported("regexp: 'once' together with 'emptymatch'", "function")
+    if once and ng == 0 and "tokens" in o["want"]:
+        raise Unsupported("regexp: 'once' tokens of a pattern without groups (Octave's result is not the usual one)", "function")
+    res = {}
+    if once:
+        m = matches[0] if matches else None
+        res["start"] = _F(m.start() + 1.0) if m else np.zeros((0, 0))
+        res["end"] = _F(m.end()) if m else np.zeros((0, 0))
+        res["match"] = m.group(0) if m else ""
+        if m:
+            toks, ext, named = tokens_of(m)
+            if not toks and "tokenextents" in o["want"]:
+                raise Unsupported("regexp: 'once' token extents without tokens", "function")
+            res["tokens"] = Cell(toks, (1, len(toks)))
+            res["tokenextents"] = ret(np.array(ext, float).reshape(-1, 2))
+            res["names"] = Struct({k: named.get(k, "") for k in rx.groupindex})
+            res["split"] = Cell([s[:m.start()], s[m.end():]], (1, 2))
+        else:
+            res["tokens"] = Cell([], (0, 0))
+            res["tokenextents"] = np.zeros((0, 0))
+            res["names"] = Struct({k: "" for k in rx.groupindex}) if not rx.groupindex else None
+            res["split"] = s
+        return res
+    res["start"] = np.array([[m.start() + 1.0 for m in matches]]).reshape(1, -1)
+    res["end"] = np.array([[float(m.end()) for m in matches]]).reshape(1, -1)
+    res["match"] = Cell([m.group(0) for m in matches], (1, len(matches)))
+    tk, te = [], []
+    for m in matches:
+        toks, ext, _ = tokens_of(m)
+        tk.append(Cell(toks, (1, len(toks))))
+        te.append(ret(np.array(ext, float).reshape(-1, 2)))
+    res["tokens"] = Cell(tk, (1, len(tk)))
+    res["tokenextents"] = Cell(te, (1, len(te)))
+    if matches:
+        _, _, named = tokens_of(matches[0])
+        res["names"] = Struct({k: named.get(k, "") for k in rx.groupindex})
+    else:
+        res["names"] = Struct()
+    pieces, last = [], 0
+    for m in matches:
+        pieces.append(s[last:m.start()])
+        last = m.end()
+    pieces.append(s[last:])
+    res["split"] = Cell(pieces, (1, len(pieces)))
+    return res
+
+
+@bi("regexp")
+def _regexp(I, a, nout):
+    if len(a) < 2:
+        raise MatlabError("Invalid call to regexp")
+    s, pat, opts = a[0], a[1], a[2:]
+    o = {"once": False, "dotall": True, "ignorecase": False, "lineanchors": False, "freespacing": False, "emptymatch": False,
+         "want": set()}
+    order = []
+    for op in opts:
+        if not isinstance(op, str):
+            raise Unsupported("regexp with a non-char option", "function")
+        k = op.lower()
+        if k not in _RX_OPTS:
+            raise Unsupported(f"regexp: unknown option '{op}'", "function")
+        if k == "once":
+            o["once"] = True
+        elif k == "matchcase":
+            o["ignorecase"] = False
+        elif k == "ignorecase":
+            o["ignorecase"] = True
+        elif k == "stringanchors":
+            o["lineanchors"] = False
+        elif k == "lineanchors":
+            o["lineanchors"] = True
+        elif k == "literalspacing":
+            o["freespacing"] = False
+        elif k == "freespacing":
+            o["freespacing"] = True
+        elif k == "noemptymatch":
+            o["emptymatch"] = False
+        elif k == "emptymatch":
+            o["emptymatch"] = True
+        elif k == "dotall":
+            o["dotall"] = True
+        elif k == "dotexceptnewline":
+            o["dotall"] = False
+        else:
+            if k not in order:
+                order.append(k)
+    outs = order + [k for k in _RX_OUT if k not in order]
+    o["want"] = set(order) if order else set(_RX_OUT)
+    want = outs[:max(nout, 1)]
+    o["want"] = set(want)
+    if isinstance(s, Cell) and isinstance(pat, Cell):
+        raise Unsupported("regexp with both a cell array of strings and a cell array of patterns", "function")
+    if isinstance(s, Cell) or isinstance(pat, Cell):
+        cell = s if isinstance(s, Cell) else pat
+        results = [_rx_one(x if isinstance(s, Cell) else s, pat if isinstance(s, Cell) else x, o) for x in cell.items]
+        out = [Cell([r[k] for r in results], cell.shape) for k in want]
+    else:
+        r = _rx_one(s, pat, o)
+        out = [r[k] for k in want]
+    if any(v is None for v in out):
+        raise Unsupported("regexp: result not representable", "function")
+    return out if nout > 1 else out[0]
+
+
+# ---------------------------------------------------------------------- intersect, struct2cell, cell2mat
+def _setop_items(v, name):
+    """(kind, list of items, is_row, is_empty) of an argument of intersect: a double array, a char row or a cellstr."""
+    if isinstance(v, str):
+        if len(v) == 0:
+            return "char", [], False, True
+        return "char", list(v), True, False
+    if isinstance(v, Cell):
+        if not all(isinstance(x, str) for x in v.items):
+            raise Unsupported(f"{name}: a cell array with elements that are not strings", "function")
+        if not v.items:
+            return "cell", [], False, True
+        if len(v.shape) != 2:
+            raise Unsupported(f"{name}: N-d cell arrays", "function")
+        return "cell", list(v.items), v.shape[0] == 1, False        # items are stored column-major
+    if isinstance(v, (Struct, Handle)) or hasattr(v, "get_field"):
+        raise Unsupported(f"{name} of a {_class(v)} value", "function")
+    if _class(v) != "double":
+        raise Unsupported(f"{name} of a {_class(v)} value (Octave keeps the class; only doubles, strings and cellstr are implemented)", "function")
+    x = arrn(v)
+    if x.ndim > 2:
+        raise Unsupported(f"{name} of an N-d array", "function")
+    if x.size == 0:
+        return "num", [], False, True
+    return "num", [float(t) for t in x.ravel(order="F")], x.shape[0] == 1, False
+
+
+@bi("intersect")
+def _intersect(I, a, nout):
+    """Octave 8.4 intersect(a, b[, 'sorted'|'stable']): numbers, a char row or cellstr; index outputs are first occurrences, as columns."""
+    if len(a) < 2:
+        raise MatlabError("Invalid call to intersect")
+    stable = False
+    for o in a[2:]:
+        if not isinstance(o, str):
+            raise Unsupported("intersect with a non-char option", "function")
+        if o == "stable":
+            stable = True
+        elif o == "sorted":
+            stable = False
+        else:
+            raise Unsupported(f"intersect option '{o}'", "function")
+    ka, xa, ra, ea = _setop_items(a[0], "intersect")
+    kb, xb, rb, eb = _setop_items(a[1], "intersect")
+    if ka != kb:
+        if {ka, kb} == {"char", "cell"} and not (ea or eb):
+            if ka == "char":
+                xa, ra, ka = [a[0]], True, "cell"
+            else:
+                xb, rb, kb = [a[1]], True, "cell"
+        else:
+            raise Unsupported("intersect of values of different kinds (or an empty one of another kind)", "function")
+    kind = ka
+    if ea or eb:
+        if kind == "char":
+            raise Unsupported("intersect with an empty char", "function")
+        c = Cell([], (0, 0)) if kind == "cell" else np.zeros((0, 0))
+        e = np.zeros((0, 0))
+        return [c, e, e][:nout] if nout > 1 else c
+    first_a, first_b = {}, {}
+    for i, v in enumerate(xa):
+        if v == v:
+            first_a.setdefault(v, i)
+    for i, v in enumerate(xb):
+        if v == v:
+            first_b.setdefault(v, i)
+    common = [v for v in first_a if v in first_b]
+    common = sorted(common, key=lambda v: first_a[v]) if stable else sorted(common)
+    isrow = ra and rb
+    ia = [first_a[v] + 1.0 for v in common]
+    ib = [first_b[v] + 1.0 for v in common]
+    if kind == "char":
+        c = "".join(common)
+        if not isrow and len(common) != 1:
+            raise Unsupported("intersect of char arrays that are not rows", "function")
+    elif kind == "cell":
+        c = Cell(common, (1, len(common)) if isrow else (len(common), 1))
+    else:
+        v = np.array(common, float)
+        c = ret(v.reshape(1, -1) if isrow else v.reshape(-1, 1))
+    outs = [c, ret(np.array(ia, float).reshape(-1, 1)), ret(np.array(ib, float).reshape(-1, 1))]
+    return outs[:nout] if nout > 1 else outs[0]
+
+
+@bi("struct2cell")
+def _struct2cell(I, a, nout):
+    _nargs(a, 1, 1, "struct2cell")
+    s = a[0]
+    if hasattr(s, "field_names") and hasattr(s, "get_field"):
+        names = s.field_names()
+        vals = [s.get_field(n) for n in names]
+    elif isinstance(s, Struct):
+        names, vals = list(s), list(s.values())
+    else:
+        raise MatlabError("struct2cell: argument must be of type structure")
+    return Cell(vals, (len(vals), 1))
+
+
+@bi("cell2mat")
+def _cell2mat(I, a, nout):
+    _nargs(a, 1, 1, "cell2mat")
+    c = a[0]
+    if not isinstance(c, Cell):
+        raise MatlabError("cell2mat: C must be a cell array")
+    if not c.items:
+        return np.zeros((0, 0))
+    if len(c.shape) != 2:
+        raise Unsupported("cell2mat of an N-d cell array", "function")
+    if all(isinstance(x, str) for x in c.items):
+        if c.shape[0] != 1:
+            raise Unsupported("cell2mat of strings in several rows (char matrix)", "function")
+        return "".join(c.items)
+    cls = {_class(x) for x in c.items}
+    if not cls <= {"double", "logical"}:
+        raise MatlabError("cell2mat: wrong type elements or mixed cells")
+    nr, nc = c.shape
+    rows = []
+    for i in range(nr):
+        rows.append(hcat([c.items[i + j * nr] for j in range(nc)]))
+    return vcat(rows) if nr > 1 else rows[0]
+
+
+# ---------------------------------------------------------------------- read-only file queries and path strings
+def _folder_file(I, name, what):
+    """Path of ``name`` inside the model's folder (relative names, no '..' or symlink escapes), or None if it does not exist.
+    Anything outside the model's folder is refused: these functions only look at the folder the .mod file lives in."""
+    if I.dir is None:
+        raise Unsupported(f"{what}: no model folder to look in", "file")
+    if name == "":
+        return None
+    if not name.isascii() or "\0" in name:
+        raise Unsupported(f"{what}: unusual characters in the file name", "file")
+    if name.startswith(("/", "~")) or name[1:2] == ":" or any(c in name for c in "*?[]\\") or ".." in name.split("/"):
+        raise Unsupported(f"{what}: {name!r} is not a plain relative path inside the model's folder", "file")
+    base = Path(I.dir)
+    path = base / name
+    real, rbase = os.path.realpath(path), os.path.realpath(base)
+    if real != rbase and not real.startswith(rbase + os.sep):
+        raise Unsupported(f"{what}: {name!r} leaves the model's folder", "file")
+    return path if os.path.exists(path) else None
+
+
+def _file_query(what, test):
+    def f(I, a, nout):
+        _nargs(a, 1, 1, what)
+        x = a[0]
+        if isinstance(x, str):
+            p = _folder_file(I, x, what)
+            return np.bool_(p is not None and test(p))
+        if isinstance(x, Cell) and all(isinstance(t, str) for t in x.items):
+            vals = []
+            for t in x.items:
+                p = _folder_file(I, t, what)
+                vals.append(p is not None and test(p))
+            if not vals:
+                return np.zeros(x.shape, bool)
+            return ret(np.array(vals, bool).reshape(x.shape, order="F"))
+        raise MatlabError(f"{what}: F must be a string or cell array of strings")
+    return f
+
+
+BUILTINS["isfile"] = _file_query("isfile", lambda p: p.is_file())
+BUILTINS["isfolder"] = BUILTINS["isdir"] = _file_query("isfolder", lambda p: p.is_dir())
+
+
+@bi("fullfile")
+def _fullfile(I, a, nout):
+    """Octave's fullfile for char arguments: joined by '/', repeated separators collapsed, empty parts skipped."""
+    if not a or not all(isinstance(x, str) for x in a):
+        raise Unsupported("fullfile of non-char arguments", "function")
+    parts = [x for x in a if x != ""]
+    return re.sub(r"/{2,}", "/", "/".join(parts)) if parts else ""
+
+
+@bi("fileparts")
+def _fileparts(I, a, nout):
+    _nargs(a, 1, 1, "fileparts")
+    if not isinstance(a[0], str):
+        raise MatlabError("fileparts: FILENAME must be a single string")
+    f = a[0]
+    k = f.rfind("/")
+    d, rest = (f[:k] if k > 0 else ("/" if k == 0 else ""), f[k + 1:])
+    dot = rest.rfind(".")
+    nm, ext = (rest[:dot], rest[dot:]) if dot >= 0 else (rest, "")
+    return [d, nm, ext][:max(nout, 1)] if nout > 1 else d
+
+
+@bi("pwd")
+def _pwd(I, a, nout):
+    """The folder Dynare runs the .mod file in: the model's folder."""
+    if a or I.dir is None:
+        raise Unsupported("pwd without a model folder", "file")
+    return os.path.realpath(I.dir)

@@ -300,3 +300,12 @@ Everything below is read from Dynare's *reference* run, never from the port, so 
 8. **Comparator robustness**: any exception inside the comparator is a field-level `compare-error` and, if nothing else is wrong, the verdict `compare-error` (listed in its own section with the message); `port-error` is only
    for a port that failed, wrote nothing, or wrote an unreadable .mat.  `skewness`/`kurtosis` are no longer ignored (they are compared when deterministic, skipped when simulated).
 
+9. **Runner rule: a test never starts with its own Dynare outputs** (`tools/accept_pydyn.py`; JDyn's runner should do the same).  Until the
+   refuse-reduction pass the runner copied the files Octave wrote when running a file (`save`d `.mat` files, `<fname>/Output/...`) into the scratch
+   folder before running that same file.  The sandbox then refused to overwrite or delete them ("exists and was not written by pydyn.dynare()"), which
+   made 46 files refuse for a reason that has nothing to do with the port.  Rule now: nothing is copied for the file about to run.  Files of an entry
+   run in order in one scratch folder, so later files see what the port wrote for the earlier ones.  Only if an earlier file of the entry did *not*
+   complete (status not ok) are the Octave-written artifacts of that earlier file copied in, and only paths not already present, so a later file still has
+   the inputs the Dynare run would have had.  `--ref-artifacts` restores the old behaviour for diagnosis.  The timing repeat (second call of the same file in the same worker) can no longer turn a
+   result into a refusal: a file that consumes its own input (`load` then `delete`) fails on the repeat, and the json then keeps the first result and
+   records `second_run_error`.  This changes only what the port runs on, not how anything is compared.

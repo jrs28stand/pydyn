@@ -21,7 +21,8 @@ SETS = {"matlab_extra": ("matlab_extra_cases.txt", "matlab_extra.mat"),
         "pydyn_extra": ("pydyn_extra_cases.txt", "pydyn_extra.mat"),
         "pydyn_nd": ("pydyn_nd_cases.txt", "pydyn_nd.mat"),
         "pydyn_rng": ("pydyn_rng_cases.txt", "pydyn_rng.mat"),
-        "pydyn_blk1": ("pydyn_blk1_cases.txt", "pydyn_blk1.mat")}
+        "pydyn_blk1": ("pydyn_blk1_cases.txt", "pydyn_blk1.mat"),
+        "pydyn_fn": ("pydyn_fn_cases.txt", "pydyn_fn.mat")}
 
 
 def _load(name):
@@ -168,3 +169,53 @@ def test_error_identifier():
     assert out["m"] == "value 3" and out["i"] == "pkg:sub:id"
     out = M.run("try, try, error('a:b', 'x'); catch e, rethrow(e); end; catch e2, i = e2.identifier; end")
     assert out["i"] == "a:b"
+
+
+
+# ---- file-system queries: the cases of pydyn_files_cases.txt run in a folder with f.txt and sub/g.mat (see r_pydyn_files.m)
+def _mk(tmp_path, k):
+    d = tmp_path / f"d{k}"
+    d.mkdir()
+    return d
+
+
+def _files_dir(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "f.txt").write_text("x\n")
+    (tmp_path / "sub" / "g.mat").write_text("y\n")
+    return tmp_path
+
+
+FILES_CASES = (DIR / "pydyn_files_cases.txt").read_text().split("\n%%\n")
+FILES_REF = loadmat(DIR / "pydyn_files.mat")["results"].ravel()
+
+
+@pytest.mark.parametrize("k", range(len(FILES_CASES)))
+def test_files_against_octave(k, tmp_path):
+    """isfile/isfolder/isdir/exist/fullfile/fileparts read the model's own folder only; a path that leaves it is refused."""
+    code, want = FILES_CASES[k], _unwrap(FILES_REF[k])
+    wt = _text(want)
+    octave_error = wt is not None and wt.startswith("ERROR")
+    try:
+        got = M.run(code, directory=_files_dir(tmp_path))["r"]
+    except M.Unsupported:
+        return
+    except M.MatlabError as exc:
+        assert octave_error, f"pydyn raised a MATLAB error ({exc}); Octave gives {want!r}\n{code}"
+        return
+    assert not octave_error, f"Octave fails ({wt}); pydyn returned {got!r}\n{code}"
+    ok, why = _same(got, want)
+    assert ok, f"{why}\n{code}"
+
+
+def test_files_refusals_are_the_documented_ones(tmp_path):
+    """Only paths that leave the folder (../, absolute) are refused, and exist() without a file name or a 'dir'."""
+    refused = []
+    for k, code in enumerate(FILES_CASES):
+        try:
+            M.run(code, directory=_files_dir(_mk(tmp_path, k)))
+        except M.Unsupported:
+            refused.append(k + 1)
+        except M.MatlabError:
+            pass
+    assert refused == [27, 28, 29, 30], refused
