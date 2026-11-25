@@ -1261,10 +1261,18 @@ class RegimeOBC:
         tie = self._tie
         if tie is None:
             return None
-        T, N, nb = self.T, self.N, len(self.cols)
         x = np.r_[np.asarray(init, float), np.asarray(shock, float)]
         a = self.a0 + self.Am @ x
         base = tie["q0raw"] + tie["Qraw"] @ x               # alt_p on the no-wedge path, N periods
+        M, q, G = self.lcp_from(a, base, tol)
+        return M, q, G, dict(a=a, x=x)
+
+    def lcp_from(self, a, base, tol=1e-8):
+        """(M, q, G) of the equivalent complementarity problem from the state-dependent inputs: ``a`` the alternative residuals of all
+        blocks on the no-wedge path (nb*T) and ``base`` that of the primary equation over N periods.  ``lcp`` computes both from
+        (init, shock); the higher-order solver from the order-2 expected path.  Needs the tie structure."""
+        tie = self._tie
+        T, N, nb = self.T, self.N, len(self.cols)
         s_g, s_y = tie["s_g"], tie["s_y"]
         M = s_g * s_y * tie["Mraw"]
         q = s_g * base
@@ -1275,7 +1283,7 @@ class RegimeOBC:
             G += s_g * tie["Mblocks"][blk] * f[o][None, :]
         if np.abs(G).max() <= tol * max(np.abs(q).max(), 1e-300):
             G = None
-        return M, q, G, dict(a=a, x=x)
+        return M, q, G
 
     def diagnostics(self, max_exact=16):
         """Existence/uniqueness diagnostics on the M of the equivalent LCP (see ``m_diagnostics``). They are
@@ -1327,6 +1335,13 @@ class RegimeOBC:
         if self._tie is None or not self._tie.get("mirror"):
             return None
         M, q, G, info = self.lcp(init, shock)
+        z, w = self._solve_lcp_core(M, q, G, info["a"])
+        Y = np.tensordot(self.Yb, info["x"], axes=(2, 0))
+        return z, w, Y + self.Yw @ w
+
+    def _solve_lcp_core(self, M, q, G, a):
+        """The tied-wedge problem for given (M, q, G) and block residuals ``a``: (z, w), or an OBCError (with a proof when the
+        linear relaxation is infeasible)."""
         T, N = self.T, self.N
         proof = ("no solution exists that returns to the reference regime within the news horizon: the constraint "
                  "cannot be kept satisfied in every period by any non-negative wedges (linear programme infeasible)")
@@ -1371,9 +1386,8 @@ class RegimeOBC:
             zsol = res.x[T:] > 0.5
         z = np.zeros((N, 1), bool)
         z[:T, 0] = zsol
-        w = self._wedges(z, info["a"])
-        Y = np.tensordot(self.Yb, info["x"], axes=(2, 0))
-        return z, w, Y + self.Yw @ w
+        w = self._wedges(z, a)
+        return z, w
 
     # -------------------------------------------------------------------------------------------- pieces
     def _index(self, z):
@@ -1469,11 +1483,25 @@ class RegimeOBC:
         """Regime indicators, wedges, next state and info for one shock period (no full path).  ``z0``: a
         starting guess (N, n_c) tried before the reference regime everywhere.  ``selection``: as in
         ``NewsOBC.simulate``; the single-spell solutions are those of ``spells``."""
-        T, N, k = self.T, self.N, len(self._cv)
+        N, k = self.N, len(self._cv)
         init, shock = np.asarray(init, float), np.asarray(shock, float)
         xs = np.concatenate([init[self._st], shock])
         Ycv = (self._Bx @ xs).reshape(N, k)
         a = self.a0 + self._Ax @ xs
+        z, w, info, nxt = self._search(Ycv, a, maxit, method, z0, selection,
+                                       lambda: self._solve_lcp(init, shock), lambda: self.base_path(init, shock))
+        if nxt is None:
+            nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
+            if w.any():
+                nxt = nxt + self._V0 @ w
+        return z, w, nxt, info
+
+    def _search(self, Ycv, a, maxit, method, z0, selection, lcp_fn, base_fn):
+        """The regime search for given state-dependent inputs: ``Ycv`` (N, k) the path of the variables the conditions read and ``a``
+        (nb*T) the alternative residuals, both on the no-wedge path.  ``lcp_fn()`` returns the tied-wedge solution as (z, w, path-to-test)
+        or None; ``base_fn()`` the no-wedge path (N+1, n) for the integer programme.  Returns (z, w, info, nxt) with nxt the next state
+        when the tied-wedge solution supplies it (else None)."""
+        T, N, k = self.T, self.N, len(self._cv)
         z = np.zeros((N, self.n_c), bool)
         info = dict(used="none", iterations=0)
         ok = beyond = False
@@ -1492,17 +1520,17 @@ class RegimeOBC:
         if not ok and method == "guess_verify":
             raise OBCError("the guess-and-verify iteration cycles", "not_converged")
         if not ok and method != "milp":
-            got = self._solve_lcp(init, shock)               # raises with a proof when no solution exists
+            got = lcp_fn()               # raises with a proof when no solution exists
             if got is not None:
                 z, w, path = got
                 vb, vr = self._violations(z, path)
                 if not vb.any() and not vr.any():
                     info["used"] = "lcp"
                     if selection == "occbin" or not w.any():
-                        return z, w, path[0], info
+                        return z, w, info, (path[0] if path.shape[1] == self.ob.n else None)
                     ok = True                                  # the chosen solution is looked for below
         if not ok:
-            Y = self.base_path(init, shock)
+            Y = base_fn()
             try:
                 z = self._milp(Y, a)
             except OBCError as err:
@@ -1530,10 +1558,7 @@ class RegimeOBC:
                 info["spell"] = (l, ks)
             else:
                 info["selection_fallback"] = True
-        nxt = self._Ps @ init[self._st] + self.ob.Q @ shock
-        if w.any():
-            nxt = nxt + self._V0 @ w
-        return z, w, nxt, info
+        return z, w, info, None
 
     def _milp(self, Y, a):
         """Regime indicators from a mixed-integer programme on the linearised conditions: minimise the number

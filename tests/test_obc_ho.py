@@ -15,7 +15,15 @@ import pytest
 
 import pydyn
 from pydyn.obc import NewsOBC, OBCError, solve_active_set
-from pydyn.obc_ho import HigherOrderNews
+from pydyn.obc_ho import HigherOrderNews as _HigherOrderNews
+
+
+def HigherOrderNews(*a, **k):
+    """These tests are about the LCP implementation (NKM is approx class, for which 'auto' is now the regime formulation)."""
+    k.setdefault("obc_formulation", "lcp")
+    return _HigherOrderNews(*a, **k)
+
+
 from pydyn.simulate import simulate
 
 REF = Path(os.environ.get("PYDYN_REF", str(Path(__file__).resolve().parent.parent / "reference")))

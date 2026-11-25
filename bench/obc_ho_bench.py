@@ -56,9 +56,13 @@ MODELS = {
 def impl_class(name):
     if name == "before":
         import obc_ho_before as m
-    else:
-        import pydyn.obc_ho as m
-    return m.HigherOrderNews
+        return m.HigherOrderNews
+    import pydyn.obc_ho as m
+
+    def lcp(*a, **k):                      # the benchmark is of the LCP implementation (nkm is approx class: 'auto' would be the regime formulation)
+        k.setdefault("obc_formulation", "lcp")
+        return m.HigherOrderNews(*a, **k)
+    return lcp
 
 
 def load(name):

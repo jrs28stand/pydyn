@@ -9,7 +9,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO)); sys.path.insert(0, str(HERE))
 import pydyn
-from pydyn.obc_ho import HigherOrderNews
+from pydyn.obc_ho import HigherOrderNews as _HigherOrderNews
+
+
+def HigherOrderNews(*a, **k):
+    """These tests are about the LCP implementation (NKM is approx class, for which 'auto' is now the regime formulation)."""
+    k.setdefault("obc_formulation", "lcp")
+    return _HigherOrderNews(*a, **k)
+
+
 
 TESTS = Path(os.environ.get("PYDYN_EXAMPLES", "/home/claude/ref/dynare-7.2/examples")).parent / "tests"
 MODS = {

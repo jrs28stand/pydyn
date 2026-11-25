@@ -73,9 +73,34 @@ class CubatureFailure(OBCError):
 
 
 class HigherOrderNews:
+    def __new__(cls, model=None, *args, obc_formulation="auto", params=None, **kw):
+        """``obc_formulation`` as in ``Occbin.simulate``: ``'auto'`` (default: the LCP when every constraint is one exactly complementary pair,
+        else the regime formulation, ``pydyn.obc_regime_ho.HigherOrderRegime``), ``'lcp'`` (refused unless every constraint is one
+        complementary pair) or ``'regime'``.  ``HigherOrderNews(...)`` returns a ``HigherOrderRegime`` when the regime formulation applies."""
+        if cls is not HigherOrderNews or model is None:
+            return object.__new__(cls)
+        if params is None and len(args) >= 4:
+            params = args[3]                    # the positional slot of __init__
+        if obc_formulation not in ("auto", "lcp", "regime"):
+            raise ValueError(f"unknown obc_formulation {obc_formulation!r} for higher order: use 'auto', 'lcp' or 'regime'")
+        if obc_formulation == "regime":
+            use_regime = True
+        else:
+            from .obc import constraint_objects
+            cos = constraint_objects(Occbin(model, params))
+            lcp = all(c.cls == "complementarity" for c in cos)
+            if obc_formulation == "lcp" and not lcp:
+                raise ValueError("obc_formulation='lcp' needs every constraint to be one complementary pair; use 'auto' or 'regime'")
+            use_regime = obc_formulation == "auto" and not (lcp and all(c.approx == 0.0 for c in cos))
+        if use_regime:
+            from .obc_regime_ho import HigherOrderRegime
+            return object.__new__(HigherOrderRegime)
+        return object.__new__(cls)
+
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
-                 max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic="s"):
+                 max_cubature_dimension=128, cubature_milp_time_limit=1.0, cubature_failure_tolerance=0.0, m_diagnostic="s",
+                 obc_formulation="auto"):
         """Defaults when ``cubature`` is on: the full quasi-Monte Carlo average (``regions="all"``) over 2^(qmc_level+1) - 1 = 4,095
         points (``qmc_level=11``); ``regions=1`` (DynareOBC's default; its single mean point does not price tail risk) and
         ``regions=k`` remain options. See docs/OBC_HO_PERF.md, "Cubature defaults and failure handling", for the failure semantics:
