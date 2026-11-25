@@ -1,0 +1,265 @@
+c = regexp('ab12cd345', '([a-z]+)(\d+)', 'tokens'); r = [numel(c), numel(c{1}), double(c{1}{1}), double(c{2}{2})];
+%%
+c = regexp('ab12cd345', '\d+', 'match'); r = double(strjoin(c, '|'));
+%%
+c = regexp('ab12cd345', '\d+', 'match', 'once'); r = double(c);
+%%
+r = regexp('ab12cd345', '\d+');
+%%
+[s, e] = regexp('ab12cd345', '\d+'); r = [s; e];
+%%
+r = regexp('ab12cd345', '\d+', 'end');
+%%
+r = regexp('abc', 'x');
+%%
+r = size(regexp('abc', 'x'));
+%%
+r = size(regexp('abc', 'x', 'match'));
+%%
+r = size(regexp('abc', 'x', 'tokens'));
+%%
+r = size(regexp('abc', 'x', 'start', 'once'));
+%%
+r = size(regexp('abc', 'x', 'match', 'once'));
+%%
+r = regexp('abc', 'b', 'once');
+%%
+c = regexp('a,b,,c', ',', 'split'); r = [numel(c), double(strjoin(c, '|'))];
+%%
+c = regexp('abc', 'x', 'split'); r = [numel(c), double(c{1})];
+%%
+c = regexp('abc', 'b', 'split', 'once'); r = [numel(c), double(c{1}), double(c{2})];
+%%
+c = regexp('aXbXc', 'X', 'split', 'once'); r = [numel(c), double(c{2})];
+%%
+c = regexp('abc', 'x', 'split', 'once'); r = double(c);
+%%
+[tok, mat] = regexp('ab12cd345', '([a-z]+)(\d+)', 'tokens', 'match'); r = [double(tok{2}{1}), 0, double(mat{1})];
+%%
+[mat, tok] = regexp('x=12, y=345', '(\w)=(\d+)', 'match', 'tokens'); r = [double(mat{2}), 0, double(tok{2}{2})];
+%%
+[a, b] = regexp('abc', '(b)', 'match', 'tokens', 'once'); r = [double(a), 0, double(b{1})];
+%%
+n = regexp('hello world', '(?<first>\w+)\s(?<second>\w+)', 'names'); r = [double(n.first), 0, double(n.second)];
+%%
+n = regexp('b', '(?<q>a)?b', 'names'); r = size(n.q);
+%%
+n = regexp('abc', 'b', 'names'); r = numel(fieldnames(n));
+%%
+n = regexp('a1', '(?<d>\d)', 'names', 'once'); r = double(n.d);
+%%
+n = regexp('a1 b2', '(?<l>[a-z])(?<d>\d)', 'names'); r = 1;
+%%
+n = regexp('abc', '(?<q>x)', 'names'); r = 1;
+%%
+[tok, nm] = regexp('ab', '(?<q>a)(?<r>x)?b', 'tokens', 'names'); r = [numel(tok{1}), double(nm.q), numel(nm.r)];
+%%
+te = regexp('hello world', '(\w+)\s(\w+)', 'tokenExtents'); r = te{1};
+%%
+te = regexp('xab', 'ab', 'tokenExtents'); r = te{1};
+%%
+te = regexp('abc', '(b)(c)', 'tokenExtents', 'once'); r = te;
+%%
+c = regexp('xab', '((a))b', 'tokens'); r = numel(c{1});
+%%
+c = regexp('xb', '(a*)b', 'tokens'); r = [numel(c{1}), numel(c{1}{1})];
+%%
+c = regexp('ab', '(a)(x*)(b)', 'tokens'); r = numel(c{1});
+%%
+c = regexp('ab', '(a)|(b)', 'tokens'); r = [numel(c), numel(c{1}), numel(c{2}), double(c{2}{1})];
+%%
+c = regexp('b', '(a)?b', 'tokens'); r = [numel(c), numel(c{1})];
+%%
+c = regexp('abab', '(?:a)(b)', 'tokens'); r = [numel(c), double(c{2}{1})];
+%%
+c = regexp('hello', '(l)+', 'tokens'); r = double(c{1}{1});
+%%
+c = regexp('aXb', 'x', 'match', 'ignorecase'); r = double(c{1});
+%%
+c = regexp('Ab', 'a', 'match', 'matchcase'); r = numel(c);
+%%
+c = regexp('ab', 'A', 'match', 'ignorecase', 'matchcase'); r = numel(c);
+%%
+c = regexp(sprintf('a\nb'), 'a.b', 'match'); r = numel(c);
+%%
+c = regexp(sprintf('a\nb'), 'a.b', 'match', 'dotexceptnewline'); r = numel(c);
+%%
+c = regexp(sprintf('a\nb'), '^b', 'match', 'lineanchors'); r = numel(c);
+%%
+c = regexp(sprintf('a\nb'), '^b', 'match'); r = numel(c);
+%%
+c = regexp('aaa', 'a*?', 'match'); r = numel(c);
+%%
+c = regexp('aaa', 'a*?', 'match', 'emptymatch'); r = numel(c);
+%%
+r = regexp('abc', 'x*', 'start', 'emptymatch');
+%%
+r = regexp('abc', 'x*', 'start');
+%%
+r = regexp('abc', '', 'start');
+%%
+r = regexp('ab', 'a(?=b)', 'start');
+%%
+r = regexp('ab', '(?<=a)b', 'start');
+%%
+r = regexp('a b', '\s', 'start');
+%%
+r = regexp('a.b', '\.', 'start');
+%%
+c = regexp('a.b', '\.', 'split'); r = double(strjoin(c, '|'));
+%%
+c = regexp('a_b-c', '[\w]+', 'match'); r = double(strjoin(c, '|'));
+%%
+c = regexp('a]', '[]]', 'match'); r = double(c{1});
+%%
+c = regexp('a-', '[a\-]+', 'match'); r = double(c{1});
+%%
+c = regexp('a1b', '[^\d]', 'match'); r = double(strjoin(c, '|'));
+%%
+c = regexp('ab', 'a{1,2}', 'match'); r = double(c{1});
+%%
+c = regexp('ab', 'a{,2}', 'match'); r = numel(c);
+%%
+c = regexp('a{b', 'a{b', 'match'); r = double(c{1});
+%%
+c = regexp('ab12', '\d+$', 'match'); r = double(c{1});
+%%
+c = regexp('aa', '^a', 'match'); r = numel(c);
+%%
+c = regexp('ab', '(?i)B', 'match'); r = double(c{1});
+%%
+c = regexp('aB', '(?i:b)', 'match'); r = double(c{1});
+%%
+c = regexp('abXab', '(ab)X\1', 'match'); r = numel(c);
+%%
+c = regexp('ab cd', '\w+', 'match'); r = double(strjoin(c, '|'));
+%%
+c = regexp('abc', '[[:alpha:]]+', 'match'); r = double(c{1});
+%%
+c = regexp('abc', '\<abc\>', 'match'); r = numel(c);
+%%
+c = regexp('ab', '(?<n>a)(?<m>b)', 'tokens'); r = [numel(c{1}), double(c{1}{2})];
+%%
+c = regexp({'ares', 'b', 'res2'}, 'res\w*'); r = [numel(c), c{1}, c{3}, numel(c{2})];
+%%
+c = regexp({'ab', 'cb'}, 'b', 'match'); r = [numel(c), double(c{1}{1}), double(c{2}{1})];
+%%
+c = regexp({'ab', 'cb'}, 'b', 'match', 'once'); r = [numel(c), double(c{1}), double(c{2})];
+%%
+c = regexp({'a'; 'b'}, 'a', 'start'); r = [size(c), c{1}, numel(c{2})];
+%%
+c = regexp('abc', {'a', 'b'}, 'start'); r = [numel(c), c{1}, c{2}];
+%%
+c = regexp('abc', {'a', 'b'}, 'match'); r = [numel(c), double(c{1}{1}), double(c{2}{1})];
+%%
+c = regexp({'a', 'b'}, {'a'}, 'start'); r = 1;
+%%
+c = regexp({}, 'a', 'start'); r = size(c);
+%%
+r = regexp('abc', 'b', 'tokens', 'once');
+%%
+r = regexp('abc', 'b', 'tokenExtents', 'once');
+%%
+c = regexp('abc', '(b)', 'tokens', 'once'); r = [numel(c), double(c{1})];
+%%
+c = regexp('abc', '(x)', 'tokens', 'once'); r = size(c);
+%%
+[t, n] = regexp('abc', '(?<n>b)', 'tokens', 'names', 'once'); r = [double(t{1}), double(n.n)];
+%%
+r = regexp(3, 'a');
+%%
+r = regexp('abc', 'b', 'bogus');
+%%
+r = regexp('abc', '(b');
+%%
+r = regexp('abc', 'b', 'start', 'end', 'match'){2};
+%%
+r = regexp('abcb', 'b', 'end');
+%%
+[a, b, c, d, e, f, g] = regexp('hello world', '(?<first>\w+)\s(?<second>\w+)'); r = [a, b, c{1}(1), numel(d), numel(e{1}), numel(f.first), numel(g)];
+%%
+r = intersect([3 1 2 2], [2 3 3 5]);
+%%
+[c, ia, ib] = intersect([3 1 2 2], [2 3 3 5]); r = {c, ia', ib'}; r = [c, 0, ia', 0, ib'];
+%%
+[c, ia, ib] = intersect([3 1 2 2]', [2 3 3 5]); r = [size(c), size(ia), size(ib), c(:)'];
+%%
+[c, ia, ib] = intersect([3 1 2 2], [2 3 3 5]'); r = [size(c), size(ia), size(ib)];
+%%
+r = intersect([1 2; 3 4], [3 4 5]);
+%%
+r = size(intersect([1 2 3], [7 8]));
+%%
+r = size(intersect([1 2 3]', [7 8]));
+%%
+r = size(intersect([], [1 2]));
+%%
+r = size(intersect([1 2], []));
+%%
+c = intersect({'b', 'a', 'c'}, {'c', 'b', 'z'}); r = [size(c), double(strjoin(c, '|'))];
+%%
+[c, ia, ib] = intersect({'b', 'a', 'c'}, {'c', 'b', 'z'}); r = [ia', ib'];
+%%
+c = intersect({'b'; 'a'}, {'b', 'z'}); r = [size(c), double(c{1})];
+%%
+c = intersect({'b'; 'a'; 'q'}, {'a'; 'q'; 'b'}); r = [size(c), double(strjoin(c', '|'))];
+%%
+r = double(intersect('abc', 'bcd'));
+%%
+c = intersect('a', {'a', 'b'}); r = [size(c), double(c{1})];
+%%
+[c, ia, ib] = intersect([3 1 2 2], [2 3 3 5], 'stable'); r = [c, 0, ia', 0, ib'];
+%%
+[c, ia, ib] = intersect({'b', 'a', 'c'}, {'c', 'b', 'z'}, 'stable'); r = [double(strjoin(c, '|')), 0, ia', 0, ib'];
+%%
+r = intersect([1 NaN], [1 NaN]);
+%%
+r = intersect([1 2 3], [2 3 4], 'sorted');
+%%
+[c, ia, ib] = intersect([1 1 2], [1 1]); r = [c, ia, ib];
+%%
+r = intersect(5, [5 6]);
+%%
+r = size(intersect({}, {'a'}));
+%%
+r = class(intersect({'a'}, {})) == 'c';
+%%
+r = intersect([1 2], [2 3], 'rows');
+%%
+r = intersect(int8([1 2]), [2 3]);
+%%
+r = length(intersect({'c'; 'h'; 'y'}, {'y'; 'c'; 'h'; 'k'}));
+%%
+s.a = 1; s.b = [2 3 4]; c = struct2cell(s); r = [size(c), c{1}, c{2}];
+%%
+s.x = 'ab'; s.y = {1, 2}; c = struct2cell(s); r = [size(c), double(c{1}), numel(c{2})];
+%%
+s = struct(); c = struct2cell(s); r = size(c);
+%%
+s.a = [1 2]; s.b = [3 4]; r = cell2mat(struct2cell(s));
+%%
+s.a = [1 2]; s.b = [3 4 5]; r = cell2mat(struct2cell(s));
+%%
+r = cell2mat({1 2; 3 4});
+%%
+r = cell2mat({[1 2], [3]; [4 5 6]});
+%%
+r = cell2mat({[1 2]', [3 4]'});
+%%
+r = cell2mat({});
+%%
+r = cell2mat({true, false});
+%%
+r = class(cell2mat({true, false})) == 'l';
+%%
+r = cell2mat({1, true});
+%%
+r = double(cell2mat({'ab', 'c'}));
+%%
+r = cell2mat(3);
+%%
+r = struct2cell(3);
+%%
+r = size(char());
+%%
+r = class(char()) == 'c';

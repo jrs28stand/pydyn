@@ -1,0 +1,81 @@
+r = isfile('f.txt');
+%%
+r = isfile('sub');
+%%
+r = isfile('nope');
+%%
+r = isfile('');
+%%
+r = isfile('sub/g.mat');
+%%
+r = isfile('./f.txt');
+%%
+r = isfile({'f.txt', 'sub', 'x'; 'sub/g.mat', '', ' f.txt'});
+%%
+r = size(isfile({'f.txt', 'sub'}'));
+%%
+r = isfolder('sub');
+%%
+r = isfolder('sub/');
+%%
+r = isfolder('f.txt');
+%%
+r = isfolder('.');
+%%
+r = isfolder({'sub', 'f.txt'});
+%%
+r = isdir('sub');
+%%
+r = isfile(3);
+%%
+r = isfolder(3);
+%%
+r = isfile('a', 'b');
+%%
+r = exist('f.txt');
+%%
+r = exist('sub');
+%%
+r = exist('f.txt', 'file');
+%%
+r = exist('sub', 'dir');
+%%
+r = exist('f.txt', 'dir');
+%%
+r = exist('sub', 'file');
+%%
+r = exist('sub/g.mat');
+%%
+r = exist('nope.mat', 'file');
+%%
+r = exist('nope', 'dir');
+%%
+r = isfile('../f.txt');
+%%
+r = isfile('/etc/passwd');
+%%
+r = isfolder('..');
+%%
+r = isfolder('sub/..');
+%%
+r = double(fullfile('a', 'b', 'c.m'));
+%%
+r = double(fullfile('a/', '/b'));
+%%
+r = double(fullfile('a'));
+%%
+r = double(fullfile('', 'b'));
+%%
+r = double(fullfile('a', ''));
+%%
+[d, n, e] = fileparts('/x/y/z.mat'); r = double([d, '|', n, '|', e]);
+%%
+[d, n, e] = fileparts('z'); r = [numel(d), double(n), numel(e)];
+%%
+[d, n, e] = fileparts('a/b.c.d'); r = double([d, '|', n, '|', e]);
+%%
+[d, n, e] = fileparts('a/b/'); r = [double(d), numel(n), numel(e)];
+%%
+d = fileparts('/x/y/z.mat'); r = double(d);
+%%
+[d, n, e] = fileparts('/z.m'); r = double([d, '|', n, '|', e]);

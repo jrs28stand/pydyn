@@ -10,13 +10,23 @@
                                  [--timeout 600] [--only substring ...] [--force] [--all]
 
 Same entries, scratch folder layout and file order as tools/accept_octave.py (the files of one entry run one after the other in
-one scratch folder; files written by Dynare's own run of a file are copied in first, as the sweep always did, unless
-``--no-ref-artifacts``).  Per test id it writes ``<out>/<id>.mat`` (oo_, M_, options_ as pydyn's results layer holds them,
+one scratch folder).
+
+Reference artifacts (rule since the refuse-reduction pass): a test NEVER starts with the files Dynare/Octave wrote when running that
+same file; pydyn writes its own outputs (``<fname>/Output/<fname>_results.mat``, ``save``/``delete`` in the model code ...) and the
+sandbox refuses to overwrite or delete files it did not write, so pre-copying them made 46 files refuse for the wrong reason.  Later
+files of an entry see what pydyn wrote for the earlier ones.  Only when an earlier file of the entry did not complete in pydyn
+(status not ok, so its outputs do not exist) are the Octave-written artifacts of THAT earlier file copied in, and only the files that
+are not already present in the scratch folder, so that a later file has the inputs the Dynare run would have produced.
+``--ref-artifacts`` restores the old behaviour (copy the file's own artifacts first; for diagnosis only).
+
+Per test id it writes ``<out>/<id>.mat`` (oo_, M_, options_ as pydyn's results layer holds them,
 Dynare's names and shapes; fields the layer declines to fill are listed in the json) and ``<out>/<id>.json``:
 
     {"status": "ok"|"refused"|"error"|"timeout", "message", "rng": "octave", "refused_fields": {path: reason},
      "load_s": process start + ``import pydyn`` (once per worker, repeated in each of its tests),
-     "first_s": the first ``pydyn.dynare()`` call incl. the preprocessor, "second_s": the same call again in the same worker}
+     "first_s": the first ``pydyn.dynare()`` call incl. the preprocessor, "second_s": the same call again in the same worker
+     (if that repeat fails, e.g. a file that deletes its own input, the first result stands and "second_run_error" says why)}
 
 Tests whose Dynare reference run failed are not run (nothing to compare) unless ``--all``.  Compare with tools/accept_compare.py.
 """
@@ -140,13 +150,15 @@ def write_mat(res, mat_path):
 
 
 # ------------------------------------------------------------------------------------------ one entry
-def copy_ref_artifacts(ref, mod, scratch):
+def copy_ref_artifacts(ref, mod, scratch, overwrite=True):
     art = Path(ref) / "_files" / relid(mod)
     if art.is_dir():
         dest = scratch / "tests" / Path(mod).parent
         for f in art.rglob("*"):
             if f.is_file():
                 t = dest / f.relative_to(art)
+                if t.exists() and not overwrite:
+                    continue
                 t.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(f, t)
 
@@ -173,9 +185,16 @@ def run_mod(mod, scratch, out, timeout):
             refused = write_mat(res, mat)
             info["refused_fields"] = refused
             if info["first_s"] < 60:
+                # the timing repeat: a file that consumes its own inputs (``delete('x.mat')`` after ``load``) cannot run twice in one
+                # scratch folder, and that says nothing about the first run, whose results are already written
                 t = time.time()
-                pydyn.dynare(path)
-                info["second_s"] = round(time.time() - t, 3)
+                try:
+                    pydyn.dynare(path)
+                    info["second_s"] = round(time.time() - t, 3)
+                except TimeoutError:
+                    raise
+                except Exception as e2:  # noqa: BLE001
+                    info["second_run_error"] = f"{type(e2).__name__}: {str(e2)[:200]}"
     except TimeoutError:
         info.update(status="timeout", message=f"timeout after {timeout}s")
     except Exception as e:  # noqa: BLE001
@@ -196,10 +215,17 @@ def run_entry(entry, mods, out, ref, timeout, ref_artifacts):
     done = []
     try:
         prepare_scratch(entry, SRC, scratch)
+        failed_earlier = []                       # earlier files of the entry that pydyn did not complete
         for m in mods:
-            if ref_artifacts:
+            if ref_artifacts:                     # legacy diagnosis mode: the file's own Dynare outputs
                 copy_ref_artifacts(ref, m, scratch)
-            done.append(run_mod(m, scratch, out, timeout))
+            else:
+                for prev in failed_earlier:
+                    copy_ref_artifacts(ref, prev, scratch, overwrite=False)
+            r = run_mod(m, scratch, out, timeout)
+            done.append(r)
+            if r[1] != "ok":
+                failed_earlier.append(m)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return done
@@ -214,7 +240,7 @@ def main(argv=None):
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--all", action="store_true", help="also run tests whose Dynare reference run failed")
-    ap.add_argument("--no-ref-artifacts", action="store_true")
+    ap.add_argument("--ref-artifacts", action="store_true", help="legacy: pre-copy each file's own Dynare outputs (diagnosis only)")
     a = ap.parse_args(argv)
     out, ref = Path(a.out), Path(a.ref)
     out.mkdir(parents=True, exist_ok=True)
@@ -239,7 +265,7 @@ def main(argv=None):
         pending = list(jobs)
         jobs = []
         with cf.ProcessPoolExecutor(a.jobs, mp_context=ctx, initializer=_init_worker) as ex:
-            futs = {ex.submit(run_entry, e, m, out, ref, a.timeout, not a.no_ref_artifacts): (e, m) for e, m in pending}
+            futs = {ex.submit(run_entry, e, m, out, ref, a.timeout, a.ref_artifacts): (e, m) for e, m in pending}
             for f in cf.as_completed(futs):
                 try:
                     for rel, st in f.result():
