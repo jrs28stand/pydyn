@@ -46,14 +46,14 @@ _SOBOL_CACHE: dict = {}                                          # (dim, level) 
 PAGE = "docs/OBC_CUBATURE_FAILURES.md"
 
 
-def cubature_limits(nrel, failure_tolerance, undecided_tolerance):
+def cubature_limits(nrel, failure_tolerance, undecided_tolerance, min_points=3):
     """The rule for one period with ``nrel`` relevant points: (largest tolerated number of class-(a) points, largest tolerated total number of failed
     points).  A period is acceptable iff  n_a <= failure_tolerance * nrel  and  n_a + n_b + n_c <= max(failure_tolerance * nrel, u),  where
-    u = max(undecided_tolerance * nrel, 1) if undecided_tolerance > 0 (at least one point, so that a period with few relevant points is not
-    an error because of a single tail point) and u = 0 otherwise.  With ``cubature_undecided_tolerance = 0`` this is the strict rule (no failed point
+    u = max(undecided_tolerance * nrel, min_points) if undecided_tolerance > 0 (at least ``min_points`` = 3 points, so that a period with few
+    relevant points is not an error because of a few tail points: with 0.5% of 279 relevant points two failures would raise) and u = 0 otherwise.  With ``cubature_undecided_tolerance = 0`` this is the strict rule (no failed point
     unless ``cubature_failure_tolerance`` > 0)."""
     a_lim = failure_tolerance * nrel
-    u = max(undecided_tolerance * nrel, 1.0) if undecided_tolerance > 0 else 0.0
+    u = max(undecided_tolerance * nrel, float(min_points)) if undecided_tolerance > 0 else 0.0
     return a_lim, max(a_lim, u)
 
 
@@ -131,7 +131,7 @@ class HigherOrderNews:
     def __init__(self, model, order=2, horizon=40, check_ahead=40, params=None, Sigma_e=None,
                  cubature=False, periods_of_uncertainty=16, qmc_level=11, regions="all", taper=True, seed=0, pruning_cutoff=0.01,
                  max_cubature_dimension=128, cubature_milp_time_limit=0.1, cubature_failure_tolerance=0.0, m_diagnostic="s",
-                 obc_formulation="auto", cubature_undecided_tolerance=0.005):
+                 obc_formulation="auto", cubature_undecided_tolerance=0.005, cubature_undecided_min_points=3):
         """Defaults when ``cubature`` is on: the full quasi-Monte Carlo average (``regions="all"``) over 2^(qmc_level+1) - 1 = 4,095
         points (``qmc_level=11``); ``regions=1`` (DynareOBC's default; its single mean point does not price tail risk) and
         ``regions=k`` remain options.
@@ -140,8 +140,8 @@ class HigherOrderNews:
         short, (c) undecided (the integer programme hit ``cubature_milp_time_limit``, 0.1 s per point, or found no usable sequence).  A period
         is acceptable iff  n_a <= cubature_failure_tolerance * n_rel  and
         n_a + n_b + n_c <= max(cubature_failure_tolerance * n_rel, u),  with n_rel the number of relevant points of the period and
-        u = max(cubature_undecided_tolerance * n_rel, 1) when ``cubature_undecided_tolerance`` > 0 (default 0.005; at least one point, so that a
-        period with few relevant points is not an error because of one tail point), u = 0 otherwise.  Defaults: ``cubature_failure_tolerance=0``,
+        u = max(cubature_undecided_tolerance * n_rel, cubature_undecided_min_points) when ``cubature_undecided_tolerance`` > 0 (default 0.005;
+        ``cubature_undecided_min_points`` = 3: a period with few relevant points is not an error because of a few tail points), u = 0 otherwise.  Defaults: ``cubature_failure_tolerance=0``,
         so any class-(a) point raises ``CubatureFailure``; (b) and (c) points are dropped within u, the average is renormalised by 1/(P - F), the
         counts are returned per period (``dropped_a/b/c``) and one warning per simulation gives the totals.  ``cubature_undecided_tolerance=0``
         restores the strict rule (any failed point raises).  A larger ``cubature_failure_tolerance`` covers all three kinds.  The search stops as soon
@@ -188,6 +188,7 @@ class HigherOrderNews:
         self.undecided_tolerance = float(cubature_undecided_tolerance)
         if not 0.0 <= self.undecided_tolerance < 1.0:
             raise ValueError("cubature_undecided_tolerance must be in [0, 1)")
+        self.undecided_min_points = int(cubature_undecided_min_points)
         self.m_diag = None
         if self.cubature:
             self.R = self.conditional_root()
@@ -540,7 +541,7 @@ class HigherOrderNews:
         (sum over solved relevant units of size * y) / (P - F): non-relevant points contribute y = 0, failed points are removed from
         the sample. F = 0 gives the plain average sum / P. Failed points are classified (a) proven no solution, (b) horizon too short, (c) undecided;
         the period is acceptable iff  n_a <= cubature_failure_tolerance * n_rel  and
-        n_a + n_b + n_c <= max(cubature_failure_tolerance * n_rel, u),  u = max(cubature_undecided_tolerance * n_rel, 1) if that tolerance is
+        n_a + n_b + n_c <= max(cubature_failure_tolerance * n_rel, u),  u = max(cubature_undecided_tolerance * n_rel, cubature_undecided_min_points) if that tolerance is
         positive, else 0 (``cubature_limits``); otherwise ``CubatureFailure`` is raised, as soon as the outcome is decided (its ``lower_bound`` says
         whether the counts are then incomplete). See docs/OBC_CUBATURE_FAILURES.md."""
         self._dropped_last = self._relevant_last = 0
@@ -558,7 +559,7 @@ class HigherOrderNews:
         counts = dict(a=0, b=0, c=0)
         nfail = 0                                                    # failed points so far (region: all its points)
         n_as = None                                                  # active-set failures among all units, when known
-        a_lim, limit_fail = cubature_limits(nrel, tol, self.undecided_tolerance)
+        a_lim, limit_fail = cubature_limits(nrel, tol, self.undecided_tolerance, self.undecided_min_points)
         acc = np.zeros(self.nws)
 
         def failed(cls, size):

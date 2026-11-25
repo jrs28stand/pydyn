@@ -341,3 +341,98 @@ def test_approx_class_family_regime_vs_lcp_order_two(tmp_path, d, max_periods):
     assert binds(a) >= 10
     assert (dd > 1e-8).sum() <= max_periods and dd.max() < 1e-3
     assert len(h.trace) == len(S)
+
+
+# ------------------------------------------------------------------------------------ the cubature failure rule (docs/OBC_CUBATURE_FAILURES.md)
+def test_failure_rule_arithmetic():
+    from pydyn.obc_ho import cubature_limits
+    assert cubature_limits(279, 0.0, 0.005) == (0.0, 3.0)                     # few relevant points: the floor of 3 points
+    assert cubature_limits(10000, 0.0, 0.005) == (0.0, 50.0)                  # many: 0.5% of them
+    assert cubature_limits(279, 0.0, 0.0) == (0.0, 0.0)                        # undecided_tolerance=0: strict
+    a, tot = cubature_limits(1000, 0.02, 0.005)                                # user tolerance covers all classes: max(2%, 0.5%)
+    assert (a, tot) == (20.0, 20.0)
+    a, tot = cubature_limits(1000, 0.002, 0.005)                               # failure tolerance below the undecided one: (a) <= 0.2%, all <= 0.5%
+    assert (a, tot) == (2.0, 5.0)
+    assert cubature_limits(1000, 0.0, 0.005, min_points=10) == (0.0, 10.0)
+
+
+def test_cls_of_requires_a_proof_for_class_a():
+    e = OBCError("x", "no_solution", proof=True)
+    assert HigherOrderRegime._cls_of(e) == "a"
+    assert HigherOrderRegime._cls_of(OBCError("x", "no_solution")) == "c"      # an infeasible integer programme is not a proof
+    assert HigherOrderRegime._cls_of(OBCError("x", "horizon_too_short")) == "b"
+    assert HigherOrderRegime._cls_of(OBCError("x", "not_converged")) == "c"
+
+
+def test_default_nkm_cubature_completes_with_warning_and_counts():
+    m, S, hz = model("nkm"), shocks("nkm", T=100), 40
+    h = HigherOrderRegime(m, order=2, horizon=hz, check_ahead=hz, cubature=True, qmc_level=11)
+    with pytest.warns(UserWarning, match="NOT proven") as rec:
+        r = h.simulate(S)
+    msgs = [str(w.message) for w in rec if "cubature" in str(w.message)]
+    assert len(msgs) == 1 and "OBC_CUBATURE_FAILURES.md" in msgs[0] and "cubature_undecided_tolerance=0" in msgs[0]     # one warning, self-explanatory
+    assert r["dropped"].sum() > 0 and r["dropped_a"].sum() == 0
+    np.testing.assert_array_equal(r["dropped"], r["dropped_a"] + r["dropped_b"] + r["dropped_c"])
+    assert r["dropped_c"].sum() == h.stats["class_c"] and r["dropped"].sum() == h.stats["dropped_points"]
+    from pydyn.obc_ho import cubature_limits
+    assert all(d <= cubature_limits(n, 0.0, 0.005)[1] for d, n in zip(r["dropped"], r["relevant"]))      # the rule holds in every period
+
+
+def test_undecided_tolerance_zero_is_the_strict_rule():
+    from pydyn.obc_ho import CubatureFailure
+    m, S, hz = model("nkm"), shocks("nkm", T=100), 40
+    with pytest.raises(CubatureFailure) as ei:
+        HigherOrderRegime(m, order=2, horizon=hz, check_ahead=hz, cubature=True, qmc_level=11, cubature_undecided_tolerance=0).simulate(S)
+    e = ei.value
+    assert e.counts["c"] >= 1 and e.status == "not_converged" and e.undecided_tolerance == 0 and e.period >= 1
+    assert "OBC_CUBATURE_FAILURES.md" in str(e) and any("larger `cubature_milp_time_limit`" in a for a in e.advice)
+    # where nothing fails the two settings are the same simulation
+    m2, S2 = model("nk"), shocks("nk", T=60)
+    kw = dict(order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=7)
+    a = HigherOrderRegime(m2, **kw).simulate(S2)
+    b = HigherOrderRegime(m2, cubature_undecided_tolerance=0, **kw).simulate(S2)
+    np.testing.assert_allclose(a["with_bound"], b["with_bound"], rtol=0, atol=1e-14)     # (k_order differs by ~1e-20 between two builds)
+    assert a["dropped"].sum() == 0
+
+
+def test_lcp_class_follows_the_same_rule_and_class_a_still_raises():
+    from pydyn.obc_ho import CubatureFailure
+    m, S = model("zlb2"), shocks("zlb2", T=60)
+    kw = dict(order=2, horizon=20, check_ahead=20, cubature=True, qmc_level=7, regions="all")
+    with pytest.warns(UserWarning, match="class|by class") as rec:
+        r = _lcp(m, **kw).simulate(S)                       # class (b) points (horizon): dropped within the tolerance
+    assert r["dropped_b"].sum() > 0 and r["dropped_a"].sum() == 0 and r["dropped_c"].sum() == 0
+    assert sum("cubature:" in str(w.message) for w in rec) == 1
+    with pytest.raises(CubatureFailure):                    # strict rule: the same points are errors
+        _lcp(m, cubature_undecided_tolerance=0, **kw).simulate(S)
+    a = HigherOrderRegime(m, **kw)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ra = a.simulate(S)
+    np.testing.assert_array_equal(ra["dropped_b"], r["dropped_b"])
+    np.testing.assert_allclose(ra["with_bound"], r["with_bound"], rtol=0, atol=1e-12)
+
+
+def test_interaction_with_failure_tolerance():
+    """A user tolerance covers all classes: with cubature_failure_tolerance=0.01 and the strict undecided rule the period limit is 1% of relevant points."""
+    from pydyn.obc_ho import CubatureFailure
+    m, S = model("zlb2"), shocks("zlb2", T=60)
+    kw = dict(order=2, horizon=20, check_ahead=20, cubature=True, qmc_level=7, regions="all", cubature_undecided_tolerance=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = HigherOrderRegime(m, cubature_failure_tolerance=0.01, **kw).simulate(S)
+    assert (r["dropped"] <= 0.01 * r["relevant"]).all() and r["dropped"].sum() > 0
+    with pytest.raises(CubatureFailure):
+        HigherOrderRegime(m, cubature_failure_tolerance=0.0001, **kw).simulate(S)
+    with pytest.raises(ValueError):
+        HigherOrderRegime(m, **{**kw, "cubature_undecided_tolerance": 1.0})
+
+
+def test_default_time_limit_and_class_a_raise_on_sw():
+    from pydyn.obc_ho import CubatureFailure
+    m = model("sw")
+    h = HigherOrderRegime(m, order=2, horizon=32, check_ahead=32, cubature=True, qmc_level=5)
+    assert h.milp_time_limit == 0.1 and h.undecided_tolerance == 0.005 and h.failure_tolerance == 0.0
+    with pytest.raises(CubatureFailure) as ei:
+        h.simulate(shocks("sw", T=10))
+    assert ei.value.counts["a"] >= 1 and ei.value.status == "no_solution" and "no equilibrium" in str(ei.value)

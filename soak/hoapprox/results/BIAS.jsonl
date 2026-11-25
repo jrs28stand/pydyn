@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/home/claude/work/pydyn-soak/soak/hoapprox/bias.py", line 16, in <module>
+    h0, A = run()
+            ~~~^^
+  File "/home/claude/work/pydyn-soak/soak/hoapprox/bias.py", line 13, in run
+    h = HigherOrderRegime(m, **{**kw, **k}); return h, h.simulate(S)
+                                                       ~~~~~~~~~~^^^
+  File "/home/claude/work/pydyn-soak/pydyn/obc_regime_ho.py", line 289, in simulate
+    w, z, info = self.news_wedges(a, Ycv, A, selection)
+                 ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/claude/work/pydyn-soak/pydyn/obc_regime_ho.py", line 580, in news_wedges
+    raise CubatureFailure(status, nfail, unexamined > 0, nrel, npts, counts, None, tol, self.milp_time_limit, self.undecided_tolerance)
+pydyn.obc_ho.CubatureFailure: cubature: 2 of 279 relevant perturbed points (4095 in total) have no usable solution: a=0 b=0 c=2; cubature_undecided_tolerance=0.005. (c) undecided: the integer programme did not settle the point in 0.1 s, or found a regime sequence that fails OccBin's test; try a larger `cubature_milp_time_limit` (this cannot make a point worse) `cubature_undecided_tolerance` is the share of relevant points in a period that may be (b) or (c) and dropped; see docs/OBC_CUBATURE_FAILURES.md
+{"model": "nkocc_5e-3", "level": 11, "T": 60, "relevant": 87161, "dropped": 47, "periods_with_drops": 31, "cubature_effect_default_vs_none": 0.02973644841414491, "strict": "raises at period 2", "long_limit_5s_dropped": 47, "default_vs_long_limit": 0.0, "default_vs_lcp": 0.000261774778668844, "lcp_cubature_effect": 0.02972918525682733, "default_vs_zero_fill": 2.1602934930364803e-05, "sign_pattern_spread_max_std": 0.000432500428836821, "sign_pattern_spread_max_range": 0.0012657885378948297}
+{"model": "nkm", "level": 11, "T": 100, "relevant": 70412, "dropped": 26, "periods_with_drops": 20, "cubature_effect_default_vs_none": 0.09816853251424895, "strict": "raises at period 4", "long_limit_5s_dropped": 26, "default_vs_long_limit": 1.7763568394002505e-15, "default_vs_lcp": 0.00020977538508604177, "lcp_cubature_effect": 0.09831622172051446, "default_vs_zero_fill": 1.886371334136605e-05, "sign_pattern_spread_max_std": 0.0021700370852542616, "sign_pattern_spread_max_range": 0.007262342835728575}
